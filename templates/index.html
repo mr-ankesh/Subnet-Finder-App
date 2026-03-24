@@ -2,45 +2,46 @@
 {% block title %}Azure Subnet Manager — Select Pool{% endblock %}
 
 {% block content %}
-<div class="container py-5">
-  <div class="row justify-content-center">
-    <div class="col-lg-7">
+<div class="hero-section">
+  <div class="hero-inner">
 
-      <div class="text-center mb-5">
-        <div class="hero-icon mb-3">
-          <i class="bi bi-hdd-network-fill"></i>
-        </div>
-        <h1 class="fw-bold mb-2" style="font-size:1.75rem;">Select an IP Pool</h1>
-        <p class="text-muted mb-0">Choose a network segment to view, allocate, or manage subnets.</p>
-      </div>
-
-      <div class="row g-4">
-        {% for p in pools %}
-        <div class="col-md-6">
-          <a href="/allocator/{{ p.key }}" class="text-decoration-none">
-            <div class="pool-card">
-              <div class="pool-card-icon">
-                <i class="bi bi-hdd-network"></i>
-              </div>
-              <div>
-                <div class="pool-card-title">{{ p.cidr }}</div>
-                <div class="pool-card-subtitle">Pool key: {{ p.key }} &nbsp;·&nbsp; /16 block</div>
-                <span class="pool-card-action">
-                  Manage Subnets <i class="bi bi-arrow-right ms-1"></i>
-                </span>
-              </div>
-            </div>
-          </a>
-        </div>
-        {% endfor %}
-      </div>
-
-      <div class="info-banner mt-4">
-        <i class="bi bi-info-circle me-2"></i>
-        Select a pool to search for available subnets, allocate new IPs, or manage existing allocations.
-      </div>
-
+    <div class="hero-badge">
+      <i class="bi bi-shield-check"></i>
+      Azure Network Management
     </div>
+
+    <h1 class="hero-title">
+      Manage Your<br><span>IP Address Pools</span>
+    </h1>
+    <p class="hero-sub">
+      Select a network segment to search for available subnets,
+      allocate new IP ranges, or manage existing allocations.
+    </p>
+
+    <div class="pool-grid">
+      {% for p in pools %}
+      <a href="/allocator/{{ p.key }}" class="pool-card">
+        <div class="pool-card-top">
+          <div class="pool-card-icon">
+            <i class="bi bi-hdd-network-fill"></i>
+          </div>
+          <i class="bi bi-arrow-right pool-card-arrow"></i>
+        </div>
+        <div class="pool-card-cidr">{{ p.cidr }}</div>
+        <div class="pool-card-meta">Pool key: {{ p.key }} &nbsp;·&nbsp; /16 block &nbsp;·&nbsp; 65,536 addresses</div>
+        <div class="pool-card-footer">
+          <i class="bi bi-layers"></i>
+          Manage Subnets
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+
+    <div class="info-strip">
+      <i class="bi bi-info-circle-fill"></i>
+      Choose a pool to find free subnets, allocate new IPs, or release existing allocations.
+    </div>
+
   </div>
 </div>
 {% endblock %}
