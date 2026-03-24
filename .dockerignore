@@ -1,0 +1,24 @@
+# Version control
+.git/
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets / config
+.env
+.env.*
+
+# Data (mounted as volume at runtime — not baked into image)
+data/*.xlsx
+data/*.xls
+
+# Docs
+README.md
