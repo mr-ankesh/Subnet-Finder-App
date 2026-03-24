@@ -5,259 +5,219 @@
 
 <!-- Breadcrumb -->
 <div class="breadcrumb-bar">
-  <div class="container-fluid px-4">
-    <nav aria-label="breadcrumb">
-      <ol class="breadcrumb mb-0">
-        <li class="breadcrumb-item">
-          <a href="/"><i class="bi bi-house me-1"></i>Pools</a>
-        </li>
-        <li class="breadcrumb-item active">{{ base_cidr }}</li>
-      </ol>
-    </nav>
-  </div>
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="/"><i class="bi bi-house me-1"></i>Pools</a></li>
+      <li class="breadcrumb-item active">{{ base_cidr }}</li>
+    </ol>
+  </nav>
 </div>
 
 <!-- Stats Bar -->
 <div class="stats-bar">
-  <div class="container-fluid px-4">
-    <div class="row g-3">
-      <div class="col-6 col-md-3">
-        <div class="stat-card">
-          <div class="stat-icon bg-primary-soft">
-            <i class="bi bi-hdd-network text-primary"></i>
-          </div>
-          <div>
-            <div class="stat-label">Pool</div>
-            <div class="stat-value" style="font-size:14px;font-family:monospace;">{{ base_cidr }}</div>
-          </div>
+  <div class="stat-grid">
+    <div class="stat-pill">
+      <div class="stat-icon-wrap si-blue"><i class="bi bi-hdd-network-fill"></i></div>
+      <div class="stat-info">
+        <div class="stat-label">Pool</div>
+        <div class="stat-value mono">{{ base_cidr }}</div>
+      </div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-icon-wrap si-green"><i class="bi bi-check-circle-fill"></i></div>
+      <div class="stat-info">
+        <div class="stat-label">Free Blocks</div>
+        <div class="stat-value" id="statFree">
+          <span class="spinner-border spinner-border-sm"></span>
         </div>
       </div>
-      <div class="col-6 col-md-3">
-        <div class="stat-card">
-          <div class="stat-icon bg-success-soft">
-            <i class="bi bi-check-circle text-success"></i>
-          </div>
-          <div>
-            <div class="stat-label">Free Blocks</div>
-            <div class="stat-value" id="statFree">
-              <span class="spinner-border spinner-border-sm text-muted"></span>
-            </div>
-          </div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-icon-wrap si-amber"><i class="bi bi-diagram-2-fill"></i></div>
+      <div class="stat-info">
+        <div class="stat-label">Allocated</div>
+        <div class="stat-value" id="statAllocated">
+          <span class="spinner-border spinner-border-sm"></span>
         </div>
       </div>
-      <div class="col-6 col-md-3">
-        <div class="stat-card">
-          <div class="stat-icon bg-warning-soft">
-            <i class="bi bi-diagram-2 text-warning"></i>
-          </div>
-          <div>
-            <div class="stat-label">Allocated</div>
-            <div class="stat-value" id="statAllocated">
-              <span class="spinner-border spinner-border-sm text-muted"></span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="col-6 col-md-3">
-        <div class="stat-card">
-          <div class="stat-icon bg-info-soft">
-            <i class="bi bi-bar-chart text-info"></i>
-          </div>
-          <div>
-            <div class="stat-label">Largest Free Block</div>
-            <div class="stat-value" id="statTopPrefix">
-              <span class="spinner-border spinner-border-sm text-muted"></span>
-            </div>
-          </div>
+    </div>
+    <div class="stat-pill">
+      <div class="stat-icon-wrap si-cyan"><i class="bi bi-bar-chart-fill"></i></div>
+      <div class="stat-info">
+        <div class="stat-label">Largest Free</div>
+        <div class="stat-value" id="statTopPrefix">
+          <span class="spinner-border spinner-border-sm"></span>
         </div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Main Content -->
-<div class="container-fluid px-4 py-4">
-  <div class="row g-4">
+<!-- Main Grid -->
+<div class="allocator-grid">
 
-    <!-- Search Panel -->
-    <div class="col-lg-4">
-      <div class="content-card">
-        <div class="content-card-header">
-          <i class="bi bi-search me-2"></i>Find Available Subnet
-        </div>
-        <div class="content-card-body">
-          <p class="text-muted small mb-3">
-            Enter a CIDR prefix to find free subnets in the
-            <strong class="font-monospace">{{ base_cidr }}</strong> pool.
-          </p>
-          <form id="fetchForm" novalidate>
-            <div class="mb-3">
-              <label class="form-label fw-semibold">Prefix Length</label>
-              <div class="input-group">
-                <span class="input-group-text fw-bold">/</span>
-                <input type="number" id="cidrInput" name="cidr_num"
-                       class="form-control" placeholder="24" min="1" max="32" required>
-              </div>
-              <div class="form-text">e.g. /24 (256 IPs) · /28 (16 IPs) · /29 (8 IPs)</div>
-            </div>
-            <button type="submit" class="btn btn-primary w-100" id="searchBtn">
-              <i class="bi bi-search me-2"></i>Find Available Subnets
-            </button>
-          </form>
-        </div>
+  <!-- Search Panel -->
+  <div>
+    <div class="glass-card">
+      <div class="card-header-bar">
+        <i class="bi bi-search"></i> Find Available Subnet
       </div>
-    </div>
-
-    <!-- Results Panel -->
-    <div class="col-lg-8">
-      <div class="content-card">
-        <div class="content-card-header d-flex justify-content-between align-items-center">
-          <span><i class="bi bi-list-check me-2"></i>Search Results</span>
-          <span class="badge bg-primary rounded-pill d-none" id="resultsBadge">0</span>
-        </div>
-        <div class="content-card-body">
-          <div id="searchPlaceholder" class="empty-state">
-            <i class="bi bi-search"></i>
-            <p>Enter a prefix length and click "Find Available Subnets"</p>
-          </div>
-          <div id="searchLoading" class="text-center py-5 d-none">
-            <div class="spinner-border text-primary" role="status"></div>
-            <p class="mt-3 text-muted small">Searching for available subnets…</p>
-          </div>
-          <div id="resultsContainer" class="d-none">
-            <div class="table-responsive">
-              <table class="table table-hover subnet-table mb-0">
-                <thead>
-                  <tr>
-                    <th style="width:40px">#</th>
-                    <th>Subnet CIDR</th>
-                    <th>Network Address</th>
-                    <th>Usable Hosts</th>
-                    <th style="width:110px">Action</th>
-                  </tr>
-                </thead>
-                <tbody id="availableList"></tbody>
-              </table>
+      <div class="card-body-pad">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:18px;line-height:1.6;">
+          Enter a CIDR prefix to find free subnets in the
+          <code style="font-family:var(--mono);color:#93c5fd;font-size:12px;">{{ base_cidr }}</code> pool.
+        </p>
+        <form id="fetchForm" novalidate>
+          <div class="mb-4">
+            <label class="form-label">Prefix Length</label>
+            <div class="input-group">
+              <span class="input-group-text">/</span>
+              <input type="number" id="cidrInput" name="cidr_num"
+                     class="form-control" placeholder="24" min="1" max="32" required>
+            </div>
+            <div class="form-text mt-2">
+              /24 = 256 IPs &nbsp;·&nbsp; /28 = 16 IPs &nbsp;·&nbsp; /29 = 8 IPs
             </div>
           </div>
-        </div>
+          <button type="submit" class="btn btn-glow w-100" id="searchBtn">
+            <i class="bi bi-search me-2"></i>Find Available Subnets
+          </button>
+        </form>
       </div>
     </div>
   </div>
 
-  <!-- Bottom Tabs -->
-  <div class="row mt-4">
-    <div class="col-12">
-      <div class="content-card">
-        <div class="content-card-body p-0">
-          <ul class="nav nav-tabs tab-nav" id="mainTabs" role="tablist">
-            <li class="nav-item" role="presentation">
-              <button class="nav-link active" id="tab-available-btn"
-                      data-bs-toggle="tab" data-bs-target="#tabAvailable" role="tab">
-                <i class="bi bi-grid me-2"></i>All Available Blocks
-              </button>
-            </li>
-            <li class="nav-item" role="presentation">
-              <button class="nav-link" id="tab-allocated-btn"
-                      data-bs-toggle="tab" data-bs-target="#tabAllocated" role="tab">
-                <i class="bi bi-check2-circle me-2"></i>Allocated Subnets
-              </button>
-            </li>
-            <li class="nav-item" role="presentation">
-              <button class="nav-link" id="tab-summary-btn"
-                      data-bs-toggle="tab" data-bs-target="#tabSummary" role="tab">
-                <i class="bi bi-bar-chart me-2"></i>Summary
-              </button>
-            </li>
-          </ul>
+  <!-- Results Panel -->
+  <div>
+    <div class="glass-card" style="height:100%;">
+      <div class="card-header-bar" style="justify-content:space-between;">
+        <span><i class="bi bi-list-check"></i> Search Results</span>
+        <span class="result-count d-none" id="resultsBadge"><i class="bi bi-grid-3x3-gap-fill"></i> 0</span>
+      </div>
+      <div class="card-body-pad">
 
-          <div class="tab-content p-3">
-            <!-- Available Tab -->
-            <div class="tab-pane fade show active" id="tabAvailable" role="tabpanel">
-              <div class="d-flex justify-content-between align-items-center mb-3">
-                <p class="mb-0 text-muted small">
-                  All free address blocks in <strong class="font-monospace">{{ base_cidr }}</strong>
-                </p>
-                <button class="btn btn-sm btn-outline-primary" id="loadAvailableBtn">
-                  <i class="bi bi-arrow-clockwise me-1"></i>Load / Refresh
-                </button>
-              </div>
-              <div id="allAvailableContainer">
-                <div class="empty-state">
-                  <i class="bi bi-grid"></i>
-                  <p>Click "Load / Refresh" to view all available blocks</p>
-                </div>
-              </div>
-            </div>
+        <div id="searchPlaceholder" class="empty-state">
+          <i class="bi bi-search empty-icon"></i>
+          <p>Enter a prefix length and search to see available subnets</p>
+        </div>
 
-            <!-- Allocated Tab -->
-            <div class="tab-pane fade" id="tabAllocated" role="tabpanel">
-              <div id="allocatedContainer">
-                <div class="empty-state">
-                  <i class="bi bi-check2-circle"></i>
-                  <p>Loading allocated subnets…</p>
-                </div>
-              </div>
-            </div>
+        <div id="searchLoading" class="empty-state d-none">
+          <span class="spinner-border" style="width:2rem;height:2rem;"></span>
+          <p style="margin-top:14px;">Scanning for available subnets…</p>
+        </div>
 
-            <!-- Summary Tab -->
-            <div class="tab-pane fade" id="tabSummary" role="tabpanel">
-              <div id="summaryContainer">
-                <div class="empty-state">
-                  <i class="bi bi-bar-chart"></i>
-                  <p>Loading summary…</p>
-                </div>
-              </div>
-            </div>
+        <div id="resultsContainer" class="d-none">
+          <div style="overflow-x:auto;">
+            <table class="gls-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Subnet CIDR</th>
+                  <th>Network Address</th>
+                  <th>Usable Hosts</th>
+                  <th style="width:110px;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="availableList"></tbody>
+            </table>
           </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Bottom Tabs Section -->
+<div style="padding: 0 24px 28px;">
+  <div class="glass-card">
+
+    <div class="gls-tabs" id="mainTabs">
+      <button class="gls-tab-btn active" data-tab="tabAvailable" id="tab-available-btn">
+        <i class="bi bi-grid-fill"></i> All Available Blocks
+      </button>
+      <button class="gls-tab-btn" data-tab="tabAllocated" id="tab-allocated-btn">
+        <i class="bi bi-check2-circle"></i> Allocated Subnets
+      </button>
+      <button class="gls-tab-btn" data-tab="tabSummary" id="tab-summary-btn">
+        <i class="bi bi-bar-chart-fill"></i> Summary
+      </button>
+    </div>
+
+    <!-- Available Blocks Tab -->
+    <div class="tab-pane active" id="tabAvailable">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <p style="margin:0;font-size:13px;color:var(--text-muted);">
+          Free address blocks in <code style="font-family:var(--mono);color:#93c5fd;font-size:12px;">{{ base_cidr }}</code>
+        </p>
+        <button class="btn btn-glass btn-sm" id="loadAvailableBtn">
+          <i class="bi bi-arrow-clockwise me-1"></i>Load / Refresh
+        </button>
+      </div>
+      <div id="allAvailableContainer">
+        <div class="empty-state">
+          <i class="bi bi-grid empty-icon"></i>
+          <p>Click "Load / Refresh" to view all available blocks</p>
         </div>
       </div>
     </div>
+
+    <!-- Allocated Tab -->
+    <div class="tab-pane" id="tabAllocated">
+      <div id="allocatedContainer">
+        <div class="empty-state">
+          <i class="bi bi-hourglass-split empty-icon"></i>
+          <p>Loading allocated subnets…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Summary Tab -->
+    <div class="tab-pane" id="tabSummary">
+      <div id="summaryContainer">
+        <div class="empty-state">
+          <i class="bi bi-bar-chart empty-icon"></i>
+          <p>Loading summary…</p>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
 
 <!-- Allocation Modal -->
-<div class="modal fade" id="allocateModal" tabindex="-1" aria-labelledby="allocateModalLabel">
+<div class="modal fade" id="allocateModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="allocateModalLabel">
-          <i class="bi bi-plus-circle me-2 text-primary"></i>Allocate Subnet
+        <h5 class="modal-title">
+          <i class="bi bi-plus-circle-fill"></i> Allocate Subnet
         </h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <div class="selected-subnet-badge mb-4">
-          <i class="bi bi-hdd-network me-2 text-primary"></i>
-          <span id="modalSubnetDisplay">—</span>
+        <div class="subnet-display-box" id="modalSubnetDisplay">—</div>
+        <div class="mb-3">
+          <label class="form-label">Purpose <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="modalPurpose" class="form-control" placeholder="e.g. Production Web Servers">
         </div>
         <div class="mb-3">
-          <label class="form-label fw-semibold">
-            Purpose <span class="text-danger">*</span>
-          </label>
-          <input type="text" id="modalPurpose" class="form-control"
-                 placeholder="e.g., Production Web Servers">
+          <label class="form-label">Requested By <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="modalRequestedBy" class="form-control" placeholder="Team or person requesting">
         </div>
         <div class="mb-3">
-          <label class="form-label fw-semibold">
-            Requested By <span class="text-danger">*</span>
-          </label>
-          <input type="text" id="modalRequestedBy" class="form-control"
-                 placeholder="Team or person requesting">
+          <label class="form-label">Allocated By <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="modalAllocatedBy" class="form-control" placeholder="Your name">
         </div>
-        <div class="mb-3">
-          <label class="form-label fw-semibold">
-            Allocated By <span class="text-danger">*</span>
-          </label>
-          <input type="text" id="modalAllocatedBy" class="form-control"
-                 placeholder="Your name">
+        <div id="modalError" class="d-none"
+             style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--danger);">
         </div>
-        <div id="modalError" class="alert alert-danger d-none mb-0"></div>
       </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-primary" id="confirmAllocateBtn">
+      <div class="modal-footer" style="gap:10px;">
+        <button type="button" class="btn btn-glass" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-glow" id="confirmAllocateBtn">
           <i class="bi bi-check-lg me-1"></i>Confirm Allocation
         </button>
       </div>
@@ -266,30 +226,31 @@
 </div>
 
 
-<!-- Deallocation Confirm Modal -->
-<div class="modal fade" id="deallocateModal" tabindex="-1" aria-labelledby="deallocateModalLabel">
+<!-- Deallocation Modal -->
+<div class="modal fade" id="deallocateModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <div class="modal-content">
-      <div class="modal-header border-0 pb-0">
-        <h5 class="modal-title text-danger" id="deallocateModalLabel">
-          <i class="bi bi-exclamation-triangle me-2"></i>Confirm Deallocation
+      <div class="modal-header" style="border-bottom:none;padding-bottom:10px;">
+        <h5 class="modal-title" style="color:var(--danger);">
+          <i class="bi bi-exclamation-triangle-fill"></i> Confirm Release
         </h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <div class="modal-body pt-2">
-        <p class="mb-2 small">You are about to release:</p>
-        <div class="selected-subnet-badge text-danger mb-3" style="background:#fff5f5;border:1px solid #f5c6cb;">
-          <i class="bi bi-hdd-network me-2"></i>
+      <div class="modal-body" style="padding-top:6px;">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">You are about to release:</p>
+        <div class="subnet-display-box danger-box">
           <strong id="deallocateSubnetDisplay"></strong>
         </div>
-        <p class="text-muted small mb-0">
-          This marks the subnet as unused and returns it to the available pool.
-        </p>
+        <div class="modal-danger-badge">
+          <i class="bi bi-info-circle-fill"></i>
+          <span>This marks the subnet as unused and returns it to the available pool.</span>
+        </div>
       </div>
-      <div class="modal-footer border-0 pt-0">
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-danger btn-sm" id="confirmDeallocateBtn">
-          <i class="bi bi-trash me-1"></i>Deallocate
+      <div class="modal-footer" style="gap:10px;border-top:none;">
+        <button type="button" class="btn btn-glass btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm" id="confirmDeallocateBtn"
+                style="background:var(--danger);border:none;color:#fff;border-radius:8px;font-weight:500;">
+          <i class="bi bi-trash me-1"></i>Release Subnet
         </button>
       </div>
     </div>
@@ -302,7 +263,19 @@
 <script>
 const POOL = "{{ pool_key }}";
 
-// ── Utilities ─────────────────────────────────────────────────────────
+// ── Tab switching ──────────────────────────────────────────
+document.querySelectorAll('.gls-tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.gls-tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'tabAllocated') loadAllocated();
+    if (btn.dataset.tab === 'tabSummary')   loadSummary();
+  });
+});
+
+// ── Utilities ──────────────────────────────────────────────
 function hostsFromPrefix(prefix) {
   if (prefix === 32) return 1;
   if (prefix === 31) return 2;
@@ -314,7 +287,7 @@ function fmtNum(n) {
   return n.toLocaleString();
 }
 
-// ── Load Stats ────────────────────────────────────────────────────────
+// ── Load Stats ─────────────────────────────────────────────
 async function loadStats() {
   try {
     const res  = await fetch('/pool_stats?pool=' + encodeURIComponent(POOL));
@@ -328,13 +301,13 @@ async function loadStats() {
       document.getElementById('statTopPrefix').textContent = '—';
     }
   } catch {
-    ['statFree', 'statAllocated', 'statTopPrefix'].forEach(id => {
+    ['statFree','statAllocated','statTopPrefix'].forEach(id => {
       document.getElementById(id).textContent = '—';
     });
   }
 }
 
-// ── Search Form ───────────────────────────────────────────────────────
+// ── Search Form ────────────────────────────────────────────
 document.getElementById('fetchForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const cidrNum = document.getElementById('cidrInput').value.trim();
@@ -352,9 +325,7 @@ document.getElementById('fetchForm').addEventListener('submit', async (e) => {
   try {
     const res    = await fetch('/get_subnet?pool=' + encodeURIComponent(POOL), { method: 'POST', body: fd });
     const result = await res.json();
-
     document.getElementById('searchLoading').classList.add('d-none');
-
     if (result.error) {
       showToast(result.error, 'danger');
       document.getElementById('searchPlaceholder').classList.remove('d-none');
@@ -365,9 +336,7 @@ document.getElementById('fetchForm').addEventListener('submit', async (e) => {
       document.getElementById('searchPlaceholder').classList.remove('d-none');
       return;
     }
-    if (result.truncated) {
-      showToast(result.message || 'Showing top 1024 results.', 'info');
-    }
+    if (result.truncated) showToast(result.message || 'Showing top 1024 results.', 'info');
     renderSearchResults(result.candidates, parseInt(cidrNum));
   } catch {
     document.getElementById('searchLoading').classList.add('d-none');
@@ -381,14 +350,14 @@ function renderSearchResults(candidates, prefix) {
   tbody.innerHTML = '';
   candidates.forEach((subnet, i) => {
     const hosts = hostsFromPrefix(prefix);
-    const tr    = document.createElement('tr');
+    const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td class="text-muted small">${i + 1}</td>
-      <td><code class="subnet-code">${subnet}</code></td>
-      <td><span class="text-muted small font-monospace">${subnet.split('/')[0]}</span></td>
-      <td><span class="badge bg-light text-dark border">${fmtNum(hosts)} hosts</span></td>
+      <td>${i + 1}</td>
+      <td><span class="cidr-chip">${subnet}</span></td>
+      <td style="font-family:var(--mono);font-size:12px;color:var(--text-dim);">${subnet.split('/')[0]}</td>
+      <td><span class="prefix-tag">${fmtNum(hosts)} hosts</span></td>
       <td>
-        <button class="btn btn-sm btn-primary allocate-btn" data-subnet="${subnet}">
+        <button class="btn btn-success-glass btn-sm allocate-btn" data-subnet="${subnet}">
           <i class="bi bi-plus-circle me-1"></i>Allocate
         </button>
       </td>`;
@@ -396,7 +365,7 @@ function renderSearchResults(candidates, prefix) {
   });
 
   const badge = document.getElementById('resultsBadge');
-  badge.textContent = candidates.length;
+  badge.innerHTML = `<i class="bi bi-grid-3x3-gap-fill"></i> ${candidates.length}`;
   badge.classList.remove('d-none');
   document.getElementById('resultsContainer').classList.remove('d-none');
 
@@ -405,14 +374,14 @@ function renderSearchResults(candidates, prefix) {
   });
 }
 
-// ── Allocation Modal ──────────────────────────────────────────────────
+// ── Allocation Modal ───────────────────────────────────────
 let currentAllocSubnet = null;
 const allocateModal    = new bootstrap.Modal(document.getElementById('allocateModal'));
 
 function openAllocateModal(subnet) {
   currentAllocSubnet = subnet;
   document.getElementById('modalSubnetDisplay').textContent = subnet;
-  ['modalPurpose', 'modalRequestedBy', 'modalAllocatedBy'].forEach(id => {
+  ['modalPurpose','modalRequestedBy','modalAllocatedBy'].forEach(id => {
     document.getElementById(id).value = '';
     document.getElementById(id).classList.remove('is-invalid');
   });
@@ -427,7 +396,6 @@ document.getElementById('confirmAllocateBtn').addEventListener('click', async ()
   const allocatedBy = document.getElementById('modalAllocatedBy').value.trim();
   const errorEl     = document.getElementById('modalError');
 
-  // Inline validation
   let valid = true;
   [['modalPurpose', purpose], ['modalRequestedBy', requestedBy], ['modalAllocatedBy', allocatedBy]]
     .forEach(([id, val]) => {
@@ -462,7 +430,6 @@ document.getElementById('confirmAllocateBtn').addEventListener('click', async ()
     } else {
       allocateModal.hide();
       showToast(result.message, 'success');
-      // Remove row from search results
       document.querySelectorAll('.allocate-btn').forEach(b => {
         if (b.dataset.subnet === currentAllocSubnet) b.closest('tr').remove();
       });
@@ -478,115 +445,93 @@ document.getElementById('confirmAllocateBtn').addEventListener('click', async ()
   }
 });
 
-// ── Available Blocks Tab ──────────────────────────────────────────────
+// ── Available Blocks Tab ───────────────────────────────────
 document.getElementById('loadAvailableBtn').addEventListener('click', loadAvailable);
 
 async function loadAvailable() {
   const container = document.getElementById('allAvailableContainer');
-  container.innerHTML = `
-    <div class="text-center py-5">
-      <div class="spinner-border text-primary" role="status"></div>
-      <p class="mt-3 text-muted small">Loading available blocks…</p>
-    </div>`;
-
+  container.innerHTML = `<div class="empty-state"><span class="spinner-border"></span><p style="margin-top:14px;">Loading available blocks…</p></div>`;
   try {
     const res    = await fetch('/all_available?pool=' + encodeURIComponent(POOL));
     const result = await res.json();
-
     if (!result.available || result.available.length === 0) {
-      container.innerHTML = `<div class="empty-state"><i class="bi bi-check-all"></i><p>No available blocks found.</p></div>`;
+      container.innerHTML = `<div class="empty-state"><i class="bi bi-check-all empty-icon"></i><p>No available blocks found.</p></div>`;
       return;
     }
-    let html = `
-      <div class="table-responsive">
-        <table class="table table-sm subnet-table mb-0">
-          <thead>
-            <tr>
-              <th>Block CIDR</th>
-              <th>Prefix</th>
-              <th>Total Addresses</th>
-            </tr>
-          </thead>
-          <tbody>`;
+    let rows = '';
     result.available.forEach(item => {
       const prefix = parseInt(item.Subnet.split('/')[1]);
       const count  = Math.pow(2, 32 - prefix);
-      html += `
-        <tr>
-          <td><code class="subnet-code">${item.Subnet}</code></td>
-          <td><span class="badge bg-secondary">/${prefix}</span></td>
-          <td>${count.toLocaleString()} addresses</td>
-        </tr>`;
+      rows += `<tr>
+        <td><span class="cidr-chip">${item.Subnet}</span></td>
+        <td><span class="prefix-tag">/${prefix}</span></td>
+        <td style="color:var(--text-dim);font-size:12px;">${count.toLocaleString()} addresses</td>
+      </tr>`;
     });
-    html += `</tbody></table></div>`;
-    container.innerHTML = html;
+    container.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="gls-table">
+          <thead><tr><th>Block CIDR</th><th>Prefix</th><th>Total Addresses</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
   } catch {
-    container.innerHTML = `<div class="alert alert-danger m-2">Failed to load available blocks.</div>`;
+    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load available blocks.</div>`;
   }
 }
 
-// ── Allocated Tab ─────────────────────────────────────────────────────
+// ── Allocated Tab ──────────────────────────────────────────
 let allocatedLoaded = false;
 
 async function loadAllocated() {
   if (allocatedLoaded) return;
   const container = document.getElementById('allocatedContainer');
-  container.innerHTML = `
-    <div class="text-center py-5">
-      <div class="spinner-border text-primary" role="status"></div>
-      <p class="mt-3 text-muted small">Loading allocated subnets…</p>
-    </div>`;
-
+  container.innerHTML = `<div class="empty-state"><span class="spinner-border"></span><p style="margin-top:14px;">Loading allocated subnets…</p></div>`;
   try {
     const res    = await fetch('/allocated?pool=' + encodeURIComponent(POOL));
     const result = await res.json();
-
     if (!result.allocated || result.allocated.length === 0) {
-      container.innerHTML = `<div class="empty-state"><i class="bi bi-inbox"></i><p>No allocated subnets found.</p></div>`;
+      container.innerHTML = `<div class="empty-state"><i class="bi bi-inbox empty-icon"></i><p>No allocated subnets found.</p></div>`;
       allocatedLoaded = true;
       return;
     }
-    let html = `
-      <div class="table-responsive">
-        <table class="table subnet-table mb-0">
+    let rows = '';
+    result.allocated.forEach(item => {
+      rows += `<tr>
+        <td><span class="cidr-chip">${item.Subnet}</span></td>
+        <td style="color:var(--text);">${item.Purpose || '<span style="color:var(--text-muted)">—</span>'}</td>
+        <td>${item.RequestedBy || '<span style="color:var(--text-muted)">—</span>'}</td>
+        <td>${item.AllocatedBy || '<span style="color:var(--text-muted)">—</span>'}</td>
+        <td style="font-size:12px;white-space:nowrap;">${item.AllocationTime || '—'}</td>
+        <td>
+          <button class="btn btn-danger-glass btn-sm deallocate-btn" data-subnet="${item.Subnet}">
+            <i class="bi bi-trash me-1"></i>Free
+          </button>
+        </td>
+      </tr>`;
+    });
+    container.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="gls-table">
           <thead>
             <tr>
-              <th>Subnet</th>
-              <th>Purpose</th>
-              <th>Requested By</th>
-              <th>Allocated By</th>
-              <th>Allocation Time</th>
-              <th style="width:90px">Action</th>
+              <th>Subnet</th><th>Purpose</th><th>Requested By</th>
+              <th>Allocated By</th><th>Allocation Time</th><th style="width:90px;">Action</th>
             </tr>
           </thead>
-          <tbody>`;
-    result.allocated.forEach(item => {
-      html += `
-        <tr>
-          <td><code class="subnet-code">${item.Subnet}</code></td>
-          <td>${item.Purpose     || '<span class="text-muted">—</span>'}</td>
-          <td>${item.RequestedBy || '<span class="text-muted">—</span>'}</td>
-          <td>${item.AllocatedBy || '<span class="text-muted">—</span>'}</td>
-          <td><span class="text-muted small">${item.AllocationTime || '—'}</span></td>
-          <td>
-            <button class="btn btn-sm btn-outline-danger deallocate-btn" data-subnet="${item.Subnet}">
-              <i class="bi bi-trash me-1"></i>Free
-            </button>
-          </td>
-        </tr>`;
-    });
-    html += `</tbody></table></div>`;
-    container.innerHTML = html;
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
     container.querySelectorAll('.deallocate-btn').forEach(btn => {
       btn.addEventListener('click', () => openDeallocateModal(btn.dataset.subnet));
     });
     allocatedLoaded = true;
   } catch {
-    container.innerHTML = `<div class="alert alert-danger m-2">Failed to load allocated subnets.</div>`;
+    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load allocated subnets.</div>`;
   }
 }
 
-// ── Deallocation Modal ────────────────────────────────────────────────
+// ── Deallocation Modal ─────────────────────────────────────
 let currentDeallocSubnet = null;
 const deallocateModal    = new bootstrap.Modal(document.getElementById('deallocateModal'));
 
@@ -600,11 +545,9 @@ document.getElementById('confirmDeallocateBtn').addEventListener('click', async 
   const btn = document.getElementById('confirmDeallocateBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing…';
-
   const fd = new FormData();
   fd.append('pool', POOL);
   fd.append('selected', currentDeallocSubnet);
-
   try {
     const res    = await fetch('/deallocate?pool=' + encodeURIComponent(POOL), { method: 'POST', body: fd });
     const result = await res.json();
@@ -622,22 +565,18 @@ document.getElementById('confirmDeallocateBtn').addEventListener('click', async 
     showToast('Network error. Please try again.', 'danger');
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-trash me-1"></i>Deallocate';
+    btn.innerHTML = '<i class="bi bi-trash me-1"></i>Release Subnet';
   }
 });
 
-// ── Summary Tab ───────────────────────────────────────────────────────
+// ── Summary Tab ────────────────────────────────────────────
 let summaryLoaded = false;
+let summaryChart  = null;
 
 async function loadSummary() {
   if (summaryLoaded) return;
   const container = document.getElementById('summaryContainer');
-  container.innerHTML = `
-    <div class="text-center py-5">
-      <div class="spinner-border text-primary" role="status"></div>
-      <p class="mt-3 text-muted small">Loading summary…</p>
-    </div>`;
-
+  container.innerHTML = `<div class="empty-state"><span class="spinner-border"></span><p style="margin-top:14px;">Loading summary…</p></div>`;
   try {
     const res    = await fetch('/summary_unused?pool=' + encodeURIComponent(POOL));
     const result = await res.json();
@@ -648,39 +587,80 @@ async function loadSummary() {
     sorted.forEach(([prefix, count]) => {
       const hosts = Math.pow(2, 32 - parseInt(prefix));
       prefixCards += `
-        <div class="col-md-3 col-6">
-          <div class="prefix-stat-card">
-            <span class="prefix-badge">/${prefix}</span>
-            <span class="prefix-count mt-1">${count} block${count > 1 ? 's' : ''}</span>
-            <span class="text-muted small">${fmtNum(hosts)} addrs each</span>
-          </div>
+        <div class="prefix-card">
+          <div class="prefix-chip">/${prefix}</div>
+          <div class="prefix-cnt">${count} block${count > 1 ? 's' : ''}</div>
+          <div class="prefix-addrs">${fmtNum(hosts)} addrs each</div>
         </div>`;
     });
 
     container.innerHTML = `
-      <div class="row g-3 mb-4">
-        <div class="col-md-4 col-6">
-          <div class="summary-metric">
-            <div class="summary-metric-value">${result.total_unused}</div>
-            <div class="summary-metric-label">Total Free Blocks</div>
-          </div>
-        </div>
+      <div class="summary-total">
+        <div class="summary-total-value">${result.total_unused}</div>
+        <div class="summary-total-label">Total Free Blocks</div>
       </div>
-      <h6 class="fw-semibold mb-3 text-muted text-uppercase" style="font-size:11px;letter-spacing:.5px;">
+      <div class="chart-wrap"><canvas id="summaryChart"></canvas></div>
+      <h6 style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:12px;">
         Free Blocks by Prefix Size
       </h6>
-      <div class="row g-2">${prefixCards}</div>`;
+      <div class="prefix-grid">${prefixCards}</div>`;
+
+    // Chart.js bar chart
+    const labels  = sorted.map(([p]) => '/' + p);
+    const counts  = sorted.map(([, c]) => c);
+    const ctx     = document.getElementById('summaryChart').getContext('2d');
+    if (summaryChart) summaryChart.destroy();
+    summaryChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Free Blocks',
+          data: counts,
+          backgroundColor: 'rgba(59,130,246,0.25)',
+          borderColor: 'rgba(59,130,246,0.7)',
+          borderWidth: 1.5,
+          borderRadius: 6,
+          hoverBackgroundColor: 'rgba(59,130,246,0.4)',
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(14,21,37,0.9)',
+            borderColor: 'rgba(59,130,246,0.4)',
+            borderWidth: 1,
+            titleColor: '#e2e8f0',
+            bodyColor: '#94a3b8',
+            padding: 10,
+            callbacks: {
+              label: ctx => ` ${ctx.parsed.y} free block${ctx.parsed.y !== 1 ? 's' : ''}`
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#94a3b8', font: { family: 'JetBrains Mono, monospace', size: 12 } },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            border: { color: 'rgba(255,255,255,0.08)' }
+          },
+          y: {
+            ticks: { color: '#64748b', font: { size: 11 }, precision: 0 },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            border: { color: 'rgba(255,255,255,0.08)' }
+          }
+        }
+      }
+    });
     summaryLoaded = true;
   } catch {
-    container.innerHTML = `<div class="alert alert-danger m-2">Failed to load summary.</div>`;
+    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;">Failed to load summary.</div>`;
   }
 }
 
-// ── Tab Event Listeners ───────────────────────────────────────────────
-document.getElementById('tab-allocated-btn').addEventListener('shown.bs.tab', loadAllocated);
-document.getElementById('tab-summary-btn').addEventListener('shown.bs.tab', loadSummary);
-
-// ── Init ──────────────────────────────────────────────────────────────
+// ── Init ───────────────────────────────────────────────────
 loadStats();
 </script>
 {% endblock %}
