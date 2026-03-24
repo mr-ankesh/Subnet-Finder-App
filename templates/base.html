@@ -14,7 +14,10 @@
     <div class="container-fluid px-4">
       <a class="navbar-brand d-flex align-items-center gap-2" href="/">
         <div class="brand-icon">
-          <i class="bi bi-diagram-3-fill"></i>
+          <img src="{{ url_for('static', filename='logo.png') }}"
+               alt="Logo"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+          <i class="bi bi-diagram-3-fill" style="display:none;"></i>
         </div>
         <div>
           <span class="brand-title">Azure Subnet Manager</span>

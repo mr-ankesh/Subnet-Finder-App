@@ -1,0 +1,18 @@
+services:
+  subnet-manager:
+    build: .
+    container_name: subnet-manager
+    ports:
+      - "8080:8080"          # Change left side to use a different host port, e.g. "80:8080"
+    volumes:
+      - ./data:/app/data     # Persists subnets.xlsx across container restarts
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
