@@ -1,0 +1,686 @@
+{% extends "base.html" %}
+{% block title %}Subnet Allocator — {{ base_cidr }}{% endblock %}
+
+{% block content %}
+
+<!-- Breadcrumb -->
+<div class="breadcrumb-bar">
+  <div class="container-fluid px-4">
+    <nav aria-label="breadcrumb">
+      <ol class="breadcrumb mb-0">
+        <li class="breadcrumb-item">
+          <a href="/"><i class="bi bi-house me-1"></i>Pools</a>
+        </li>
+        <li class="breadcrumb-item active">{{ base_cidr }}</li>
+      </ol>
+    </nav>
+  </div>
+</div>
+
+<!-- Stats Bar -->
+<div class="stats-bar">
+  <div class="container-fluid px-4">
+    <div class="row g-3">
+      <div class="col-6 col-md-3">
+        <div class="stat-card">
+          <div class="stat-icon bg-primary-soft">
+            <i class="bi bi-hdd-network text-primary"></i>
+          </div>
+          <div>
+            <div class="stat-label">Pool</div>
+            <div class="stat-value" style="font-size:14px;font-family:monospace;">{{ base_cidr }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="stat-card">
+          <div class="stat-icon bg-success-soft">
+            <i class="bi bi-check-circle text-success"></i>
+          </div>
+          <div>
+            <div class="stat-label">Free Blocks</div>
+            <div class="stat-value" id="statFree">
+              <span class="spinner-border spinner-border-sm text-muted"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="stat-card">
+          <div class="stat-icon bg-warning-soft">
+            <i class="bi bi-diagram-2 text-warning"></i>
+          </div>
+          <div>
+            <div class="stat-label">Allocated</div>
+            <div class="stat-value" id="statAllocated">
+              <span class="spinner-border spinner-border-sm text-muted"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="stat-card">
+          <div class="stat-icon bg-info-soft">
+            <i class="bi bi-bar-chart text-info"></i>
+          </div>
+          <div>
+            <div class="stat-label">Largest Free Block</div>
+            <div class="stat-value" id="statTopPrefix">
+              <span class="spinner-border spinner-border-sm text-muted"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Main Content -->
+<div class="container-fluid px-4 py-4">
+  <div class="row g-4">
+
+    <!-- Search Panel -->
+    <div class="col-lg-4">
+      <div class="content-card">
+        <div class="content-card-header">
+          <i class="bi bi-search me-2"></i>Find Available Subnet
+        </div>
+        <div class="content-card-body">
+          <p class="text-muted small mb-3">
+            Enter a CIDR prefix to find free subnets in the
+            <strong class="font-monospace">{{ base_cidr }}</strong> pool.
+          </p>
+          <form id="fetchForm" novalidate>
+            <div class="mb-3">
+              <label class="form-label fw-semibold">Prefix Length</label>
+              <div class="input-group">
+                <span class="input-group-text fw-bold">/</span>
+                <input type="number" id="cidrInput" name="cidr_num"
+                       class="form-control" placeholder="24" min="1" max="32" required>
+              </div>
+              <div class="form-text">e.g. /24 (256 IPs) · /28 (16 IPs) · /29 (8 IPs)</div>
+            </div>
+            <button type="submit" class="btn btn-primary w-100" id="searchBtn">
+              <i class="bi bi-search me-2"></i>Find Available Subnets
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results Panel -->
+    <div class="col-lg-8">
+      <div class="content-card">
+        <div class="content-card-header d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-list-check me-2"></i>Search Results</span>
+          <span class="badge bg-primary rounded-pill d-none" id="resultsBadge">0</span>
+        </div>
+        <div class="content-card-body">
+          <div id="searchPlaceholder" class="empty-state">
+            <i class="bi bi-search"></i>
+            <p>Enter a prefix length and click "Find Available Subnets"</p>
+          </div>
+          <div id="searchLoading" class="text-center py-5 d-none">
+            <div class="spinner-border text-primary" role="status"></div>
+            <p class="mt-3 text-muted small">Searching for available subnets…</p>
+          </div>
+          <div id="resultsContainer" class="d-none">
+            <div class="table-responsive">
+              <table class="table table-hover subnet-table mb-0">
+                <thead>
+                  <tr>
+                    <th style="width:40px">#</th>
+                    <th>Subnet CIDR</th>
+                    <th>Network Address</th>
+                    <th>Usable Hosts</th>
+                    <th style="width:110px">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="availableList"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Tabs -->
+  <div class="row mt-4">
+    <div class="col-12">
+      <div class="content-card">
+        <div class="content-card-body p-0">
+          <ul class="nav nav-tabs tab-nav" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="tab-available-btn"
+                      data-bs-toggle="tab" data-bs-target="#tabAvailable" role="tab">
+                <i class="bi bi-grid me-2"></i>All Available Blocks
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="tab-allocated-btn"
+                      data-bs-toggle="tab" data-bs-target="#tabAllocated" role="tab">
+                <i class="bi bi-check2-circle me-2"></i>Allocated Subnets
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="tab-summary-btn"
+                      data-bs-toggle="tab" data-bs-target="#tabSummary" role="tab">
+                <i class="bi bi-bar-chart me-2"></i>Summary
+              </button>
+            </li>
+          </ul>
+
+          <div class="tab-content p-3">
+            <!-- Available Tab -->
+            <div class="tab-pane fade show active" id="tabAvailable" role="tabpanel">
+              <div class="d-flex justify-content-between align-items-center mb-3">
+                <p class="mb-0 text-muted small">
+                  All free address blocks in <strong class="font-monospace">{{ base_cidr }}</strong>
+                </p>
+                <button class="btn btn-sm btn-outline-primary" id="loadAvailableBtn">
+                  <i class="bi bi-arrow-clockwise me-1"></i>Load / Refresh
+                </button>
+              </div>
+              <div id="allAvailableContainer">
+                <div class="empty-state">
+                  <i class="bi bi-grid"></i>
+                  <p>Click "Load / Refresh" to view all available blocks</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Allocated Tab -->
+            <div class="tab-pane fade" id="tabAllocated" role="tabpanel">
+              <div id="allocatedContainer">
+                <div class="empty-state">
+                  <i class="bi bi-check2-circle"></i>
+                  <p>Loading allocated subnets…</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Summary Tab -->
+            <div class="tab-pane fade" id="tabSummary" role="tabpanel">
+              <div id="summaryContainer">
+                <div class="empty-state">
+                  <i class="bi bi-bar-chart"></i>
+                  <p>Loading summary…</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- Allocation Modal -->
+<div class="modal fade" id="allocateModal" tabindex="-1" aria-labelledby="allocateModalLabel">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="allocateModalLabel">
+          <i class="bi bi-plus-circle me-2 text-primary"></i>Allocate Subnet
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="selected-subnet-badge mb-4">
+          <i class="bi bi-hdd-network me-2 text-primary"></i>
+          <span id="modalSubnetDisplay">—</span>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">
+            Purpose <span class="text-danger">*</span>
+          </label>
+          <input type="text" id="modalPurpose" class="form-control"
+                 placeholder="e.g., Production Web Servers">
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">
+            Requested By <span class="text-danger">*</span>
+          </label>
+          <input type="text" id="modalRequestedBy" class="form-control"
+                 placeholder="Team or person requesting">
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">
+            Allocated By <span class="text-danger">*</span>
+          </label>
+          <input type="text" id="modalAllocatedBy" class="form-control"
+                 placeholder="Your name">
+        </div>
+        <div id="modalError" class="alert alert-danger d-none mb-0"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="confirmAllocateBtn">
+          <i class="bi bi-check-lg me-1"></i>Confirm Allocation
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- Deallocation Confirm Modal -->
+<div class="modal fade" id="deallocateModal" tabindex="-1" aria-labelledby="deallocateModalLabel">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title text-danger" id="deallocateModalLabel">
+          <i class="bi bi-exclamation-triangle me-2"></i>Confirm Deallocation
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pt-2">
+        <p class="mb-2 small">You are about to release:</p>
+        <div class="selected-subnet-badge text-danger mb-3" style="background:#fff5f5;border:1px solid #f5c6cb;">
+          <i class="bi bi-hdd-network me-2"></i>
+          <strong id="deallocateSubnetDisplay"></strong>
+        </div>
+        <p class="text-muted small mb-0">
+          This marks the subnet as unused and returns it to the available pool.
+        </p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger btn-sm" id="confirmDeallocateBtn">
+          <i class="bi bi-trash me-1"></i>Deallocate
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const POOL = "{{ pool_key }}";
+
+// ── Utilities ─────────────────────────────────────────────────────────
+function hostsFromPrefix(prefix) {
+  if (prefix === 32) return 1;
+  if (prefix === 31) return 2;
+  return Math.pow(2, 32 - prefix) - 2;
+}
+function fmtNum(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'K';
+  return n.toLocaleString();
+}
+
+// ── Load Stats ────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const res  = await fetch('/pool_stats?pool=' + encodeURIComponent(POOL));
+    const data = await res.json();
+    document.getElementById('statFree').textContent      = data.free_blocks;
+    document.getElementById('statAllocated').textContent = data.allocated;
+    if (data.by_prefix && Object.keys(data.by_prefix).length) {
+      const smallest = Math.min(...Object.keys(data.by_prefix).map(Number));
+      document.getElementById('statTopPrefix').textContent = '/' + smallest;
+    } else {
+      document.getElementById('statTopPrefix').textContent = '—';
+    }
+  } catch {
+    ['statFree', 'statAllocated', 'statTopPrefix'].forEach(id => {
+      document.getElementById(id).textContent = '—';
+    });
+  }
+}
+
+// ── Search Form ───────────────────────────────────────────────────────
+document.getElementById('fetchForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const cidrNum = document.getElementById('cidrInput').value.trim();
+  if (!cidrNum) return;
+
+  document.getElementById('searchPlaceholder').classList.add('d-none');
+  document.getElementById('resultsContainer').classList.add('d-none');
+  document.getElementById('searchLoading').classList.remove('d-none');
+  document.getElementById('resultsBadge').classList.add('d-none');
+
+  const fd = new FormData();
+  fd.append('cidr', '/' + cidrNum);
+  fd.append('pool', POOL);
+
+  try {
+    const res    = await fetch('/get_subnet?pool=' + encodeURIComponent(POOL), { method: 'POST', body: fd });
+    const result = await res.json();
+
+    document.getElementById('searchLoading').classList.add('d-none');
+
+    if (result.error) {
+      showToast(result.error, 'danger');
+      document.getElementById('searchPlaceholder').classList.remove('d-none');
+      return;
+    }
+    if (!result.candidates || result.candidates.length === 0) {
+      showToast(result.message || 'No available subnets found.', 'warning');
+      document.getElementById('searchPlaceholder').classList.remove('d-none');
+      return;
+    }
+    if (result.truncated) {
+      showToast(result.message || 'Showing top 1024 results.', 'info');
+    }
+    renderSearchResults(result.candidates, parseInt(cidrNum));
+  } catch {
+    document.getElementById('searchLoading').classList.add('d-none');
+    document.getElementById('searchPlaceholder').classList.remove('d-none');
+    showToast('Network error. Please try again.', 'danger');
+  }
+});
+
+function renderSearchResults(candidates, prefix) {
+  const tbody = document.getElementById('availableList');
+  tbody.innerHTML = '';
+  candidates.forEach((subnet, i) => {
+    const hosts = hostsFromPrefix(prefix);
+    const tr    = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="text-muted small">${i + 1}</td>
+      <td><code class="subnet-code">${subnet}</code></td>
+      <td><span class="text-muted small font-monospace">${subnet.split('/')[0]}</span></td>
+      <td><span class="badge bg-light text-dark border">${fmtNum(hosts)} hosts</span></td>
+      <td>
+        <button class="btn btn-sm btn-primary allocate-btn" data-subnet="${subnet}">
+          <i class="bi bi-plus-circle me-1"></i>Allocate
+        </button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+
+  const badge = document.getElementById('resultsBadge');
+  badge.textContent = candidates.length;
+  badge.classList.remove('d-none');
+  document.getElementById('resultsContainer').classList.remove('d-none');
+
+  tbody.querySelectorAll('.allocate-btn').forEach(btn => {
+    btn.addEventListener('click', () => openAllocateModal(btn.dataset.subnet));
+  });
+}
+
+// ── Allocation Modal ──────────────────────────────────────────────────
+let currentAllocSubnet = null;
+const allocateModal    = new bootstrap.Modal(document.getElementById('allocateModal'));
+
+function openAllocateModal(subnet) {
+  currentAllocSubnet = subnet;
+  document.getElementById('modalSubnetDisplay').textContent = subnet;
+  ['modalPurpose', 'modalRequestedBy', 'modalAllocatedBy'].forEach(id => {
+    document.getElementById(id).value = '';
+    document.getElementById(id).classList.remove('is-invalid');
+  });
+  document.getElementById('modalError').classList.add('d-none');
+  allocateModal.show();
+  document.getElementById('modalPurpose').focus();
+}
+
+document.getElementById('confirmAllocateBtn').addEventListener('click', async () => {
+  const purpose     = document.getElementById('modalPurpose').value.trim();
+  const requestedBy = document.getElementById('modalRequestedBy').value.trim();
+  const allocatedBy = document.getElementById('modalAllocatedBy').value.trim();
+  const errorEl     = document.getElementById('modalError');
+
+  // Inline validation
+  let valid = true;
+  [['modalPurpose', purpose], ['modalRequestedBy', requestedBy], ['modalAllocatedBy', allocatedBy]]
+    .forEach(([id, val]) => {
+      const el = document.getElementById(id);
+      if (!val) { el.classList.add('is-invalid'); valid = false; }
+      else       { el.classList.remove('is-invalid'); }
+    });
+  if (!valid) {
+    errorEl.textContent = 'All fields are required.';
+    errorEl.classList.remove('d-none');
+    return;
+  }
+  errorEl.classList.add('d-none');
+
+  const btn = document.getElementById('confirmAllocateBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Allocating…';
+
+  const fd = new FormData();
+  fd.append('pool', POOL);
+  fd.append('selected', currentAllocSubnet);
+  fd.append('purpose', purpose);
+  fd.append('requested_by', requestedBy);
+  fd.append('allocated_by', allocatedBy);
+
+  try {
+    const res    = await fetch('/allocate?pool=' + encodeURIComponent(POOL), { method: 'POST', body: fd });
+    const result = await res.json();
+    if (result.error) {
+      errorEl.textContent = result.error;
+      errorEl.classList.remove('d-none');
+    } else {
+      allocateModal.hide();
+      showToast(result.message, 'success');
+      // Remove row from search results
+      document.querySelectorAll('.allocate-btn').forEach(b => {
+        if (b.dataset.subnet === currentAllocSubnet) b.closest('tr').remove();
+      });
+      allocatedLoaded = false;
+      loadStats();
+    }
+  } catch {
+    errorEl.textContent = 'Network error. Please try again.';
+    errorEl.classList.remove('d-none');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Confirm Allocation';
+  }
+});
+
+// ── Available Blocks Tab ──────────────────────────────────────────────
+document.getElementById('loadAvailableBtn').addEventListener('click', loadAvailable);
+
+async function loadAvailable() {
+  const container = document.getElementById('allAvailableContainer');
+  container.innerHTML = `
+    <div class="text-center py-5">
+      <div class="spinner-border text-primary" role="status"></div>
+      <p class="mt-3 text-muted small">Loading available blocks…</p>
+    </div>`;
+
+  try {
+    const res    = await fetch('/all_available?pool=' + encodeURIComponent(POOL));
+    const result = await res.json();
+
+    if (!result.available || result.available.length === 0) {
+      container.innerHTML = `<div class="empty-state"><i class="bi bi-check-all"></i><p>No available blocks found.</p></div>`;
+      return;
+    }
+    let html = `
+      <div class="table-responsive">
+        <table class="table table-sm subnet-table mb-0">
+          <thead>
+            <tr>
+              <th>Block CIDR</th>
+              <th>Prefix</th>
+              <th>Total Addresses</th>
+            </tr>
+          </thead>
+          <tbody>`;
+    result.available.forEach(item => {
+      const prefix = parseInt(item.Subnet.split('/')[1]);
+      const count  = Math.pow(2, 32 - prefix);
+      html += `
+        <tr>
+          <td><code class="subnet-code">${item.Subnet}</code></td>
+          <td><span class="badge bg-secondary">/${prefix}</span></td>
+          <td>${count.toLocaleString()} addresses</td>
+        </tr>`;
+    });
+    html += `</tbody></table></div>`;
+    container.innerHTML = html;
+  } catch {
+    container.innerHTML = `<div class="alert alert-danger m-2">Failed to load available blocks.</div>`;
+  }
+}
+
+// ── Allocated Tab ─────────────────────────────────────────────────────
+let allocatedLoaded = false;
+
+async function loadAllocated() {
+  if (allocatedLoaded) return;
+  const container = document.getElementById('allocatedContainer');
+  container.innerHTML = `
+    <div class="text-center py-5">
+      <div class="spinner-border text-primary" role="status"></div>
+      <p class="mt-3 text-muted small">Loading allocated subnets…</p>
+    </div>`;
+
+  try {
+    const res    = await fetch('/allocated?pool=' + encodeURIComponent(POOL));
+    const result = await res.json();
+
+    if (!result.allocated || result.allocated.length === 0) {
+      container.innerHTML = `<div class="empty-state"><i class="bi bi-inbox"></i><p>No allocated subnets found.</p></div>`;
+      allocatedLoaded = true;
+      return;
+    }
+    let html = `
+      <div class="table-responsive">
+        <table class="table subnet-table mb-0">
+          <thead>
+            <tr>
+              <th>Subnet</th>
+              <th>Purpose</th>
+              <th>Requested By</th>
+              <th>Allocated By</th>
+              <th>Allocation Time</th>
+              <th style="width:90px">Action</th>
+            </tr>
+          </thead>
+          <tbody>`;
+    result.allocated.forEach(item => {
+      html += `
+        <tr>
+          <td><code class="subnet-code">${item.Subnet}</code></td>
+          <td>${item.Purpose     || '<span class="text-muted">—</span>'}</td>
+          <td>${item.RequestedBy || '<span class="text-muted">—</span>'}</td>
+          <td>${item.AllocatedBy || '<span class="text-muted">—</span>'}</td>
+          <td><span class="text-muted small">${item.AllocationTime || '—'}</span></td>
+          <td>
+            <button class="btn btn-sm btn-outline-danger deallocate-btn" data-subnet="${item.Subnet}">
+              <i class="bi bi-trash me-1"></i>Free
+            </button>
+          </td>
+        </tr>`;
+    });
+    html += `</tbody></table></div>`;
+    container.innerHTML = html;
+    container.querySelectorAll('.deallocate-btn').forEach(btn => {
+      btn.addEventListener('click', () => openDeallocateModal(btn.dataset.subnet));
+    });
+    allocatedLoaded = true;
+  } catch {
+    container.innerHTML = `<div class="alert alert-danger m-2">Failed to load allocated subnets.</div>`;
+  }
+}
+
+// ── Deallocation Modal ────────────────────────────────────────────────
+let currentDeallocSubnet = null;
+const deallocateModal    = new bootstrap.Modal(document.getElementById('deallocateModal'));
+
+function openDeallocateModal(subnet) {
+  currentDeallocSubnet = subnet;
+  document.getElementById('deallocateSubnetDisplay').textContent = subnet;
+  deallocateModal.show();
+}
+
+document.getElementById('confirmDeallocateBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('confirmDeallocateBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing…';
+
+  const fd = new FormData();
+  fd.append('pool', POOL);
+  fd.append('selected', currentDeallocSubnet);
+
+  try {
+    const res    = await fetch('/deallocate?pool=' + encodeURIComponent(POOL), { method: 'POST', body: fd });
+    const result = await res.json();
+    deallocateModal.hide();
+    if (result.error) {
+      showToast(result.error, 'danger');
+    } else {
+      showToast(result.message, 'success');
+      allocatedLoaded = false;
+      loadAllocated();
+      loadStats();
+    }
+  } catch {
+    deallocateModal.hide();
+    showToast('Network error. Please try again.', 'danger');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-trash me-1"></i>Deallocate';
+  }
+});
+
+// ── Summary Tab ───────────────────────────────────────────────────────
+let summaryLoaded = false;
+
+async function loadSummary() {
+  if (summaryLoaded) return;
+  const container = document.getElementById('summaryContainer');
+  container.innerHTML = `
+    <div class="text-center py-5">
+      <div class="spinner-border text-primary" role="status"></div>
+      <p class="mt-3 text-muted small">Loading summary…</p>
+    </div>`;
+
+  try {
+    const res    = await fetch('/summary_unused?pool=' + encodeURIComponent(POOL));
+    const result = await res.json();
+    const sorted = Object.entries(result.by_prefix || {})
+      .sort((a, b) => parseInt(a[0]) - parseInt(b[0]));
+
+    let prefixCards = '';
+    sorted.forEach(([prefix, count]) => {
+      const hosts = Math.pow(2, 32 - parseInt(prefix));
+      prefixCards += `
+        <div class="col-md-3 col-6">
+          <div class="prefix-stat-card">
+            <span class="prefix-badge">/${prefix}</span>
+            <span class="prefix-count mt-1">${count} block${count > 1 ? 's' : ''}</span>
+            <span class="text-muted small">${fmtNum(hosts)} addrs each</span>
+          </div>
+        </div>`;
+    });
+
+    container.innerHTML = `
+      <div class="row g-3 mb-4">
+        <div class="col-md-4 col-6">
+          <div class="summary-metric">
+            <div class="summary-metric-value">${result.total_unused}</div>
+            <div class="summary-metric-label">Total Free Blocks</div>
+          </div>
+        </div>
+      </div>
+      <h6 class="fw-semibold mb-3 text-muted text-uppercase" style="font-size:11px;letter-spacing:.5px;">
+        Free Blocks by Prefix Size
+      </h6>
+      <div class="row g-2">${prefixCards}</div>`;
+    summaryLoaded = true;
+  } catch {
+    container.innerHTML = `<div class="alert alert-danger m-2">Failed to load summary.</div>`;
+  }
+}
+
+// ── Tab Event Listeners ───────────────────────────────────────────────
+document.getElementById('tab-allocated-btn').addEventListener('shown.bs.tab', loadAllocated);
+document.getElementById('tab-summary-btn').addEventListener('shown.bs.tab', loadSummary);
+
+// ── Init ──────────────────────────────────────────────────────────────
+loadStats();
+</script>
+{% endblock %}

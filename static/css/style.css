@@ -1,0 +1,398 @@
+/* ============================================================
+   Azure Subnet Manager — Custom Styles
+   ============================================================ */
+
+:root {
+  --azure:        #0078d4;
+  --azure-dark:   #005a9e;
+  --azure-light:  #deecf9;
+  --bg:           #f3f2f1;
+  --surface:      #ffffff;
+  --border:       #e1dfdd;
+  --text:         #323130;
+  --text-muted:   #8a8886;
+  --text-sub:     #605e5c;
+  --success:      #107c10;
+  --warning:      #d18b09;
+  --danger:       #a4262c;
+  --shadow-sm:    0 1px 4px rgba(0,0,0,.07);
+  --shadow:       0 2px 10px rgba(0,0,0,.09);
+  --shadow-md:    0 4px 20px rgba(0,0,0,.13);
+  --radius:       8px;
+  --radius-lg:    12px;
+}
+
+/* ── Base ───────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Navbar ─────────────────────────────────────────────── */
+#mainNav {
+  background: linear-gradient(135deg, #0078d4 0%, #004e96 100%);
+  padding: 10px 0;
+  box-shadow: 0 2px 12px rgba(0, 80, 160, 0.35);
+  position: sticky;
+  top: 0;
+  z-index: 1030;
+}
+
+.brand-icon {
+  width: 38px;
+  height: 38px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  color: #fff;
+  flex-shrink: 0;
+  transition: background .2s;
+}
+.navbar-brand:hover .brand-icon { background: rgba(255,255,255,.28); }
+
+.brand-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  line-height: 1.2;
+}
+.brand-sub {
+  font-size: 10px;
+  color: rgba(255,255,255,.6);
+  letter-spacing: .6px;
+  text-transform: uppercase;
+}
+
+.navbar-clock {
+  font-size: 12px;
+  color: rgba(255,255,255,.65);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Page wrapper ───────────────────────────────────────── */
+.page-wrapper { min-height: calc(100vh - 60px); }
+
+/* ── Breadcrumb bar ─────────────────────────────────────── */
+.breadcrumb-bar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 0;
+}
+.breadcrumb {
+  font-size: 13px;
+  margin: 0;
+  --bs-breadcrumb-divider-color: #bbb;
+}
+.breadcrumb-item a {
+  color: var(--azure);
+  text-decoration: none;
+}
+.breadcrumb-item a:hover { text-decoration: underline; }
+
+/* ── Stats bar ──────────────────────────────────────────── */
+.stats-bar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 0;
+}
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.stat-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.bg-primary-soft { background: #deedf9; }
+.bg-success-soft { background: #dff6dd; }
+.bg-warning-soft { background: #fff4ce; }
+.bg-info-soft    { background: #e4f1f8; }
+
+.stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  line-height: 1;
+}
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+/* ── Content cards ──────────────────────────────────────── */
+.content-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.content-card-header {
+  padding: 13px 20px;
+  background: #faf9f8;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+.content-card-body { padding: 20px; }
+
+/* ── Tabs ───────────────────────────────────────────────── */
+.tab-nav {
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: #faf9f8;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.tab-nav .nav-link {
+  color: var(--text-sub);
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color .15s;
+}
+.tab-nav .nav-link:hover {
+  color: var(--azure);
+  background: transparent;
+}
+.tab-nav .nav-link.active {
+  color: var(--azure);
+  background: transparent;
+  border-bottom-color: var(--azure);
+  font-weight: 600;
+}
+
+/* ── Tables ─────────────────────────────────────────────── */
+.subnet-table { font-size: 13px; margin-bottom: 0; }
+.subnet-table thead th {
+  background: #faf9f8;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  border-bottom: 2px solid var(--border);
+  padding: 9px 12px;
+}
+.subnet-table tbody tr:hover { background: #f5f8ff; }
+.subnet-table td {
+  padding: 9px 12px;
+  vertical-align: middle;
+  border-color: var(--border);
+}
+
+/* Monospace chip for CIDR values */
+.subnet-code {
+  background: var(--azure-light);
+  color: var(--azure-dark);
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  font-family: "Cascadia Code", "Consolas", "Courier New", monospace;
+}
+
+/* ── Empty state ────────────────────────────────────────── */
+.empty-state {
+  text-align: center;
+  padding: 44px 20px;
+  color: var(--text-muted);
+}
+.empty-state i {
+  font-size: 42px;
+  display: block;
+  margin-bottom: 12px;
+  opacity: .35;
+}
+.empty-state p { margin: 0; font-size: 13px; }
+
+/* ── Buttons ─────────────────────────────────────────────── */
+.btn { font-size: 13px; font-weight: 500; }
+.btn-primary {
+  background: var(--azure);
+  border-color: var(--azure);
+}
+.btn-primary:hover, .btn-primary:focus {
+  background: var(--azure-dark);
+  border-color: var(--azure-dark);
+}
+.btn-outline-primary { color: var(--azure); border-color: var(--azure); }
+.btn-outline-primary:hover {
+  background: var(--azure);
+  border-color: var(--azure);
+}
+
+/* ── Form controls ──────────────────────────────────────── */
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--azure);
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, .15);
+}
+.form-label { font-size: 13px; margin-bottom: 5px; }
+.form-text  { font-size: 11px; }
+
+/* ── Modals ──────────────────────────────────────────────── */
+.modal-header { border-bottom: 1px solid var(--border); }
+.modal-footer { border-top:    1px solid var(--border); }
+
+.selected-subnet-badge {
+  background: var(--azure-light);
+  color: var(--azure-dark);
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  display: block;
+}
+
+/* ── Index / Landing page ───────────────────────────────── */
+.hero-icon {
+  width: 76px;
+  height: 76px;
+  background: linear-gradient(135deg, var(--azure-light) 0%, #bdd6f0 100%);
+  border-radius: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  color: var(--azure);
+}
+
+.pool-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  transition: all .2s;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+.pool-card:hover {
+  border-color: var(--azure);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+.pool-card-icon {
+  width: 50px;
+  height: 50px;
+  background: var(--azure-light);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: var(--azure);
+  flex-shrink: 0;
+}
+.pool-card-title {
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--text);
+  margin-bottom: 3px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+.pool-card-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.pool-card-action {
+  font-size: 12px;
+  color: var(--azure);
+  font-weight: 600;
+}
+
+.info-banner {
+  background: var(--azure-light);
+  color: var(--azure-dark);
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  border-left: 3px solid var(--azure);
+}
+
+/* ── Summary cards ──────────────────────────────────────── */
+.summary-metric {
+  background: #f5f8ff;
+  border: 1px solid #dce7f9;
+  border-radius: var(--radius);
+  padding: 20px;
+  text-align: center;
+}
+.summary-metric-value {
+  font-size: 38px;
+  font-weight: 700;
+  color: var(--azure);
+  line-height: 1;
+}
+.summary-metric-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 5px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+}
+
+.prefix-stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: box-shadow .15s;
+}
+.prefix-stat-card:hover { box-shadow: var(--shadow); }
+
+.prefix-badge {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--azure-dark);
+  background: var(--azure-light);
+  padding: 1px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  width: fit-content;
+}
+.prefix-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ── Responsive tweaks ──────────────────────────────────── */
+@media (max-width: 768px) {
+  .stat-value         { font-size: 16px; }
+  .content-card-body  { padding: 14px; }
+  .pool-card          { padding: 16px; }
+  .tab-nav .nav-link  { padding: 10px 12px; font-size: 12px; }
+}
