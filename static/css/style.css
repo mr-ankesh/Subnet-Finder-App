@@ -554,6 +554,45 @@ body {
   letter-spacing: 0.5px;
 }
 
+/* ── Allocator Page Header ───────────────────────────────── */
+.alloc-page-header {
+  position: relative;
+  background: var(--bg-section);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  min-height: 160px;
+  display: flex; align-items: center;
+}
+.alloc-page-bg {
+  position: absolute;
+  top: 0; right: 0;
+  height: 100%; width: 55%;
+  object-fit: cover; object-position: left center;
+  pointer-events: none;
+  mask-image: linear-gradient(to right, transparent 0%, rgba(0,0,0,0.5) 30%, rgba(0,0,0,0.95) 65%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, rgba(0,0,0,0.5) 30%, rgba(0,0,0,0.95) 65%);
+}
+.alloc-page-header-content {
+  position: relative; z-index: 2;
+  padding: 32px 40px;
+}
+.alloc-page-title {
+  font-family: var(--font-heading);
+  font-size: 1.8rem; font-weight: 300;
+  color: #fff; letter-spacing: -0.5px;
+  margin: 0 0 4px;
+}
+.alloc-pool-cidr {
+  font-family: var(--mono);
+  font-size: 1.7rem; font-weight: 600;
+  color: #60a5fa;
+}
+.alloc-page-sub {
+  font-size: 13px; color: var(--text-muted);
+  margin: 0; text-transform: uppercase;
+  letter-spacing: 0.7px; font-weight: 500;
+}
+
 /* ── Allocator Grid ──────────────────────────────────────── */
 .allocator-grid {
   display: grid; grid-template-columns: 340px 1fr;
@@ -645,6 +684,10 @@ body {
   .hero-bg { width: 100%; opacity: 0.25; }
   .pool-section { padding: 40px 20px; }
   .allocator-grid { padding: 16px 20px; }
-  .stats-bar, .breadcrumb-bar { padding: 14px 20px; }
+  .stats-bar { padding: 14px 20px; }
+  .alloc-page-header-content { padding: 24px 20px; }
+  .alloc-page-bg { width: 100%; opacity: 0.2; }
+  .alloc-page-title { font-size: 1.4rem; }
+  .alloc-pool-cidr { font-size: 1.3rem; }
   .nav-inner, .footer-inner { padding: 0 20px; }
 }

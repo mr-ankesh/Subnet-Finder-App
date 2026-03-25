@@ -1,16 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Subnet Allocator — {{ base_cidr }}{% endblock %}
+{% block title %}Presight R&D | {{ base_cidr }} — Subnet Allocator{% endblock %}
 
 {% block content %}
 
-<!-- Breadcrumb -->
-<div class="breadcrumb-bar">
-  <nav aria-label="breadcrumb">
-    <ol class="breadcrumb">
-      <li class="breadcrumb-item"><a href="/"><i class="bi bi-house me-1"></i>Pools</a></li>
-      <li class="breadcrumb-item active">{{ base_cidr }}</li>
-    </ol>
-  </nav>
+<!-- Page Header with 2nd Background -->
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='2nd Background.png') }}" alt="">
+  <div class="alloc-page-header-content">
+    <nav aria-label="breadcrumb">
+      <ol class="breadcrumb" style="margin:0 0 10px;">
+        <li class="breadcrumb-item"><a href="/"><i class="bi bi-house me-1"></i>Pools</a></li>
+        <li class="breadcrumb-item active">{{ base_cidr }}</li>
+      </ol>
+    </nav>
+    <h1 class="alloc-page-title">
+      <span class="alloc-pool-cidr">{{ base_cidr }}</span>
+    </h1>
+    <p class="alloc-page-sub">Network pool · Subnet Allocator</p>
+  </div>
 </div>
 
 <!-- Stats Bar -->
