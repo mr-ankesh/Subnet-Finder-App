@@ -16,15 +16,13 @@
   <nav id="mainNav">
     <div class="nav-inner">
       <a class="brand" href="/">
-        <div class="brand-icon">
-          <img src="{{ url_for('static', filename='logo.png') }}"
-               alt="Logo"
-               onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
-          <i class="bi bi-diagram-3-fill" style="display:none;"></i>
-        </div>
-        <div>
-          <span class="brand-title">Azure Subnet Manager</span>
-          <span class="brand-sub">Network IP Address Management</span>
+        <img class="brand-logo"
+             src="{{ url_for('static', filename='logo2.svg') }}"
+             alt="Presight">
+        <div class="brand-divider"></div>
+        <div class="brand-app">
+          <span class="brand-title">Subnet Manager</span>
+          <span class="brand-sub">Network IP Management</span>
         </div>
       </a>
       <div class="nav-right">
@@ -42,11 +40,10 @@
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <div class="footer-brand">
-        <span class="footer-title">Azure Subnet Manager</span>
-        <span class="footer-sub">Enterprise Network IP Address Management</span>
-      </div>
-      <div class="footer-copy">© 2025 Azure Subnet Manager. All rights reserved.</div>
+      <img class="footer-logo"
+           src="{{ url_for('static', filename='logo2.svg') }}"
+           alt="Presight">
+      <div class="footer-copy">© 2025 Presight · Azure Subnet Manager · All rights reserved.</div>
     </div>
   </footer>
 

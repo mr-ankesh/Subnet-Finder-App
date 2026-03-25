@@ -63,9 +63,9 @@
         <i class="bi bi-search"></i> Find Available Subnet
       </div>
       <div class="card-body-pad">
-        <p style="font-size:13.5px;color:var(--text-mid);margin-bottom:18px;line-height:1.65;">
+        <p style="font-size:13.5px;color:var(--text-dim);margin-bottom:18px;line-height:1.65;">
           Enter a CIDR prefix to find free subnets in the
-          <code style="font-family:var(--mono);color:var(--primary);font-size:12.5px;background:#eff6ff;padding:1px 6px;border-radius:4px;">{{ base_cidr }}</code> pool.
+          <code style="font-family:var(--mono);color:#60a5fa;font-size:12.5px;background:rgba(0,123,255,0.12);padding:1px 6px;border-radius:4px;">{{ base_cidr }}</code> pool.
         </p>
         <form id="fetchForm" novalidate>
           <div class="mb-4">
@@ -130,7 +130,7 @@
 </div>
 
 <!-- Bottom Tabs Section -->
-<div style="padding: 0 32px 40px; max-width: 1400px; margin: 0 auto;">
+<div style="padding: 0 40px 48px; max-width: 1400px; margin: 0 auto;">
   <div class="glass-card">
 
     <div class="gls-tabs" id="mainTabs">
@@ -148,8 +148,8 @@
     <!-- Available Blocks Tab -->
     <div class="tab-pane active" id="tabAvailable">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <p style="margin:0;font-size:13.5px;color:var(--text-mid);">
-          Free address blocks in <code style="font-family:var(--mono);color:var(--primary);font-size:12.5px;background:#eff6ff;padding:1px 6px;border-radius:4px;">{{ base_cidr }}</code>
+        <p style="margin:0;font-size:13.5px;color:var(--text-dim);">
+          Free address blocks in <code style="font-family:var(--mono);color:#60a5fa;font-size:12.5px;background:rgba(0,123,255,0.12);padding:1px 6px;border-radius:4px;">{{ base_cidr }}</code>
         </p>
         <button class="btn btn-glass btn-sm" id="loadAvailableBtn">
           <i class="bi bi-arrow-clockwise me-1"></i>Load / Refresh
@@ -249,7 +249,7 @@
       <div class="modal-footer" style="gap:10px;border-top:none;">
         <button type="button" class="btn btn-glass btn-sm" data-bs-dismiss="modal">Cancel</button>
         <button type="button" class="btn btn-sm" id="confirmDeallocateBtn"
-                style="background:var(--danger);border:none;color:#fff;border-radius:var(--radius-pill);padding:7px 16px;font-weight:600;font-size:13px;">
+                style="background:#b91c1c;border:none;color:#fff;border-radius:var(--radius-pill);padding:7px 16px;font-weight:600;font-size:13px;">
           <i class="bi bi-trash me-1"></i>Release Subnet
         </button>
       </div>
@@ -600,7 +600,7 @@ async function loadSummary() {
         <div class="summary-total-label">Total Free Blocks</div>
       </div>
       <div class="chart-wrap"><canvas id="summaryChart"></canvas></div>
-      <h6 style="font-family:var(--font-heading);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:12px;">
+      <h6 style="font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:rgba(255,255,255,0.4);margin-bottom:12px;">
         Free Blocks by Prefix Size
       </h6>
       <div class="prefix-grid">${prefixCards}</div>`;
