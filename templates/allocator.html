@@ -63,9 +63,9 @@
         <i class="bi bi-search"></i> Find Available Subnet
       </div>
       <div class="card-body-pad">
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:18px;line-height:1.6;">
+        <p style="font-size:13.5px;color:var(--text-mid);margin-bottom:18px;line-height:1.65;">
           Enter a CIDR prefix to find free subnets in the
-          <code style="font-family:var(--mono);color:#93c5fd;font-size:12px;">{{ base_cidr }}</code> pool.
+          <code style="font-family:var(--mono);color:var(--primary);font-size:12.5px;background:#eff6ff;padding:1px 6px;border-radius:4px;">{{ base_cidr }}</code> pool.
         </p>
         <form id="fetchForm" novalidate>
           <div class="mb-4">
@@ -130,7 +130,7 @@
 </div>
 
 <!-- Bottom Tabs Section -->
-<div style="padding: 0 24px 28px;">
+<div style="padding: 0 32px 40px; max-width: 1400px; margin: 0 auto;">
   <div class="glass-card">
 
     <div class="gls-tabs" id="mainTabs">
@@ -148,8 +148,8 @@
     <!-- Available Blocks Tab -->
     <div class="tab-pane active" id="tabAvailable">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <p style="margin:0;font-size:13px;color:var(--text-muted);">
-          Free address blocks in <code style="font-family:var(--mono);color:#93c5fd;font-size:12px;">{{ base_cidr }}</code>
+        <p style="margin:0;font-size:13.5px;color:var(--text-mid);">
+          Free address blocks in <code style="font-family:var(--mono);color:var(--primary);font-size:12.5px;background:#eff6ff;padding:1px 6px;border-radius:4px;">{{ base_cidr }}</code>
         </p>
         <button class="btn btn-glass btn-sm" id="loadAvailableBtn">
           <i class="bi bi-arrow-clockwise me-1"></i>Load / Refresh
@@ -212,7 +212,7 @@
           <input type="text" id="modalAllocatedBy" class="form-control" placeholder="Your name">
         </div>
         <div id="modalError" class="d-none"
-             style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--danger);">
+             style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;font-size:13px;color:var(--danger);">
         </div>
       </div>
       <div class="modal-footer" style="gap:10px;">
@@ -237,7 +237,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body" style="padding-top:6px;">
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">You are about to release:</p>
+        <p style="font-size:13.5px;color:var(--text-mid);margin-bottom:12px;">You are about to release:</p>
         <div class="subnet-display-box danger-box">
           <strong id="deallocateSubnetDisplay"></strong>
         </div>
@@ -249,7 +249,7 @@
       <div class="modal-footer" style="gap:10px;border-top:none;">
         <button type="button" class="btn btn-glass btn-sm" data-bs-dismiss="modal">Cancel</button>
         <button type="button" class="btn btn-sm" id="confirmDeallocateBtn"
-                style="background:var(--danger);border:none;color:#fff;border-radius:8px;font-weight:500;">
+                style="background:var(--danger);border:none;color:#fff;border-radius:var(--radius-pill);padding:7px 16px;font-weight:600;font-size:13px;">
           <i class="bi bi-trash me-1"></i>Release Subnet
         </button>
       </div>
@@ -354,7 +354,7 @@ function renderSearchResults(candidates, prefix) {
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td><span class="cidr-chip">${subnet}</span></td>
-      <td style="font-family:var(--mono);font-size:12px;color:var(--text-dim);">${subnet.split('/')[0]}</td>
+      <td style="font-family:var(--mono);font-size:12px;color:var(--text-mid);">${subnet.split('/')[0]}</td>
       <td><span class="prefix-tag">${fmtNum(hosts)} hosts</span></td>
       <td>
         <button class="btn btn-success-glass btn-sm allocate-btn" data-subnet="${subnet}">
@@ -465,7 +465,7 @@ async function loadAvailable() {
       rows += `<tr>
         <td><span class="cidr-chip">${item.Subnet}</span></td>
         <td><span class="prefix-tag">/${prefix}</span></td>
-        <td style="color:var(--text-dim);font-size:12px;">${count.toLocaleString()} addresses</td>
+        <td style="color:var(--text-mid);font-size:12px;">${count.toLocaleString()} addresses</td>
       </tr>`;
     });
     container.innerHTML = `
@@ -476,7 +476,7 @@ async function loadAvailable() {
         </table>
       </div>`;
   } catch {
-    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load available blocks.</div>`;
+    container.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load available blocks.</div>`;
   }
 }
 
@@ -527,7 +527,7 @@ async function loadAllocated() {
     });
     allocatedLoaded = true;
   } catch {
-    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load allocated subnets.</div>`;
+    container.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load allocated subnets.</div>`;
   }
 }
 
@@ -600,7 +600,7 @@ async function loadSummary() {
         <div class="summary-total-label">Total Free Blocks</div>
       </div>
       <div class="chart-wrap"><canvas id="summaryChart"></canvas></div>
-      <h6 style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:12px;">
+      <h6 style="font-family:var(--font-heading);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:12px;">
         Free Blocks by Prefix Size
       </h6>
       <div class="prefix-grid">${prefixCards}</div>`;
@@ -617,11 +617,11 @@ async function loadSummary() {
         datasets: [{
           label: 'Free Blocks',
           data: counts,
-          backgroundColor: 'rgba(59,130,246,0.25)',
-          borderColor: 'rgba(59,130,246,0.7)',
+          backgroundColor: 'rgba(0,123,255,0.15)',
+          borderColor: 'rgba(0,123,255,0.6)',
           borderWidth: 1.5,
           borderRadius: 6,
-          hoverBackgroundColor: 'rgba(59,130,246,0.4)',
+          hoverBackgroundColor: 'rgba(0,123,255,0.28)',
         }]
       },
       options: {
@@ -629,12 +629,13 @@ async function loadSummary() {
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: 'rgba(14,21,37,0.9)',
-            borderColor: 'rgba(59,130,246,0.4)',
+            backgroundColor: '#fff',
+            borderColor: '#e2e8f0',
             borderWidth: 1,
-            titleColor: '#e2e8f0',
-            bodyColor: '#94a3b8',
+            titleColor: '#404040',
+            bodyColor: '#64748b',
             padding: 10,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
             callbacks: {
               label: ctx => ` ${ctx.parsed.y} free block${ctx.parsed.y !== 1 ? 's' : ''}`
             }
@@ -642,21 +643,21 @@ async function loadSummary() {
         },
         scales: {
           x: {
-            ticks: { color: '#94a3b8', font: { family: 'JetBrains Mono, monospace', size: 12 } },
-            grid: { color: 'rgba(255,255,255,0.05)' },
-            border: { color: 'rgba(255,255,255,0.08)' }
+            ticks: { color: '#94a3b8', font: { family: 'IBM Plex Mono, monospace', size: 12 } },
+            grid: { color: 'rgba(0,0,0,0.04)' },
+            border: { color: '#e2e8f0' }
           },
           y: {
-            ticks: { color: '#64748b', font: { size: 11 }, precision: 0 },
-            grid: { color: 'rgba(255,255,255,0.05)' },
-            border: { color: 'rgba(255,255,255,0.08)' }
+            ticks: { color: '#b0bec5', font: { size: 11 }, precision: 0 },
+            grid: { color: 'rgba(0,0,0,0.04)' },
+            border: { color: '#e2e8f0' }
           }
         }
       }
     });
     summaryLoaded = true;
   } catch {
-    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;">Failed to load summary.</div>`;
+    container.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;color:var(--danger);font-size:13px;">Failed to load summary.</div>`;
   }
 }
 
