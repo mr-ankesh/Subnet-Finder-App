@@ -147,13 +147,19 @@
 
     <!-- Available Blocks Tab -->
     <div class="tab-pane active" id="tabAvailable">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <p style="margin:0;font-size:13.5px;color:var(--text-dim);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+        <p style="margin:0;font-size:13.5px;color:var(--text-dim);flex-shrink:0;">
           Free address blocks in <code style="font-family:var(--mono);color:#60a5fa;font-size:12.5px;background:rgba(0,123,255,0.12);padding:1px 6px;border-radius:4px;">{{ base_cidr }}</code>
         </p>
-        <button class="btn btn-glass btn-sm" id="loadAvailableBtn">
-          <i class="bi bi-arrow-clockwise me-1"></i>Load / Refresh
-        </button>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div class="tab-search-wrap">
+            <i class="bi bi-search tab-search-icon"></i>
+            <input type="text" id="availableSearch" class="tab-search-input" placeholder="Filter by CIDR…">
+          </div>
+          <button class="btn btn-glass btn-sm" id="loadAvailableBtn">
+            <i class="bi bi-arrow-clockwise me-1"></i>Load / Refresh
+          </button>
+        </div>
       </div>
       <div id="allAvailableContainer">
         <div class="empty-state">
@@ -165,6 +171,12 @@
 
     <!-- Allocated Tab -->
     <div class="tab-pane" id="tabAllocated">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+        <div class="tab-search-wrap">
+          <i class="bi bi-search tab-search-icon"></i>
+          <input type="text" id="allocatedSearch" class="tab-search-input" placeholder="Filter by subnet, purpose, team…">
+        </div>
+      </div>
       <div id="allocatedContainer">
         <div class="empty-state">
           <i class="bi bi-hourglass-split empty-icon"></i>
@@ -448,8 +460,22 @@ document.getElementById('confirmAllocateBtn').addEventListener('click', async ()
 // ── Available Blocks Tab ───────────────────────────────────
 document.getElementById('loadAvailableBtn').addEventListener('click', loadAvailable);
 
+document.getElementById('availableSearch').addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  const rows = document.querySelectorAll('#allAvailableContainer tbody tr');
+  let visible = 0;
+  rows.forEach(tr => {
+    const match = tr.textContent.toLowerCase().includes(q);
+    tr.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+  const noRes = document.getElementById('availableNoResults');
+  if (noRes) noRes.style.display = visible === 0 ? '' : 'none';
+});
+
 async function loadAvailable() {
   const container = document.getElementById('allAvailableContainer');
+  document.getElementById('availableSearch').value = '';
   container.innerHTML = `<div class="empty-state"><span class="spinner-border"></span><p style="margin-top:14px;">Loading available blocks…</p></div>`;
   try {
     const res    = await fetch('/all_available?pool=' + encodeURIComponent(POOL));
@@ -465,7 +491,7 @@ async function loadAvailable() {
       rows += `<tr>
         <td><span class="cidr-chip">${item.Subnet}</span></td>
         <td><span class="prefix-tag">/${prefix}</span></td>
-        <td style="color:var(--text-mid);font-size:12px;">${count.toLocaleString()} addresses</td>
+        <td style="color:var(--text-dim);font-size:12px;">${count.toLocaleString()} addresses</td>
       </tr>`;
     });
     container.innerHTML = `
@@ -474,18 +500,33 @@ async function loadAvailable() {
           <thead><tr><th>Block CIDR</th><th>Prefix</th><th>Total Addresses</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
+        <div id="availableNoResults" class="tab-no-results" style="display:none;">No blocks match your search.</div>
       </div>`;
   } catch {
-    container.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load available blocks.</div>`;
+    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load available blocks.</div>`;
   }
 }
 
 // ── Allocated Tab ──────────────────────────────────────────
 let allocatedLoaded = false;
 
+document.getElementById('allocatedSearch').addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  const rows = document.querySelectorAll('#allocatedContainer tbody tr');
+  let visible = 0;
+  rows.forEach(tr => {
+    const match = tr.textContent.toLowerCase().includes(q);
+    tr.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+  const noRes = document.getElementById('allocatedNoResults');
+  if (noRes) noRes.style.display = visible === 0 ? '' : 'none';
+});
+
 async function loadAllocated() {
   if (allocatedLoaded) return;
   const container = document.getElementById('allocatedContainer');
+  document.getElementById('allocatedSearch').value = '';
   container.innerHTML = `<div class="empty-state"><span class="spinner-border"></span><p style="margin-top:14px;">Loading allocated subnets…</p></div>`;
   try {
     const res    = await fetch('/allocated?pool=' + encodeURIComponent(POOL));
@@ -521,13 +562,14 @@ async function loadAllocated() {
           </thead>
           <tbody>${rows}</tbody>
         </table>
+        <div id="allocatedNoResults" class="tab-no-results" style="display:none;">No entries match your search.</div>
       </div>`;
     container.querySelectorAll('.deallocate-btn').forEach(btn => {
       btn.addEventListener('click', () => openDeallocateModal(btn.dataset.subnet));
     });
     allocatedLoaded = true;
   } catch {
-    container.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load allocated subnets.</div>`;
+    container.innerHTML = `<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:8px;padding:14px;color:var(--danger);font-size:13px;margin:4px;">Failed to load allocated subnets.</div>`;
   }
 }
 

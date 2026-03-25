@@ -601,6 +601,37 @@ body {
 .prefix-addrs { font-size: 11px; color: var(--text-muted); }
 .chart-wrap { position: relative; height: 260px; margin-bottom: 24px; }
 
+/* ── Tab Search ─────────────────────────────────────────── */
+.tab-search-wrap {
+  position: relative; display: flex; align-items: center;
+}
+.tab-search-icon {
+  position: absolute; left: 11px;
+  color: var(--text-muted); font-size: 13px; pointer-events: none;
+}
+.tab-search-input {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 6px 14px 6px 32px;
+  width: 240px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  outline: none;
+}
+.tab-search-input::placeholder { color: rgba(255,255,255,0.25); }
+.tab-search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0,163,255,0.15);
+  background: rgba(255,255,255,0.07);
+}
+.tab-no-results {
+  text-align: center; padding: 32px 24px;
+  color: var(--text-muted); font-size: 13.5px;
+}
+
 /* ── Misc ────────────────────────────────────────────────── */
 .spinner-border { color: var(--accent) !important; }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
