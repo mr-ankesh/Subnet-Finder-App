@@ -2,27 +2,35 @@
 {% block title %}Azure Subnet Manager — Select Pool{% endblock %}
 
 {% block content %}
-<div class="hero-section">
-  <div class="hero-inner">
 
+<!-- Hero -->
+<section class="hero-section">
+  <img class="hero-bg" src="{{ url_for('static', filename='background.png') }}" alt="">
+  <div class="hero-content">
     <div class="hero-eyebrow">
       <i class="bi bi-shield-check"></i>
       Azure Network Management
     </div>
-
     <h1 class="hero-title">
       Manage Your<br><strong>IP Address Pools</strong>
     </h1>
     <p class="hero-sub">
-      Select a network segment to search for available subnets,
-      allocate new IP ranges, or manage existing allocations.
+      Search for available subnets, allocate new IP ranges, and manage
+      existing allocations across your Azure network infrastructure.
     </p>
-
+    <a href="#pools" class="btn-hero">
+      EXPLORE POOLS
+      <span class="btn-hero-dot"><i class="bi bi-arrow-down"></i></span>
+    </a>
   </div>
-</div>
+</section>
 
-<div class="pool-section">
-  <div class="pool-section-label">Available network pools</div>
+<!-- Pool Cards -->
+<div id="pools" class="pool-section">
+  <div class="pool-section-header">
+    <span class="pool-section-title">Available network pools</span>
+    <span style="font-size:13px;color:var(--text-muted);">{{ pools|length }} pool{{ 's' if pools|length != 1 }}</span>
+  </div>
   <div class="pool-grid">
     {% for p in pools %}
     <a href="/allocator/{{ p.key }}" class="pool-card">
@@ -33,20 +41,13 @@
         <i class="bi bi-arrow-right pool-card-arrow"></i>
       </div>
       <div class="pool-card-cidr">{{ p.cidr }}</div>
-      <div class="pool-card-meta">Pool key: {{ p.key }} &nbsp;·&nbsp; /16 block &nbsp;·&nbsp; 65,536 addresses</div>
+      <div class="pool-card-meta">Key: {{ p.key }}</div>
       <div class="pool-card-footer">
         <i class="bi bi-layers"></i>
         Manage Subnets
       </div>
     </a>
     {% endfor %}
-  </div>
-</div>
-
-<div style="padding: 0 32px 48px; max-width: 1200px; margin: 0 auto;">
-  <div class="info-strip" style="margin: 0; padding: 13px 18px;">
-    <i class="bi bi-info-circle-fill"></i>
-    Choose a pool to find free subnets, allocate new IPs, or release existing allocations.
   </div>
 </div>
 
