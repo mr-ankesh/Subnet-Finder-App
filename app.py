@@ -12,17 +12,18 @@ app = Flask(__name__)
 app.secret_key = cfg.SECRET_KEY
 
 # ── SQLite for request tracking (separate from subnets.xlsx) ───────────────
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data/requests.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{os.path.join(DATA_DIR, 'requests.db')}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db.init_app(app)
 
 with app.app_context():
     db.create_all()
 
-# Ensure data directory exists
-os.makedirs("data", exist_ok=True)
-
-FILE_PATH = "data/subnets.xlsx"
+FILE_PATH = os.path.join(DATA_DIR, "subnets.xlsx")
 
 POOLS = {
     "10.110": "10.110.0.0/16",
