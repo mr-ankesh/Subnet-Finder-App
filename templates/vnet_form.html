@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Presight R&D | VNET Info — Request #{{ req.id }}{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='2nd Background.png') }}" alt="">
+  <div class="alloc-page-header-content">
+    <nav aria-label="breadcrumb"><ol class="breadcrumb" style="margin:0 0 10px;">
+      <li class="breadcrumb-item"><a href="{{ url_for('requests_list') }}">Requests</a></li>
+      <li class="breadcrumb-item"><a href="{{ url_for('request_detail', req_id=req.id) }}">#{{ req.id }}</a></li>
+      <li class="breadcrumb-item active">VNET Info</li>
+    </ol></nav>
+    <h1 class="alloc-page-title">Step 3 — Spoke VNET Information</h1>
+    <p class="alloc-page-sub">Request #{{ req.id }} · {{ req.requester_name }} · Spoke deployed — fill Azure details for hub integration</p>
+  </div>
+</div>
+
+<div style="max-width:760px;margin:40px auto;padding:0 24px 48px;">
+
+  {% if errors %}
+  <div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:14px 18px;margin-bottom:24px;">
+    <div style="font-weight:700;color:var(--danger);margin-bottom:6px;"><i class="bi bi-exclamation-triangle-fill me-2"></i>Fix the following:</div>
+    <ul style="margin:0;padding-left:20px;color:var(--danger);font-size:13.5px;">
+      {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="POST" novalidate>
+    <!-- Azure VNET Details -->
+    <div class="glass-card" style="margin-bottom:20px;">
+      <div class="card-header-bar"><i class="bi bi-diagram-3-fill"></i> Azure VNET Details</div>
+      <div class="card-body-pad" style="padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+
+        <div>
+          <label class="form-label">Subscription ID <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="subscription_id" class="form-control"
+                 placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                 value="{{ form.get('subscription_id', req.vnet_info.subscription_id if req.vnet_info else '') }}" required>
+        </div>
+        <div>
+          <label class="form-label">VNET Name <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="vnet_name" class="form-control"
+                 placeholder="e.g. vnet-spoke-analytics"
+                 value="{{ form.get('vnet_name', req.vnet_info.vnet_name if req.vnet_info else '') }}" required>
+        </div>
+        <div style="grid-column:1/-1;">
+          <label class="form-label">VNET Resource ID</label>
+          <input type="text" name="vnet_id" class="form-control"
+                 placeholder="/subscriptions/.../resourceGroups/.../providers/Microsoft.Network/virtualNetworks/..."
+                 value="{{ form.get('vnet_id', req.vnet_info.vnet_id if req.vnet_info else '') }}">
+          <div class="form-text">Azure portal → VNET → Properties → Resource ID</div>
+        </div>
+        <div>
+          <label class="form-label">Resource Group <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="resource_group" class="form-control"
+                 placeholder="rg-spoke-analytics"
+                 value="{{ form.get('resource_group', req.vnet_info.resource_group if req.vnet_info else '') }}" required>
+        </div>
+        <div>
+          <label class="form-label">Region <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="region" class="form-control"
+                 placeholder="e.g. uaenorth"
+                 value="{{ form.get('region', req.vnet_info.region if req.vnet_info else '') }}" required>
+        </div>
+        <div>
+          <label class="form-label">Address Space (CIDR) <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="address_space" class="form-control"
+                 placeholder="{{ req.allocated_subnet or '10.110.x.x/24' }}"
+                 value="{{ form.get('address_space', req.vnet_info.address_space if req.vnet_info else req.allocated_subnet or '') }}" required>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Outbound Access -->
+    <div class="glass-card" style="margin-bottom:20px;">
+      <div class="card-header-bar"><i class="bi bi-arrow-up-right-circle-fill"></i> Outbound Access Requirements</div>
+      <div class="card-body-pad" style="padding:24px;">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">
+          List destinations the spoke VNET needs outbound access to. Each will become a firewall rule.
+        </p>
+        <div id="outboundRows">
+          {% set existing_rules = req.vnet_info.get_outbound_rules() if req.vnet_info else [] %}
+          {% if existing_rules %}
+            {% for rule in existing_rules %}
+            <div class="outbound-row">
+              <input type="text"  name="outbound_destination[]" class="form-control" placeholder="IP / FQDN  e.g. 10.0.0.5 or api.example.com" value="{{ rule.destination }}">
+              <input type="text"  name="outbound_port[]"        class="form-control" placeholder="Port  e.g. 443" style="max-width:100px;" value="{{ rule.port }}">
+              <select name="outbound_protocol[]" class="form-select" style="max-width:100px;">
+                <option {% if rule.protocol == 'TCP' %}selected{% endif %}>TCP</option>
+                <option {% if rule.protocol == 'UDP' %}selected{% endif %}>UDP</option>
+                <option {% if rule.protocol == 'Any' %}selected{% endif %}>Any</option>
+              </select>
+              <button type="button" class="btn btn-danger-glass btn-sm" onclick="removeRow(this)"><i class="bi bi-trash"></i></button>
+            </div>
+            {% endfor %}
+          {% else %}
+            <div class="outbound-row">
+              <input type="text" name="outbound_destination[]" class="form-control" placeholder="IP / FQDN  e.g. 10.0.0.5 or api.example.com">
+              <input type="text" name="outbound_port[]"        class="form-control" placeholder="Port" style="max-width:100px;">
+              <select name="outbound_protocol[]" class="form-select" style="max-width:100px;">
+                <option>TCP</option><option>UDP</option><option>Any</option>
+              </select>
+              <button type="button" class="btn btn-danger-glass btn-sm" onclick="removeRow(this)"><i class="bi bi-trash"></i></button>
+            </div>
+          {% endif %}
+        </div>
+        <button type="button" class="btn btn-glass btn-sm mt-3" onclick="addRow()">
+          <i class="bi bi-plus me-1"></i>Add Another Rule
+        </button>
+      </div>
+    </div>
+
+    <!-- VPN / ZPA -->
+    <div class="glass-card" style="margin-bottom:28px;">
+      <div class="card-header-bar"><i class="bi bi-shield-lock-fill"></i> VPN / ZPA Access</div>
+      <div class="card-body-pad" style="padding:20px 24px;">
+        <label style="font-size:13.5px;color:var(--text-dim);display:flex;align-items:center;gap:10px;cursor:pointer;">
+          <input type="hidden" name="vpn_zpa_access" value="no">
+          <input type="checkbox" name="vpn_zpa_access" value="yes" style="width:18px;height:18px;accent-color:var(--accent);"
+                 {% if form.get('vpn_zpa_access') == 'yes' or (req.vnet_info and req.vnet_info.vpn_zpa_access) %}checked{% endif %}>
+          This spoke requires access from <strong style="color:var(--text);">Azure VPN Gateway / ZPA</strong>
+        </label>
+      </div>
+    </div>
+
+    <button type="submit" class="btn-hero w-100" style="justify-content:center;display:flex;">
+      <i class="bi bi-save me-2"></i>SAVE VNET INFO
+      <span class="btn-hero-dot"><i class="bi bi-check-lg"></i></span>
+    </button>
+
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.outbound-row {
+  display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;
+}
+.outbound-row .form-control, .outbound-row .form-select { flex:1; min-width:120px; }
+</style>
+<script>
+function addRow() {
+  const container = document.getElementById('outboundRows');
+  const div = document.createElement('div');
+  div.className = 'outbound-row';
+  div.innerHTML = `
+    <input type="text" name="outbound_destination[]" class="form-control" placeholder="IP / FQDN">
+    <input type="text" name="outbound_port[]"        class="form-control" placeholder="Port" style="max-width:100px;">
+    <select name="outbound_protocol[]" class="form-select" style="max-width:100px;">
+      <option>TCP</option><option>UDP</option><option>Any</option>
+    </select>
+    <button type="button" class="btn btn-danger-glass btn-sm" onclick="removeRow(this)"><i class="bi bi-trash"></i></button>`;
+  container.appendChild(div);
+}
+function removeRow(btn) {
+  const rows = document.querySelectorAll('.outbound-row');
+  if (rows.length > 1) btn.closest('.outbound-row').remove();
+}
+</script>
+{% endblock %}

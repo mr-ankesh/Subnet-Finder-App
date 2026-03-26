@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Presight R&D | New Spoke Request{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='2nd Background.png') }}" alt="">
+  <div class="alloc-page-header-content">
+    <nav aria-label="breadcrumb"><ol class="breadcrumb" style="margin:0 0 10px;">
+      <li class="breadcrumb-item"><a href="{{ url_for('requests_list') }}"><i class="bi bi-list-ul me-1"></i>Requests</a></li>
+      <li class="breadcrumb-item active">New Request</li>
+    </ol></nav>
+    <h1 class="alloc-page-title">Step 1 — Spoke Request Form</h1>
+    <p class="alloc-page-sub">Fill in your requirements to start the allocation workflow</p>
+  </div>
+</div>
+
+<div style="max-width:680px;margin:40px auto;padding:0 24px 48px;">
+
+  {% if errors %}
+  <div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:10px;padding:14px 18px;margin-bottom:24px;">
+    <div style="font-weight:700;color:var(--danger);margin-bottom:6px;"><i class="bi bi-exclamation-triangle-fill me-2"></i>Please fix the following:</div>
+    <ul style="margin:0;padding-left:20px;color:var(--danger);font-size:13.5px;">
+      {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="glass-card">
+    <div class="card-header-bar"><i class="bi bi-send-fill"></i> Spoke VNET Request</div>
+    <div class="card-body-pad" style="padding:28px;">
+      <form method="POST" action="{{ url_for('request_new') }}" novalidate>
+
+        <div class="mb-4">
+          <label class="form-label">CIDR Needed <span style="color:var(--danger)">*</span></label>
+          <div class="input-group">
+            <span class="input-group-text">/</span>
+            <input type="number" name="cidr_needed" class="form-control"
+                   placeholder="e.g. 24  (enter just the prefix number)"
+                   value="{{ form.get('cidr_needed','').lstrip('/') }}"
+                   min="16" max="29" required>
+          </div>
+          <div class="form-text">Common sizes: /24 (256 IPs) · /25 (128 IPs) · /26 (64 IPs) · /28 (16 IPs)</div>
+        </div>
+
+        <div class="mb-4">
+          <label class="form-label">Purpose <span style="color:var(--danger)">*</span></label>
+          <textarea name="purpose" class="form-control" rows="3"
+                    placeholder="e.g. Production workloads for data analytics team" required>{{ form.get('purpose','') }}</textarea>
+        </div>
+
+        <div class="mb-4">
+          <label class="form-label">Requester Name <span style="color:var(--danger)">*</span></label>
+          <input type="text" name="requester_name" class="form-control"
+                 placeholder="Your full name or team name"
+                 value="{{ form.get('requester_name','') }}" required>
+        </div>
+
+        <div class="mb-4">
+          <label class="form-label">IP Range (Pool) <span style="color:var(--danger)">*</span></label>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            {% for key, cidr in pools.items() %}
+            <label class="range-option {% if form.get('ip_range') == cidr %}selected{% endif %}">
+              <input type="radio" name="ip_range" value="{{ cidr }}"
+                     {% if form.get('ip_range') == cidr %}checked{% endif %}
+                     {% if loop.first and not form.get('ip_range') %}checked{% endif %}>
+              <span class="range-label">
+                <span style="font-family:var(--mono);font-size:14px;font-weight:600;">{{ cidr }}</span>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="mb-5">
+          <label class="form-label">Hub Integration Required? <span style="color:var(--danger)">*</span></label>
+          <div style="display:flex;gap:12px;">
+            <label class="range-option {% if form.get('hub_integration') == 'yes' %}selected{% endif %}">
+              <input type="radio" name="hub_integration" value="yes"
+                     {% if form.get('hub_integration') == 'yes' %}checked{% endif %}>
+              <span class="range-label"><i class="bi bi-link-45deg me-1"></i>Yes — peer with hub VNET</span>
+            </label>
+            <label class="range-option {% if form.get('hub_integration') == 'no' or not form.get('hub_integration') %}selected{% endif %}">
+              <input type="radio" name="hub_integration" value="no"
+                     {% if form.get('hub_integration','no') == 'no' %}checked{% endif %}>
+              <span class="range-label"><i class="bi bi-x-circle me-1"></i>No — standalone spoke</span>
+            </label>
+          </div>
+          <div class="form-text">If Yes: the agent will wait for your spoke deployment, then handle peering + UDR + firewall rules automatically.</div>
+        </div>
+
+        <button type="submit" class="btn-hero w-100" style="justify-content:center;display:flex;">
+          <i class="bi bi-send me-2"></i>SUBMIT REQUEST
+          <span class="btn-hero-dot"><i class="bi bi-arrow-right"></i></span>
+        </button>
+
+      </form>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.range-option {
+  display: flex; align-items: center;
+  background: rgba(255,255,255,0.05);
+  border: 1.5px solid var(--border-bright);
+  border-radius: 10px;
+  padding: 10px 18px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  flex: 1; min-width: 160px;
+}
+.range-option input[type="radio"] { display: none; }
+.range-option:has(input:checked),
+.range-option.selected {
+  border-color: var(--accent);
+  background: rgba(0,163,255,0.1);
+}
+.range-option:hover { border-color: var(--accent); }
+.range-label { font-size: 13.5px; color: var(--text-dim); }
+</style>
+{% endblock %}

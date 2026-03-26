@@ -1,10 +1,23 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 import pandas as pd
 import ipaddress
 import os
 from datetime import datetime
 
+from config import cfg
+from models import db, SpokeRequest, VnetInfo, RequestStatus
+import notifications
+
 app = Flask(__name__)
+app.secret_key = cfg.SECRET_KEY
+
+# ── SQLite for request tracking (separate from subnets.xlsx) ───────────────
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data/requests.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db.init_app(app)
+
+with app.app_context():
+    db.create_all()
 
 # Ensure data directory exists
 os.makedirs("data", exist_ok=True)
@@ -351,6 +364,180 @@ def free_summary():
         "by_prefix": by_prefix,
         "top_blocks": [str(n) for n in free_blocks[:top_n]]
     })
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PART 1 — Spoke Request + VNET Info workflow
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route('/requests')
+def requests_list():
+    all_requests = SpokeRequest.query.order_by(SpokeRequest.created_at.desc()).all()
+    return render_template('requests_list.html', requests=all_requests)
+
+
+@app.route('/requests/new', methods=['GET', 'POST'])
+def request_new():
+    if request.method == 'POST':
+        cidr_needed     = request.form.get('cidr_needed', '').strip()
+        purpose         = request.form.get('purpose', '').strip()
+        requester_name  = request.form.get('requester_name', '').strip()
+        ip_range        = request.form.get('ip_range', '').strip()
+        hub_integration = request.form.get('hub_integration') == 'yes'
+
+        errors = []
+        if not cidr_needed:   errors.append("CIDR Needed is required.")
+        if not purpose:       errors.append("Purpose is required.")
+        if not requester_name: errors.append("Requester Name is required.")
+        if ip_range not in POOLS.values(): errors.append("Invalid IP Range selected.")
+
+        if errors:
+            return render_template('request_form.html', errors=errors, form=request.form, pools=POOLS)
+
+        req = SpokeRequest(
+            cidr_needed=cidr_needed,
+            purpose=purpose,
+            requester_name=requester_name,
+            ip_range=ip_range,
+            hub_integration=hub_integration,
+            status=RequestStatus.PENDING,
+        )
+        db.session.add(req)
+        db.session.commit()
+
+        # Fire Teams notification (non-blocking — failure won't break the request)
+        try:
+            notifications.notify_new_request(req)
+        except Exception:
+            pass
+
+        return redirect(url_for('request_detail', req_id=req.id))
+
+    return render_template('request_form.html', errors=[], form={}, pools=POOLS)
+
+
+@app.route('/requests/<int:req_id>')
+def request_detail(req_id):
+    req = SpokeRequest.query.get_or_404(req_id)
+    return render_template('request_detail.html', req=req, RequestStatus=RequestStatus)
+
+
+@app.route('/requests/<int:req_id>/update-status', methods=['POST'])
+def request_update_status(req_id):
+    req = SpokeRequest.query.get_or_404(req_id)
+    new_status = request.form.get('status', '').strip()
+    valid = [RequestStatus.PENDING, RequestStatus.SUBNET_ALLOCATED,
+             RequestStatus.DEPLOYING, RequestStatus.COMPLETED, RequestStatus.CANCELLED]
+    if new_status not in valid:
+        return jsonify({"error": "Invalid status"}), 400
+
+    req.status = new_status
+    req.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    # When requester marks Completed → notify team to fill VNET info
+    if new_status == RequestStatus.COMPLETED and req.hub_integration:
+        try:
+            notifications.notify_deployment_completed(req)
+        except Exception:
+            pass
+
+    return jsonify({"message": f"Status updated to {new_status}", "status": new_status})
+
+
+@app.route('/requests/<int:req_id>/vnet-info', methods=['GET', 'POST'])
+def request_vnet_info(req_id):
+    req = SpokeRequest.query.get_or_404(req_id)
+
+    if request.method == 'POST':
+        import json as _json
+        subscription_id = request.form.get('subscription_id', '').strip()
+        vnet_id         = request.form.get('vnet_id', '').strip()
+        vnet_name       = request.form.get('vnet_name', '').strip()
+        resource_group  = request.form.get('resource_group', '').strip()
+        region          = request.form.get('region', '').strip()
+        address_space   = request.form.get('address_space', '').strip()
+        vpn_zpa_access  = request.form.get('vpn_zpa_access') == 'yes'
+
+        # Parse dynamic outbound rules rows
+        destinations = request.form.getlist('outbound_destination[]')
+        ports        = request.form.getlist('outbound_port[]')
+        protocols    = request.form.getlist('outbound_protocol[]')
+        outbound_rules = [
+            {"destination": d.strip(), "port": p.strip(), "protocol": pr.strip()}
+            for d, p, pr in zip(destinations, ports, protocols)
+            if d.strip()
+        ]
+
+        errors = []
+        if not subscription_id: errors.append("Subscription ID is required.")
+        if not vnet_name:       errors.append("VNET Name is required.")
+        if not resource_group:  errors.append("Resource Group is required.")
+        if not address_space:   errors.append("Address Space is required.")
+
+        if errors:
+            return render_template('vnet_form.html', req=req, errors=errors, form=request.form)
+
+        if req.vnet_info:
+            vi = req.vnet_info
+        else:
+            vi = VnetInfo(request_id=req.id)
+            db.session.add(vi)
+
+        vi.subscription_id = subscription_id
+        vi.vnet_id         = vnet_id
+        vi.vnet_name       = vnet_name
+        vi.resource_group  = resource_group
+        vi.region          = region
+        vi.address_space   = address_space
+        vi.vpn_zpa_access  = vpn_zpa_access
+        vi.set_outbound_rules(outbound_rules)
+        db.session.commit()
+
+        return redirect(url_for('request_detail', req_id=req.id))
+
+    return render_template('vnet_form.html', req=req, errors=[], form={})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PART 2 — Agent (Claude)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route('/agent')
+def agent_page():
+    session.setdefault('agent_history', [])
+    return render_template('agent.html')
+
+
+@app.route('/agent/clear', methods=['POST'])
+def agent_clear():
+    session.pop('agent_history', None)
+    return jsonify({"message": "Conversation cleared."})
+
+
+@app.route('/api/agent/chat', methods=['POST'])
+def agent_chat():
+    import agent as ag
+    data = request.get_json(force=True)
+    user_msg = (data.get('message') or '').strip()
+    if not user_msg:
+        return jsonify({"error": "Empty message"}), 400
+
+    history = session.get('agent_history', [])
+    history.append({"role": "user", "content": user_msg})
+
+    try:
+        result = ag.chat(history)
+        reply  = result["reply"]
+    except Exception as exc:
+        reply = f"⚠️ Agent error: {exc}"
+
+    history.append({"role": "assistant", "content": reply})
+    # Keep last 40 turns to avoid session bloat
+    session['agent_history'] = history[-40:]
+    session.modified = True
+
+    return jsonify({"reply": reply, "tool_calls": result.get("tool_calls", []) if 'result' in dir() else []})
 
 
 if __name__ == '__main__':

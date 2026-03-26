@@ -27,6 +27,17 @@
         </div>
       </a>
       <div class="nav-right">
+        <nav class="nav-links">
+          <a href="/" class="nav-link {% if request.endpoint == 'index' %}active{% endif %}">
+            <i class="bi bi-house"></i> Home
+          </a>
+          <a href="/requests" class="nav-link {% if request.endpoint and 'request' in request.endpoint %}active{% endif %}">
+            <i class="bi bi-list-task"></i> Requests
+          </a>
+          <a href="/agent" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}">
+            <i class="bi bi-robot"></i> Agent
+          </a>
+        </nav>
         <div class="nav-clock">
           <i class="bi bi-clock"></i>
           <span id="currentTime"></span>
