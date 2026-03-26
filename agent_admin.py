@@ -105,6 +105,21 @@ TOOLS_OPENAI = [
     {
         "type": "function",
         "function": {
+            "name": "check_cidr_availability",
+            "description": "Check if a specific CIDR (e.g. 10.110.5.0/24) is available in the subnet pool Excel file. Returns exact status and what conflicts exist if not available.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cidr":  {"type": "string", "description": "The exact CIDR to check, e.g. '10.110.5.0/24'"},
+                    "pool":  {"type": "string", "description": "Pool key: '10.110' or '10.119'"},
+                },
+                "required": ["cidr", "pool"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "find_available_subnets",
             "description": "Find available subnets in a pool for a given CIDR prefix. ALWAYS call this first and present results to admin before assigning. Never auto-assign.",
             "parameters": {
@@ -347,6 +362,8 @@ def _execute_tool(name: str, inputs: dict) -> str:
             return _tool_list_requests(**inputs)
         elif name == "get_request_details":
             return _tool_get_request(**inputs)
+        elif name == "check_cidr_availability":
+            return _tool_check_cidr(**inputs)
         elif name == "find_available_subnets":
             return _tool_find_subnets(**inputs)
         elif name == "assign_cidr_to_request":
@@ -417,6 +434,113 @@ def _tool_get_request(request_id: int) -> str:
 
 _POOLS = {"10.110": "10.110.0.0/16", "10.119": "10.119.0.0/16"}
 
+# Resolve the Excel path relative to this file — same container, same /app/data/
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_EXCEL_PATH = os.path.join(_HERE, "data", "subnets.xlsx")
+
+
+def _read_excel_pool(pool_cidr: str):
+    """Read subnets.xlsx and return (df, base_net, used_nets) for the given pool CIDR."""
+    import ipaddress as _ip
+    import pandas as pd
+    base_net = _ip.ip_network(pool_cidr)
+    if not os.path.exists(_EXCEL_PATH):
+        return None, base_net, []
+    df = pd.read_excel(_EXCEL_PATH, dtype=str).fillna("")
+    df.columns = [c.strip().replace(" ", "") for c in df.columns]
+    if "Status" not in df.columns or "Subnet" not in df.columns:
+        return df, base_net, []
+    df["Status"] = df["Status"].str.strip().str.lower()
+
+    used = []
+    for _, row in df.iterrows():
+        try:
+            net = _ip.ip_network(str(row["Subnet"]).strip())
+            if row["Status"] in ("used", "reserved") and net.subnet_of(base_net):
+                used.append(net)
+        except Exception:
+            continue
+    return df, base_net, used
+
+
+def _compute_free(base_net, used_nets):
+    import ipaddress as _ip
+    used = sorted(set(used_nets), key=lambda n: (n.prefixlen, int(n.network_address)))
+    pruned = []
+    for n in used:
+        if any(n.subnet_of(p) for p in pruned):
+            continue
+        pruned.append(n)
+    free = [base_net]
+    for u in pruned:
+        new_free = []
+        for f in free:
+            if not f.overlaps(u):
+                new_free.append(f)
+            elif f.subnet_of(u):
+                continue
+            elif u.subnet_of(f):
+                new_free.extend(list(f.address_exclude(u)))
+            else:
+                new_free.append(f)
+        free = new_free
+    return sorted(free, key=lambda n: (n.prefixlen, int(n.network_address)))
+
+
+def _tool_check_cidr(cidr: str, pool: str) -> str:
+    import ipaddress as _ip
+    if pool not in _POOLS:
+        return json.dumps({"error": f"Invalid pool. Must be one of: {list(_POOLS.keys())}"})
+    try:
+        target = _ip.ip_network(cidr.strip(), strict=False)
+    except ValueError:
+        return json.dumps({"error": f"Invalid CIDR format: {cidr}"})
+
+    try:
+        df, base_net, used_nets = _read_excel_pool(_POOLS[pool])
+        source = _EXCEL_PATH
+
+        if not target.subnet_of(base_net):
+            return json.dumps({
+                "available": False,
+                "cidr": str(target),
+                "reason": f"{cidr} is not inside pool {_POOLS[pool]}",
+                "source": source,
+            })
+
+        # Check direct conflicts
+        conflicts = [str(u) for u in used_nets if target.overlaps(u)]
+        if conflicts:
+            return json.dumps({
+                "available": False,
+                "cidr": str(target),
+                "reason": f"Overlaps with already-used subnet(s): {', '.join(conflicts)}",
+                "conflicting_subnets": conflicts,
+                "source": source,
+            })
+
+        # Check it falls within a free block
+        free_blocks = _compute_free(base_net, used_nets)
+        containing_block = next((str(b) for b in free_blocks if target.subnet_of(b)), None)
+        if containing_block is None:
+            return json.dumps({
+                "available": False,
+                "cidr": str(target),
+                "reason": "Not within any free block (no containing free space found).",
+                "source": source,
+            })
+
+        return json.dumps({
+            "available": True,
+            "cidr": str(target),
+            "within_free_block": containing_block,
+            "source": source,
+            "message": f"{cidr} is AVAILABLE in pool {_POOLS[pool]}. It falls within free block {containing_block}.",
+        })
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
 def _tool_find_subnets(pool: str, prefix: int) -> str:
     import ipaddress as _ip
     if pool not in _POOLS:
@@ -424,20 +548,29 @@ def _tool_find_subnets(pool: str, prefix: int) -> str:
     if not (8 <= prefix <= 29):
         return json.dumps({"error": "Prefix must be between /8 and /29"})
     try:
-        from app import load_subnets, compute_free_blocks, candidates_from_free
-        base_net = _ip.ip_network(_POOLS[pool])
-        df = load_subnets()
-        free_blocks = compute_free_blocks(base_net, df)
-        candidates, truncated = candidates_from_free(free_blocks, prefix, limit=20)
+        _, base_net, used_nets = _read_excel_pool(_POOLS[pool])
+        free_blocks = _compute_free(base_net, used_nets)
+
+        candidates = []
+        for block in free_blocks:
+            if block.prefixlen <= prefix:
+                for s in (block.subnets(new_prefix=prefix) if block.prefixlen < prefix else [block]):
+                    candidates.append(str(s))
+                    if len(candidates) >= 20:
+                        break
+            if len(candidates) >= 20:
+                break
+
         return json.dumps({
             "pool": pool,
             "prefix": f"/{prefix}",
             "candidates": candidates,
             "total_shown": len(candidates),
-            "truncated": truncated,
+            "more_available": len(candidates) == 20,
+            "source": _EXCEL_PATH,
             "message": (
-                f"Found {len(candidates)} available /{prefix} subnets in {_POOLS[pool]}. "
-                "Present these to admin and ask them to select one."
+                f"Found {len(candidates)} available /{prefix} subnets in {_POOLS[pool]} "
+                f"(read directly from {_EXCEL_PATH}). Present these to admin and ask them to select one."
             ),
         })
     except Exception as exc:
