@@ -4,6 +4,7 @@ Admin-only. Requesters use agent_requester.py.
 """
 import json
 import logging
+import os
 from datetime import datetime
 
 from config import cfg
@@ -405,13 +406,11 @@ def _execute_tool(name: str, inputs: dict) -> str:
 def _tool_list_requests(status_filter: str = None) -> str:
     try:
         from models import SpokeRequest
-        from app import app
-        with app.app_context():
-            q = SpokeRequest.query.order_by(SpokeRequest.created_at.desc())
-            if status_filter:
-                q = q.filter(SpokeRequest.status == status_filter)
-            reqs = q.all()
-            return json.dumps([r.to_dict() for r in reqs])
+        q = SpokeRequest.query.order_by(SpokeRequest.created_at.desc())
+        if status_filter:
+            q = q.filter(SpokeRequest.status == status_filter)
+        reqs = q.all()
+        return json.dumps([r.to_dict() for r in reqs])
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -419,14 +418,12 @@ def _tool_list_requests(status_filter: str = None) -> str:
 def _tool_get_request(request_id: int) -> str:
     try:
         from models import SpokeRequest
-        from app import app
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found."})
-            data = req.to_dict()
-            if req.vnet_info:
-                data["vnet_info"] = req.vnet_info.to_dict()
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found."})
+        data = req.to_dict()
+        if req.vnet_info:
+            data["vnet_info"] = req.vnet_info.to_dict()
         return json.dumps(data)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -583,34 +580,33 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
         return json.dumps({"error": f"Invalid pool '{pool}'. Must be one of: {list(_POOLS.keys())}"})
     try:
         from models import db, SpokeRequest, RequestStatus
-        from app import app, allocate_subnet
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found."})
-            if req.status != RequestStatus.CIDR_REQUESTED:
-                return json.dumps({"error": f"Request is already in status '{req.status_label()}'. Cannot assign CIDR."})
+        from app import allocate_subnet
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found."})
+        if req.status != RequestStatus.CIDR_REQUESTED:
+            return json.dumps({"error": f"Request is already in status '{req.status_label()}'. Cannot assign CIDR."})
 
-            base_net = _ip.ip_network(_POOLS[pool])
-            ok, msg = allocate_subnet(
-                selected_cidr=subnet,
-                base_net=base_net,
-                purpose=req.purpose,
-                requested_by=req.requester_name,
-                allocated_by=allocated_by,
-            )
-            if not ok:
-                return json.dumps({"error": msg})
+        base_net = _ip.ip_network(_POOLS[pool])
+        ok, msg = allocate_subnet(
+            selected_cidr=subnet,
+            base_net=base_net,
+            purpose=req.purpose,
+            requested_by=req.requester_name,
+            allocated_by=allocated_by,
+        )
+        if not ok:
+            return json.dumps({"error": msg})
 
-            req.allocated_subnet = subnet
-            req.status = RequestStatus.CIDR_ASSIGNED
-            req.updated_at = datetime.utcnow()
-            db.session.commit()
-            notifications.notify_cidr_assigned(req, subnet)
-
+        req.allocated_subnet = subnet
+        req.status = RequestStatus.CIDR_ASSIGNED
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+        notifications.notify_cidr_assigned(req, subnet)
         return json.dumps({"success": True, "request_id": request_id, "subnet": subnet,
                            "message": f"Subnet {subnet} assigned to request #{request_id}. Teams notification sent."})
     except Exception as exc:
+        db.session.rollback()
         return json.dumps({"error": str(exc)})
 
 
@@ -620,51 +616,47 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
         return json.dumps({"error": "Reason is required for deallocation."})
     try:
         from models import db, SpokeRequest, RequestStatus
-        from app import app, deallocate_subnet
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found."})
-            if not req.allocated_subnet:
-                return json.dumps({"error": f"Request #{request_id} has no allocated subnet."})
-            if req.status not in (RequestStatus.CIDR_ASSIGNED, RequestStatus.VNET_CREATED,
-                                   RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS):
-                return json.dumps({"error": f"Cannot deallocate — status is '{req.status_label()}'. Only pre-integration statuses are allowed."})
+        from app import deallocate_subnet
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found."})
+        if not req.allocated_subnet:
+            return json.dumps({"error": f"Request #{request_id} has no allocated subnet."})
+        if req.status not in (RequestStatus.CIDR_ASSIGNED, RequestStatus.VNET_CREATED,
+                               RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS):
+            return json.dumps({"error": f"Cannot deallocate — status is '{req.status_label()}'. Only pre-integration statuses are allowed."})
 
-            subnet = req.allocated_subnet
-            # Determine pool from subnet
-            pool_key = None
-            for key, cidr in _POOLS.items():
-                try:
-                    if _ip.ip_network(subnet).subnet_of(_ip.ip_network(cidr)):
-                        pool_key = key
-                        break
-                except Exception:
-                    continue
-
-            if pool_key:
-                import ipaddress
-                base_net = ipaddress.ip_network(_POOLS[pool_key])
-                ok, msg = deallocate_subnet(subnet, base_net)
-                if not ok:
-                    return json.dumps({"error": f"Failed to release subnet: {msg}"})
-
-            # Record deallocation reason and revert status
-            old_notes = req.notes or ""
-            req.notes = f"{old_notes}\n[DEALLOCATED {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] {reason}".strip()
-            req.allocated_subnet = None
-            req.status = RequestStatus.CIDR_REQUESTED
-            req.updated_at = datetime.utcnow()
-            db.session.commit()
-
+        subnet = req.allocated_subnet
+        pool_key = None
+        for key, cidr in _POOLS.items():
             try:
-                notifications.notify_custom(
-                    title=f"CIDR Deallocated — Request #{request_id}",
-                    message=f"Subnet **{subnet}** has been released back to the pool.\n\n**Reason:** {reason}\n\nRequest reverted to CIDR_REQUESTED status.",
-                    level="warning",
-                )
+                if _ip.ip_network(subnet).subnet_of(_ip.ip_network(cidr)):
+                    pool_key = key
+                    break
             except Exception:
-                pass
+                continue
+
+        if pool_key:
+            base_net = _ip.ip_network(_POOLS[pool_key])
+            ok, msg = deallocate_subnet(subnet, base_net)
+            if not ok:
+                return json.dumps({"error": f"Failed to release subnet: {msg}"})
+
+        old_notes = req.notes or ""
+        req.notes = f"{old_notes}\n[DEALLOCATED {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] {reason}".strip()
+        req.allocated_subnet = None
+        req.status = RequestStatus.CIDR_REQUESTED
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        try:
+            notifications.notify_custom(
+                title=f"CIDR Deallocated — Request #{request_id}",
+                message=f"Subnet **{subnet}** has been released.\n\n**Reason:** {reason}\n\nRequest reverted to CIDR_REQUESTED status.",
+                level="warning",
+            )
+        except Exception:
+            pass
 
         return json.dumps({
             "success": True,
@@ -673,34 +665,33 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
             "reason": reason,
         })
     except Exception as exc:
+        db.session.rollback()
         return json.dumps({"error": str(exc)})
 
 
 def _tool_update_status(request_id: int, status: str, notes: str = None) -> str:
-    from models import RequestStatus
+    from models import db, SpokeRequest, RequestStatus
     admin_statuses = [RequestStatus.HUB_INTEGRATION_IN_PROGRESS, RequestStatus.HUB_INTEGRATED]
     if status not in admin_statuses:
         return json.dumps({"error": f"Admin can only set: {admin_statuses}"})
     try:
-        from models import db, SpokeRequest
-        from app import app
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found."})
-            req.status = status
-            req.updated_at = datetime.utcnow()
-            if notes:
-                req.notes = notes
-            db.session.commit()
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found."})
+        req.status = status
+        req.updated_at = datetime.utcnow()
+        if notes:
+            req.notes = notes
+        db.session.commit()
 
-            if status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS:
-                notifications.notify_hub_in_progress(req)
-            elif status == RequestStatus.HUB_INTEGRATED:
-                notifications.notify_hub_integrated(req)
+        if status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS:
+            notifications.notify_hub_in_progress(req)
+        elif status == RequestStatus.HUB_INTEGRATED:
+            notifications.notify_hub_integrated(req)
 
         return json.dumps({"success": True, "message": f"Request #{request_id} status updated to {status}."})
     except Exception as exc:
+        db.session.rollback()
         return json.dumps({"error": str(exc)})
 
 

@@ -175,45 +175,43 @@ def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_int
         return json.dumps({"error": f"Invalid IP range. Must be one of: {valid_pools}"})
     try:
         from models import db, SpokeRequest, RequestStatus
-        from app import app
-        with app.app_context():
-            req = SpokeRequest(
-                cidr_needed=str(cidr_needed),
-                purpose=purpose,
-                requester_name=requester_name,
-                ip_range=ip_range,
-                hub_integration=bool(hub_integration),
-                status=RequestStatus.CIDR_REQUESTED,
-            )
-            db.session.add(req)
-            db.session.commit()
-            req_id = req.id
-            notifications.notify_cidr_requested(req)
+        req = SpokeRequest(
+            cidr_needed=str(cidr_needed),
+            purpose=purpose,
+            requester_name=requester_name,
+            ip_range=ip_range,
+            hub_integration=bool(hub_integration),
+            status=RequestStatus.CIDR_REQUESTED,
+        )
+        db.session.add(req)
+        db.session.commit()
+        req_id = req.id
+        notifications.notify_cidr_requested(req)
         return json.dumps({
             "success":    True,
             "request_id": req_id,
             "message":    f"Request #{req_id} created successfully. Teams notification sent.",
         })
     except Exception as exc:
+        db.session.rollback()
         return json.dumps({"error": str(exc)})
 
 
 def _tool_update_vnet_created(request_id: int) -> str:
     try:
         from models import db, SpokeRequest, RequestStatus
-        from app import app
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found."})
-            if req.status != RequestStatus.CIDR_ASSIGNED:
-                return json.dumps({"error": f"Cannot mark VNET Created — current status is '{req.status_label()}'. CIDR must be assigned first."})
-            req.status = RequestStatus.VNET_CREATED
-            req.updated_at = datetime.utcnow()
-            db.session.commit()
-            notifications.notify_vnet_created(req)
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found."})
+        if req.status != RequestStatus.CIDR_ASSIGNED:
+            return json.dumps({"error": f"Cannot mark VNET Created — current status is '{req.status_label()}'. CIDR must be assigned first."})
+        req.status = RequestStatus.VNET_CREATED
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+        notifications.notify_vnet_created(req)
         return json.dumps({"success": True, "message": f"Request #{request_id} updated to VNET Created. Teams notification sent."})
     except Exception as exc:
+        db.session.rollback()
         return json.dumps({"error": str(exc)})
 
 
@@ -230,50 +228,45 @@ def _tool_request_hub_integration(
 ) -> str:
     try:
         from models import db, SpokeRequest, VnetInfo, RequestStatus
-        from app import app
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found."})
-            if req.status not in (RequestStatus.VNET_CREATED, RequestStatus.CIDR_ASSIGNED):
-                return json.dumps({"error": f"Cannot request hub integration — status is '{req.status_label()}'."})
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found."})
+        if req.status not in (RequestStatus.VNET_CREATED, RequestStatus.CIDR_ASSIGNED):
+            return json.dumps({"error": f"Cannot request hub integration — status is '{req.status_label()}'."})
 
-            # Save or update VnetInfo
-            vi = req.vnet_info or VnetInfo(request_id=request_id)
-            vi.vnet_name       = vnet_name or vi.vnet_name
-            vi.vnet_id         = vnet_id or vi.vnet_id
-            vi.subscription_id = subscription_id or vi.subscription_id
-            vi.resource_group  = resource_group or vi.resource_group
-            vi.region          = region or vi.region
-            vi.address_space   = address_space or vi.address_space
-            vi.vpn_zpa_access  = bool(vpn_zpa_access)
-            if outbound_rules is not None:
-                vi.set_outbound_rules(outbound_rules)
+        vi = req.vnet_info or VnetInfo(request_id=request_id)
+        vi.vnet_name       = vnet_name or vi.vnet_name
+        vi.vnet_id         = vnet_id or vi.vnet_id
+        vi.subscription_id = subscription_id or vi.subscription_id
+        vi.resource_group  = resource_group or vi.resource_group
+        vi.region          = region or vi.region
+        vi.address_space   = address_space or vi.address_space
+        vi.vpn_zpa_access  = bool(vpn_zpa_access)
+        if outbound_rules is not None:
+            vi.set_outbound_rules(outbound_rules)
 
-            if not req.vnet_info:
-                db.session.add(vi)
+        if not req.vnet_info:
+            db.session.add(vi)
 
-            req.status = RequestStatus.HUB_INTEGRATION_NEEDED
-            req.updated_at = datetime.utcnow()
-            db.session.commit()
-            notifications.notify_hub_integration_needed(req)
-
+        req.status = RequestStatus.HUB_INTEGRATION_NEEDED
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+        notifications.notify_hub_integration_needed(req)
         return json.dumps({"success": True, "message": f"Request #{request_id} updated to Hub Integration Needed. VNET details saved. Admin notified."})
     except Exception as exc:
+        db.session.rollback()
         return json.dumps({"error": str(exc)})
 
 
 def _tool_check_status(request_id: int) -> str:
     try:
         from models import SpokeRequest
-        from app import app
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found. Please check your Request ID."})
-            data = req.to_dict()
-            if req.vnet_info:
-                data["vnet_info"] = req.vnet_info.to_dict()
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found. Please check your Request ID."})
+        data = req.to_dict()
+        if req.vnet_info:
+            data["vnet_info"] = req.vnet_info.to_dict()
         return json.dumps(data)
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -282,12 +275,10 @@ def _tool_check_status(request_id: int) -> str:
 def _tool_send_reminder(request_id: int, message: str) -> str:
     try:
         from models import SpokeRequest
-        from app import app
-        with app.app_context():
-            req = SpokeRequest.query.get(request_id)
-            if not req:
-                return json.dumps({"error": f"Request #{request_id} not found."})
-            ok = notifications.notify_reminder(req, message)
+        req = SpokeRequest.query.get(request_id)
+        if not req:
+            return json.dumps({"error": f"Request #{request_id} not found."})
+        ok = notifications.notify_reminder(req, message)
         return json.dumps({"success": ok, "message": "Reminder sent to admin via Teams." if ok else "Notification failed — check TEAMS_WEBHOOK_URL."})
     except Exception as exc:
         return json.dumps({"error": str(exc)})

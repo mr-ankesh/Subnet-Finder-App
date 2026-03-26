@@ -19,11 +19,6 @@ class Config:
     # ── Teams ──────────────────────────────────────────────
     TEAMS_WEBHOOK_URL: str = _get("TEAMS_WEBHOOK_URL")
 
-    # ── Subnet Finder (basic-auth) ─────────────────────────
-    SUBNET_FINDER_BASE_URL: str = _get("SUBNET_FINDER_BASE_URL", "https://azsubnetfinder.presight.ai")
-    SUBNET_FINDER_USER: str     = _get("SUBNET_FINDER_USER")
-    SUBNET_FINDER_PASS: str     = _get("SUBNET_FINDER_PASS")
-
     # ── AI Agent provider ──────────────────────────────────
     # "anthropic" or "openai" (Azure OpenAI, LM Studio, Ollama, etc.)
     AGENT_PROVIDER: str   = _get("AGENT_PROVIDER", "anthropic")
