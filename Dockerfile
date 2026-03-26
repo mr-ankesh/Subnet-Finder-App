@@ -32,7 +32,7 @@ EXPOSE 8080
 
 # Run with gunicorn — 2 workers, 120s timeout, logs to stdout/stderr
 CMD ["gunicorn", \
-     "--workers=2", \
+     "--workers=1", \
      "--bind=0.0.0.0:8080", \
      "--timeout=120", \
      "--access-logfile=-", \
