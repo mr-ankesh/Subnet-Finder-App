@@ -11,6 +11,8 @@ import notifications
 
 log = logging.getLogger(__name__)
 
+log = logging.getLogger(__name__)
+
 SYSTEM_PROMPT = """You are the Presight R&D Spoke Request Assistant.
 
 You help internal teams submit and track Azure spoke VNET CIDR requests.
@@ -173,6 +175,7 @@ def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_int
     valid_pools = ["10.110.0.0/16", "10.119.0.0/16"]
     if ip_range not in valid_pools:
         return json.dumps({"error": f"Invalid IP range. Must be one of: {valid_pools}"})
+    # Step 1: DB write
     try:
         from models import db, SpokeRequest, RequestStatus
         req = SpokeRequest(
@@ -186,15 +189,21 @@ def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_int
         db.session.add(req)
         db.session.commit()
         req_id = req.id
-        notifications.notify_cidr_requested(req)
-        return json.dumps({
-            "success":    True,
-            "request_id": req_id,
-            "message":    f"Request #{req_id} created successfully. Teams notification sent.",
-        })
+        log.info("[requester] Request #%s committed to DB (purpose=%s, requester=%s)", req_id, purpose, requester_name)
     except Exception as exc:
+        log.exception("[requester] DB error creating request")
         db.session.rollback()
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": f"Database error: {exc}"})
+    # Step 2: notification (best-effort, never blocks success)
+    try:
+        notifications.notify_cidr_requested(req)
+    except Exception as exc:
+        log.warning("[requester] Teams notification failed for request #%s: %s", req_id, exc)
+    return json.dumps({
+        "success":    True,
+        "request_id": req_id,
+        "message":    f"Request #{req_id} created successfully.",
+    })
 
 
 def _tool_update_vnet_created(request_id: int) -> str:
@@ -208,11 +217,16 @@ def _tool_update_vnet_created(request_id: int) -> str:
         req.status = RequestStatus.VNET_CREATED
         req.updated_at = datetime.utcnow()
         db.session.commit()
-        notifications.notify_vnet_created(req)
-        return json.dumps({"success": True, "message": f"Request #{request_id} updated to VNET Created. Teams notification sent."})
+        log.info("[requester] Request #%s → VNET_CREATED", request_id)
     except Exception as exc:
+        log.exception("[requester] DB error updating request #%s to VNET_CREATED", request_id)
         db.session.rollback()
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": f"Database error: {exc}"})
+    try:
+        notifications.notify_vnet_created(req)
+    except Exception as exc:
+        log.warning("[requester] Notification failed for request #%s: %s", request_id, exc)
+    return json.dumps({"success": True, "message": f"Request #{request_id} updated to VNET Created."})
 
 
 def _tool_request_hub_integration(
@@ -251,11 +265,16 @@ def _tool_request_hub_integration(
         req.status = RequestStatus.HUB_INTEGRATION_NEEDED
         req.updated_at = datetime.utcnow()
         db.session.commit()
-        notifications.notify_hub_integration_needed(req)
-        return json.dumps({"success": True, "message": f"Request #{request_id} updated to Hub Integration Needed. VNET details saved. Admin notified."})
+        log.info("[requester] Request #%s → HUB_INTEGRATION_NEEDED", request_id)
     except Exception as exc:
+        log.exception("[requester] DB error on hub integration request #%s", request_id)
         db.session.rollback()
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": f"Database error: {exc}"})
+    try:
+        notifications.notify_hub_integration_needed(req)
+    except Exception as exc:
+        log.warning("[requester] Notification failed for request #%s: %s", request_id, exc)
+    return json.dumps({"success": True, "message": f"Request #{request_id} updated to Hub Integration Needed. VNET details saved. Admin notified."})
 
 
 def _tool_check_status(request_id: int) -> str:

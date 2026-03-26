@@ -602,12 +602,17 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
         req.status = RequestStatus.CIDR_ASSIGNED
         req.updated_at = datetime.utcnow()
         db.session.commit()
-        notifications.notify_cidr_assigned(req, subnet)
-        return json.dumps({"success": True, "request_id": request_id, "subnet": subnet,
-                           "message": f"Subnet {subnet} assigned to request #{request_id}. Teams notification sent."})
+        log.info("[admin] Request #%s → CIDR_ASSIGNED (%s)", request_id, subnet)
     except Exception as exc:
+        log.exception("[admin] DB error assigning CIDR to request #%s", request_id)
         db.session.rollback()
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": f"Database error: {exc}"})
+    try:
+        notifications.notify_cidr_assigned(req, subnet)
+    except Exception as exc:
+        log.warning("[admin] Notification failed for request #%s: %s", request_id, exc)
+    return json.dumps({"success": True, "request_id": request_id, "subnet": subnet,
+                       "message": f"Subnet {subnet} assigned to request #{request_id}."})
 
 
 def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
@@ -648,25 +653,25 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
         req.status = RequestStatus.CIDR_REQUESTED
         req.updated_at = datetime.utcnow()
         db.session.commit()
-
-        try:
-            notifications.notify_custom(
-                title=f"CIDR Deallocated — Request #{request_id}",
-                message=f"Subnet **{subnet}** has been released.\n\n**Reason:** {reason}\n\nRequest reverted to CIDR_REQUESTED status.",
-                level="warning",
-            )
-        except Exception:
-            pass
-
-        return json.dumps({
-            "success": True,
-            "message": f"Subnet {subnet} released from request #{request_id}. Status reverted to CIDR_REQUESTED. Reason recorded.",
-            "subnet": subnet,
-            "reason": reason,
-        })
+        log.info("[admin] Request #%s deallocated subnet %s — reason: %s", request_id, subnet, reason)
     except Exception as exc:
+        log.exception("[admin] DB error deallocating request #%s", request_id)
         db.session.rollback()
-        return json.dumps({"error": str(exc)})
+        return json.dumps({"error": f"Database error: {exc}"})
+    try:
+        notifications.notify_custom(
+            title=f"CIDR Deallocated — Request #{request_id}",
+            message=f"Subnet **{subnet}** has been released.\n\n**Reason:** {reason}\n\nRequest reverted to CIDR_REQUESTED status.",
+            level="warning",
+        )
+    except Exception as exc:
+        log.warning("[admin] Notification failed for deallocation of request #%s: %s", request_id, exc)
+    return json.dumps({
+        "success": True,
+        "message": f"Subnet {subnet} released from request #{request_id}. Status reverted to CIDR_REQUESTED. Reason recorded.",
+        "subnet": subnet,
+        "reason": reason,
+    })
 
 
 def _tool_update_status(request_id: int, status: str, notes: str = None) -> str:
@@ -683,16 +688,19 @@ def _tool_update_status(request_id: int, status: str, notes: str = None) -> str:
         if notes:
             req.notes = notes
         db.session.commit()
-
+        log.info("[admin] Request #%s → %s", request_id, status)
+    except Exception as exc:
+        log.exception("[admin] DB error updating status for request #%s", request_id)
+        db.session.rollback()
+        return json.dumps({"error": f"Database error: {exc}"})
+    try:
         if status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS:
             notifications.notify_hub_in_progress(req)
         elif status == RequestStatus.HUB_INTEGRATED:
             notifications.notify_hub_integrated(req)
-
-        return json.dumps({"success": True, "message": f"Request #{request_id} status updated to {status}."})
     except Exception as exc:
-        db.session.rollback()
-        return json.dumps({"error": str(exc)})
+        log.warning("[admin] Notification failed for request #%s status update: %s", request_id, exc)
+    return json.dumps({"success": True, "message": f"Request #{request_id} status updated to {status}."})
 
 
 # ── Client + chat (same pattern as requester agent) ───────────────────────
