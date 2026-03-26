@@ -28,8 +28,19 @@ class Config:
     SUBNET_FINDER_USER: str     = _get("SUBNET_FINDER_USER")
     SUBNET_FINDER_PASS: str     = _get("SUBNET_FINDER_PASS")
 
-    # ── Claude / Anthropic ─────────────────────────────────
+    # ── AI Agent provider ──────────────────────────────────
+    # Set AGENT_PROVIDER to either "anthropic" or "openai"
+    # "openai" works for: Azure OpenAI, any OpenAI-compatible endpoint (LM Studio, Ollama, etc.)
+    AGENT_PROVIDER: str    = _get("AGENT_PROVIDER", "anthropic")
+
+    # Anthropic
     ANTHROPIC_API_KEY: str = _get("ANTHROPIC_API_KEY")
+
+    # OpenAI / Azure OpenAI / compatible
+    OPENAI_API_KEY: str      = _get("OPENAI_API_KEY")
+    OPENAI_BASE_URL: str     = _get("OPENAI_BASE_URL")        # e.g. https://YOUR.openai.azure.com/openai/deployments/gpt-4o
+    OPENAI_API_VERSION: str  = _get("OPENAI_API_VERSION", "2024-02-15-preview")  # Azure only
+    OPENAI_MODEL: str        = _get("OPENAI_MODEL", "gpt-4o") # model / deployment name
 
     # ── Azure Service Principal ────────────────────────────
     AZURE_CLIENT_ID:     str = _get("AZURE_CLIENT_ID")
