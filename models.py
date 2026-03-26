@@ -1,6 +1,5 @@
 """
 SQLAlchemy models for Spoke Request workflow.
-Uses a separate SQLite file (data/requests.db) so existing subnets.xlsx is untouched.
 """
 import json
 from datetime import datetime
@@ -9,53 +8,78 @@ from flask_sqlalchemy import SQLAlchemy
 db = SQLAlchemy()
 
 
-# ── Status constants ────────────────────────────────────────────────────────
 class RequestStatus:
-    PENDING           = "pending"            # Step 1 submitted, waiting for agent
-    SUBNET_ALLOCATED  = "subnet_allocated"   # Agent found + allocated subnet
-    DEPLOYING         = "deploying"          # Requester is deploying the spoke VNET
-    COMPLETED         = "completed"          # Requester confirmed deployment done
-    CANCELLED         = "cancelled"
+    CIDR_REQUESTED            = "CIDR_REQUESTED"
+    CIDR_ASSIGNED             = "CIDR_ASSIGNED"
+    VNET_CREATED              = "VNET_CREATED"
+    HUB_INTEGRATION_NEEDED    = "HUB_INTEGRATION_NEEDED"
+    HUB_INTEGRATION_IN_PROGRESS = "HUB_INTEGRATION_IN_PROGRESS"
+    HUB_INTEGRATED            = "HUB_INTEGRATED"
+    CANCELLED                 = "CANCELLED"
 
+    # Ordered workflow steps (not including CANCELLED)
+    ORDERED = [
+        CIDR_REQUESTED,
+        CIDR_ASSIGNED,
+        VNET_CREATED,
+        HUB_INTEGRATION_NEEDED,
+        HUB_INTEGRATION_IN_PROGRESS,
+        HUB_INTEGRATED,
+    ]
 
-STATUS_LABELS = {
-    RequestStatus.PENDING:          ("Pending",           "warning"),
-    RequestStatus.SUBNET_ALLOCATED: ("Subnet Allocated",  "info"),
-    RequestStatus.DEPLOYING:        ("Deploying",         "primary"),
-    RequestStatus.COMPLETED:        ("Completed",         "success"),
-    RequestStatus.CANCELLED:        ("Cancelled",         "danger"),
-}
+    _LABELS = {
+        CIDR_REQUESTED:              "CIDR Requested",
+        CIDR_ASSIGNED:               "CIDR Assigned",
+        VNET_CREATED:                "VNET Created",
+        HUB_INTEGRATION_NEEDED:      "Hub Integration Needed",
+        HUB_INTEGRATION_IN_PROGRESS: "Hub Integration In Progress",
+        HUB_INTEGRATED:              "Hub Integrated",
+        CANCELLED:                   "Cancelled",
+    }
+
+    _COLORS = {
+        CIDR_REQUESTED:              "warning",
+        CIDR_ASSIGNED:               "info",
+        VNET_CREATED:                "primary",
+        HUB_INTEGRATION_NEEDED:      "warning",
+        HUB_INTEGRATION_IN_PROGRESS: "info",
+        HUB_INTEGRATED:              "success",
+        CANCELLED:                   "danger",
+    }
+
+    @classmethod
+    def label(cls, status: str) -> str:
+        return cls._LABELS.get(status, status)
+
+    @classmethod
+    def color(cls, status: str) -> str:
+        return cls._COLORS.get(status, "secondary")
 
 
 class SpokeRequest(db.Model):
     __tablename__ = "spoke_requests"
 
     id               = db.Column(db.Integer, primary_key=True)
-    cidr_needed      = db.Column(db.String(20),  nullable=False)   # e.g. "/24"
+    cidr_needed      = db.Column(db.String(20),  nullable=False)
     purpose          = db.Column(db.String(500), nullable=False)
     requester_name   = db.Column(db.String(200), nullable=False)
-    ip_range         = db.Column(db.String(20),  nullable=False)   # "10.110.0.0/16" or "10.119.0.0/16"
+    ip_range         = db.Column(db.String(20),  nullable=False)
     hub_integration  = db.Column(db.Boolean,     nullable=False, default=False)
-    status           = db.Column(db.String(30),  nullable=False, default=RequestStatus.PENDING)
-    allocated_subnet = db.Column(db.String(50),  nullable=True)    # filled by agent
-    teams_notified   = db.Column(db.Boolean,     default=False)
+    status           = db.Column(db.String(40),  nullable=False, default=RequestStatus.CIDR_REQUESTED)
+    allocated_subnet = db.Column(db.String(50),  nullable=True)
     notes            = db.Column(db.Text,        nullable=True)
     created_at       = db.Column(db.DateTime,    default=datetime.utcnow)
     updated_at       = db.Column(db.DateTime,    default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationship to VNET info (one-to-one, filled at Step 3)
     vnet_info = db.relationship("VnetInfo", back_populates="request", uselist=False, cascade="all, delete-orphan")
 
     def status_label(self):
-        label, _ = STATUS_LABELS.get(self.status, ("Unknown", "secondary"))
-        return label
+        return RequestStatus.label(self.status)
 
     def status_color(self):
-        _, color = STATUS_LABELS.get(self.status, ("Unknown", "secondary"))
-        return color
+        return RequestStatus.color(self.status)
 
     def pool_key(self):
-        """Return the pool key used by the existing subnet finder (e.g. '10.110')."""
         return self.ip_range.rsplit(".", 1)[0].rsplit(".", 1)[0] if self.ip_range else ""
 
     def to_dict(self):
@@ -69,6 +93,7 @@ class SpokeRequest(db.Model):
             "status":           self.status,
             "status_label":     self.status_label(),
             "allocated_subnet": self.allocated_subnet,
+            "notes":            self.notes,
             "created_at":       self.created_at.strftime("%Y-%m-%d %H:%M") if self.created_at else "",
             "updated_at":       self.updated_at.strftime("%Y-%m-%d %H:%M") if self.updated_at else "",
         }
@@ -77,18 +102,17 @@ class SpokeRequest(db.Model):
 class VnetInfo(db.Model):
     __tablename__ = "vnet_info"
 
-    id               = db.Column(db.Integer,  primary_key=True)
-    request_id       = db.Column(db.Integer,  db.ForeignKey("spoke_requests.id"), nullable=False, unique=True)
-    subscription_id  = db.Column(db.String(100), nullable=False)
-    vnet_id          = db.Column(db.String(300), nullable=False)   # full ARM resource ID
-    vnet_name        = db.Column(db.String(200), nullable=False)
-    resource_group   = db.Column(db.String(200), nullable=False)
-    region           = db.Column(db.String(100), nullable=False)
-    address_space    = db.Column(db.String(100), nullable=False)   # CIDR of deployed spoke
-    # Outbound rules stored as JSON: [{"destination": "...", "port": "...", "protocol": "..."}]
-    outbound_rules   = db.Column(db.Text,  nullable=True)
-    vpn_zpa_access   = db.Column(db.Boolean, default=False)
-    created_at       = db.Column(db.DateTime, default=datetime.utcnow)
+    id               = db.Column(db.Integer,     primary_key=True)
+    request_id       = db.Column(db.Integer,     db.ForeignKey("spoke_requests.id"), nullable=False, unique=True)
+    subscription_id  = db.Column(db.String(100), nullable=True)
+    vnet_id          = db.Column(db.String(300), nullable=True)
+    vnet_name        = db.Column(db.String(200), nullable=True)
+    resource_group   = db.Column(db.String(200), nullable=True)
+    region           = db.Column(db.String(100), nullable=True)
+    address_space    = db.Column(db.String(100), nullable=True)
+    outbound_rules   = db.Column(db.Text,        nullable=True)   # JSON list
+    vpn_zpa_access   = db.Column(db.Boolean,     default=False)
+    created_at       = db.Column(db.DateTime,    default=datetime.utcnow)
 
     request = db.relationship("SpokeRequest", back_populates="vnet_info")
 

@@ -6,7 +6,7 @@
   <img class="alloc-page-bg" src="{{ url_for('static', filename='2nd Background.png') }}" alt="">
   <div class="alloc-page-header-content">
     <h1 class="alloc-page-title">Spoke Requests</h1>
-    <p class="alloc-page-sub">Part 1 — Information Collection &amp; Tracking</p>
+    <p class="alloc-page-sub">Admin View — Manage all spoke VNET CIDR requests</p>
   </div>
 </div>
 
@@ -14,12 +14,29 @@
 
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
     <div>
-      <h2 style="font-family:var(--font-heading);font-size:1.2rem;font-weight:600;color:var(--text);margin:0;">All Requests</h2>
-      <p style="font-size:13px;color:var(--text-muted);margin:4px 0 0;">{{ requests|length }} total request{{ 's' if requests|length != 1 }}</p>
+      <h2 style="font-family:var(--font-heading);font-size:1.1rem;font-weight:600;color:var(--text);margin:0;">All Requests</h2>
+      <p style="font-size:13px;color:var(--text-muted);margin:4px 0 0;">{{ requests|length }} total</p>
     </div>
-    <a href="{{ url_for('request_new') }}" class="btn-hero" style="font-size:13px;padding:10px 22px;text-decoration:none;">
-      <i class="bi bi-plus-lg me-2"></i>New Spoke Request
-    </a>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <a href="{{ url_for('agent_page') }}" class="btn btn-glass" style="font-size:13px;">
+        <i class="bi bi-robot me-1"></i>Admin Agent
+      </a>
+    </div>
+  </div>
+
+  <!-- Status summary chips -->
+  {% set status_counts = {} %}
+  {% for req in requests %}
+    {% set _ = status_counts.update({req.status: (status_counts.get(req.status, 0) + 1)}) %}
+  {% endfor %}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+    {% for status in RequestStatus.ORDERED %}
+    {% if status_counts.get(status, 0) > 0 %}
+    <span class="status-badge status-{{ RequestStatus.color(status) }}" style="font-size:11px;padding:4px 10px;">
+      {{ RequestStatus.label(status) }}: {{ status_counts.get(status, 0) }}
+    </span>
+    {% endif %}
+    {% endfor %}
   </div>
 
   {% if not requests %}
@@ -27,7 +44,7 @@
     <div class="empty-state" style="padding:60px 24px;">
       <i class="bi bi-inbox empty-icon"></i>
       <p style="font-size:15px;margin-bottom:16px;">No spoke requests yet.</p>
-      <a href="{{ url_for('request_new') }}" class="btn btn-glow">Submit First Request</a>
+      <p style="font-size:13px;color:var(--text-muted);">Requesters can submit requests via the <a href="{{ url_for('requester_page') }}" style="color:var(--accent);">Requester Portal</a>.</p>
     </div>
   </div>
   {% else %}
@@ -43,7 +60,7 @@
             <th>Purpose</th>
             <th>Hub</th>
             <th>Status</th>
-            <th>Allocated Subnet</th>
+            <th>Assigned CIDR</th>
             <th>Submitted</th>
             <th>Action</th>
           </tr>
@@ -53,9 +70,9 @@
           <tr>
             <td style="color:var(--text-muted);">#{{ req.id }}</td>
             <td style="color:var(--text);font-weight:600;">{{ req.requester_name }}</td>
-            <td><span class="cidr-chip">{{ req.cidr_needed }}</span></td>
+            <td><span class="cidr-chip">/{{ req.cidr_needed }}</span></td>
             <td style="font-family:var(--mono);font-size:12px;color:var(--text-dim);">{{ req.ip_range }}</td>
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim);">{{ req.purpose }}</td>
+            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim);">{{ req.purpose }}</td>
             <td>
               {% if req.hub_integration %}
                 <span style="color:#7edb56;font-size:12px;font-weight:600;">Yes</span>
@@ -77,9 +94,14 @@
               {{ req.created_at.strftime('%Y-%m-%d %H:%M') if req.created_at else '—' }}
             </td>
             <td>
-              <a href="{{ url_for('request_detail', req_id=req.id) }}" class="btn btn-glass btn-sm">
-                <i class="bi bi-eye me-1"></i>View
-              </a>
+              <div style="display:flex;gap:6px;">
+                <a href="{{ url_for('request_detail', req_id=req.id) }}" class="btn btn-glass btn-sm">
+                  <i class="bi bi-eye me-1"></i>View
+                </a>
+                <a href="{{ url_for('agent_page') }}?req={{ req.id }}" class="btn btn-glass btn-sm" title="Open in Agent">
+                  <i class="bi bi-robot"></i>
+                </a>
+              </div>
             </td>
           </tr>
           {% endfor %}

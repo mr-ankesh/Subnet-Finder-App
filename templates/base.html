@@ -31,12 +31,24 @@
           <a href="/" class="nav-link {% if request.endpoint == 'index' %}active{% endif %}">
             <i class="bi bi-house"></i> Home
           </a>
-          <a href="/requests" class="nav-link {% if request.endpoint and 'request' in request.endpoint %}active{% endif %}">
+          <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
+            <i class="bi bi-person"></i> Requester Portal
+          </a>
+          {% if is_admin %}
+          <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint and 'request' in request.endpoint %}active{% endif %}">
             <i class="bi bi-list-task"></i> Requests
           </a>
-          <a href="/agent" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}">
-            <i class="bi bi-robot"></i> Agent
+          <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}">
+            <i class="bi bi-robot"></i> Admin Agent
           </a>
+          <a href="{{ url_for('admin_logout') }}" class="nav-link" style="color:var(--text-muted);">
+            <i class="bi bi-box-arrow-right"></i> Logout
+          </a>
+          {% else %}
+          <a href="{{ url_for('admin_login') }}" class="nav-link {% if request.endpoint == 'admin_login' %}active{% endif %}">
+            <i class="bi bi-shield-lock"></i> Admin Login
+          </a>
+          {% endif %}
         </nav>
         <div class="nav-clock">
           <i class="bi bi-clock"></i>
