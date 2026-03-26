@@ -4,7 +4,6 @@ Admin-only. Requesters use agent_requester.py.
 """
 import json
 import logging
-import requests as http_requests
 from datetime import datetime
 
 from config import cfg
@@ -20,11 +19,23 @@ You help the network admin team manage spoke VNET requests end-to-end.
 YOUR CAPABILITIES:
 1. LIST / VIEW requests — show all requests or details of a specific one.
 2. ASSIGN CIDR — find available subnets and assign to a request.
-3. UPDATE STATUS — change request status (Hub Integration In Progress, Hub Integrated).
-4. PEER with Hub — create VNET peering with default settings or custom.
-5. CREATE UDR — create a new route table, add routes, list spoke subnets, assign UDR.
-6. FIREWALL RULES — add Application Rule (HTTP/HTTPS only) or Network Rule.
-7. SEND NOTIFICATIONS — send custom Teams messages.
+3. DEALLOCATE CIDR — release an assigned subnet back to the pool (requires reason).
+4. UPDATE STATUS — change request status (Hub Integration In Progress, Hub Integrated).
+5. PEER with Hub — create VNET peering with default settings or custom.
+6. CREATE UDR — create a new route table, add routes, list spoke subnets, assign UDR.
+7. FIREWALL RULES — add Application Rule (HTTP/HTTPS only) or Network Rule.
+8. SEND NOTIFICATIONS — send custom Teams messages.
+
+CIDR ASSIGNMENT WORKFLOW (STRICTLY FOLLOW THIS):
+- Step 1: Call find_available_subnets to get the list of available CIDRs.
+- Step 2: Present the available options to the admin clearly.
+- Step 3: WAIT for the admin to explicitly select and confirm a specific subnet.
+- Step 4: Only after explicit confirmation, call assign_cidr_to_request.
+- NEVER auto-select or auto-assign a CIDR. Always require admin to choose.
+
+CIDR DEALLOCATION:
+- Always ask for a reason before deallocating.
+- Status will revert to CIDR_REQUESTED so the request can be re-assigned.
 
 WORKFLOW:
 - Step 2: Admin assigns CIDR → use assign_cidr_to_request → status becomes CIDR_ASSIGNED
@@ -95,7 +106,7 @@ TOOLS_OPENAI = [
         "type": "function",
         "function": {
             "name": "find_available_subnets",
-            "description": "Find available subnets in a pool for a given CIDR prefix.",
+            "description": "Find available subnets in a pool for a given CIDR prefix. ALWAYS call this first and present results to admin before assigning. Never auto-assign.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -110,7 +121,7 @@ TOOLS_OPENAI = [
         "type": "function",
         "function": {
             "name": "assign_cidr_to_request",
-            "description": "Allocate a subnet and assign it to a spoke request. Updates status to CIDR_ASSIGNED.",
+            "description": "Allocate a specific subnet (chosen and confirmed by admin) and assign it to a spoke request. ONLY call this after admin has explicitly selected a subnet from the list. Updates status to CIDR_ASSIGNED.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -120,6 +131,21 @@ TOOLS_OPENAI = [
                     "allocated_by": {"type": "string", "description": "Admin name or 'Admin Agent'"},
                 },
                 "required": ["request_id", "pool", "subnet", "allocated_by"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "deallocate_cidr_from_request",
+            "description": "Release an assigned subnet back to the pool and revert request status to CIDR_REQUESTED. Always collect reason before calling.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "integer"},
+                    "reason":     {"type": "string", "description": "Reason for deallocating the CIDR (required)"},
+                },
+                "required": ["request_id", "reason"],
             },
         },
     },
@@ -325,6 +351,8 @@ def _execute_tool(name: str, inputs: dict) -> str:
             return _tool_find_subnets(**inputs)
         elif name == "assign_cidr_to_request":
             return _tool_assign_cidr(**inputs)
+        elif name == "deallocate_cidr_from_request":
+            return _tool_deallocate_cidr(**inputs)
         elif name == "update_request_status":
             return _tool_update_status(**inputs)
         elif name == "get_peering_defaults":
@@ -387,47 +415,60 @@ def _tool_get_request(request_id: int) -> str:
         return json.dumps({"error": str(exc)})
 
 
+_POOLS = {"10.110": "10.110.0.0/16", "10.119": "10.119.0.0/16"}
+
 def _tool_find_subnets(pool: str, prefix: int) -> str:
-    auth = (cfg.SUBNET_FINDER_USER, cfg.SUBNET_FINDER_PASS) if cfg.SUBNET_FINDER_USER else None
+    import ipaddress as _ip
+    if pool not in _POOLS:
+        return json.dumps({"error": f"Invalid pool. Must be one of: {list(_POOLS.keys())}"})
+    if not (8 <= prefix <= 29):
+        return json.dumps({"error": "Prefix must be between /8 and /29"})
     try:
-        resp = http_requests.post(
-            f"{cfg.SUBNET_FINDER_BASE_URL}/get_subnet",
-            params={"pool": pool},
-            data={"cidr": f"/{prefix}", "pool": pool},
-            auth=auth, timeout=15, verify=False,
-        )
-        return json.dumps(resp.json())
+        from app import load_subnets, compute_free_blocks, candidates_from_free
+        base_net = _ip.ip_network(_POOLS[pool])
+        df = load_subnets()
+        free_blocks = compute_free_blocks(base_net, df)
+        candidates, truncated = candidates_from_free(free_blocks, prefix, limit=20)
+        return json.dumps({
+            "pool": pool,
+            "prefix": f"/{prefix}",
+            "candidates": candidates,
+            "total_shown": len(candidates),
+            "truncated": truncated,
+            "message": (
+                f"Found {len(candidates)} available /{prefix} subnets in {_POOLS[pool]}. "
+                "Present these to admin and ask them to select one."
+            ),
+        })
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
 def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str) -> str:
-    auth = (cfg.SUBNET_FINDER_USER, cfg.SUBNET_FINDER_PASS) if cfg.SUBNET_FINDER_USER else None
+    import ipaddress as _ip
+    if pool not in _POOLS:
+        return json.dumps({"error": f"Invalid pool '{pool}'. Must be one of: {list(_POOLS.keys())}"})
     try:
         from models import db, SpokeRequest, RequestStatus
-        from app import app
+        from app import app, allocate_subnet
         with app.app_context():
             req = SpokeRequest.query.get(request_id)
             if not req:
                 return json.dumps({"error": f"Request #{request_id} not found."})
+            if req.status != RequestStatus.CIDR_REQUESTED:
+                return json.dumps({"error": f"Request is already in status '{req.status_label()}'. Cannot assign CIDR."})
 
-            # Allocate in subnet finder
-            resp = http_requests.post(
-                f"{cfg.SUBNET_FINDER_BASE_URL}/allocate",
-                params={"pool": pool},
-                data={
-                    "pool": pool, "selected": subnet,
-                    "purpose": req.purpose,
-                    "requested_by": req.requester_name,
-                    "allocated_by": allocated_by,
-                },
-                auth=auth, timeout=15, verify=False,
+            base_net = _ip.ip_network(_POOLS[pool])
+            ok, msg = allocate_subnet(
+                selected_cidr=subnet,
+                base_net=base_net,
+                purpose=req.purpose,
+                requested_by=req.requester_name,
+                allocated_by=allocated_by,
             )
-            data = resp.json()
-            if "error" in data:
-                return json.dumps(data)
+            if not ok:
+                return json.dumps({"error": msg})
 
-            # Update DB
             req.allocated_subnet = subnet
             req.status = RequestStatus.CIDR_ASSIGNED
             req.updated_at = datetime.utcnow()
@@ -436,6 +477,68 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
 
         return json.dumps({"success": True, "request_id": request_id, "subnet": subnet,
                            "message": f"Subnet {subnet} assigned to request #{request_id}. Teams notification sent."})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
+    import ipaddress as _ip
+    if not reason or not reason.strip():
+        return json.dumps({"error": "Reason is required for deallocation."})
+    try:
+        from models import db, SpokeRequest, RequestStatus
+        from app import app, deallocate_subnet
+        with app.app_context():
+            req = SpokeRequest.query.get(request_id)
+            if not req:
+                return json.dumps({"error": f"Request #{request_id} not found."})
+            if not req.allocated_subnet:
+                return json.dumps({"error": f"Request #{request_id} has no allocated subnet."})
+            if req.status not in (RequestStatus.CIDR_ASSIGNED, RequestStatus.VNET_CREATED,
+                                   RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS):
+                return json.dumps({"error": f"Cannot deallocate — status is '{req.status_label()}'. Only pre-integration statuses are allowed."})
+
+            subnet = req.allocated_subnet
+            # Determine pool from subnet
+            pool_key = None
+            for key, cidr in _POOLS.items():
+                try:
+                    if _ip.ip_network(subnet).subnet_of(_ip.ip_network(cidr)):
+                        pool_key = key
+                        break
+                except Exception:
+                    continue
+
+            if pool_key:
+                import ipaddress
+                base_net = ipaddress.ip_network(_POOLS[pool_key])
+                ok, msg = deallocate_subnet(subnet, base_net)
+                if not ok:
+                    return json.dumps({"error": f"Failed to release subnet: {msg}"})
+
+            # Record deallocation reason and revert status
+            old_notes = req.notes or ""
+            req.notes = f"{old_notes}\n[DEALLOCATED {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] {reason}".strip()
+            req.allocated_subnet = None
+            req.status = RequestStatus.CIDR_REQUESTED
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
+
+            try:
+                notifications.notify_custom(
+                    title=f"CIDR Deallocated — Request #{request_id}",
+                    message=f"Subnet **{subnet}** has been released back to the pool.\n\n**Reason:** {reason}\n\nRequest reverted to CIDR_REQUESTED status.",
+                    level="warning",
+                )
+            except Exception:
+                pass
+
+        return json.dumps({
+            "success": True,
+            "message": f"Subnet {subnet} released from request #{request_id}. Status reverted to CIDR_REQUESTED. Reason recorded.",
+            "subnet": subnet,
+            "reason": reason,
+        })
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
