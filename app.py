@@ -2,8 +2,11 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, s
 from functools import wraps
 import pandas as pd
 import ipaddress
+import logging
 import os
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 
 from config import cfg
 from models import db, SpokeRequest, VnetInfo, RequestStatus
@@ -52,6 +55,9 @@ def require_admin(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("is_admin"):
+            # Return JSON for API routes, redirect for page routes
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for("admin_login", next=request.url))
         return f(*args, **kwargs)
     return decorated
@@ -76,7 +82,7 @@ def admin_login():
 @app.route("/admin/logout")
 def admin_logout():
     session.pop("is_admin", None)
-    return redirect(url_for("segment_select"))
+    return redirect(url_for("requester_page"))
 
 
 # ── Excel helpers ───────────────────────────────────────────────────────────
@@ -242,12 +248,14 @@ def deallocate_subnet(selected_cidr, base_net):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.route("/")
+@require_admin
 def segment_select():
     pools = [{"key": k, "cidr": v} for k, v in POOLS.items()]
     return render_template("index.html", pools=pools)
 
 
 @app.route("/allocator/<pool_key>")
+@require_admin
 def allocator(pool_key):
     if pool_key not in POOLS:
         pool_key = DEFAULT_POOL
@@ -259,6 +267,7 @@ def allocator(pool_key):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.route("/pool_stats")
+@require_admin
 def pool_stats():
     pool, base_net = get_pool_from_request()
     df = load_subnets()
@@ -272,6 +281,7 @@ def pool_stats():
 
 
 @app.route("/get_subnet", methods=["POST"])
+@require_admin
 def get_subnet():
     pool, base_net = get_pool_from_request()
     df = load_subnets()
@@ -292,6 +302,7 @@ def get_subnet():
 
 
 @app.route("/allocate", methods=["POST"])
+@require_admin
 def allocate():
     pool, base_net = get_pool_from_request()
     selected    = request.form.get("selected")
@@ -305,6 +316,7 @@ def allocate():
 
 
 @app.route("/deallocate", methods=["POST"])
+@require_admin
 def deallocate():
     pool, base_net = get_pool_from_request()
     selected = request.form.get("selected")
@@ -315,6 +327,7 @@ def deallocate():
 
 
 @app.route("/all_available")
+@require_admin
 def all_available():
     pool, base_net = get_pool_from_request()
     df = load_subnets()
@@ -323,6 +336,7 @@ def all_available():
 
 
 @app.route("/available_base")
+@require_admin
 def available_base_route():
     pool, base_net = get_pool_from_request()
     df = load_subnets()
@@ -330,6 +344,7 @@ def available_base_route():
 
 
 @app.route("/allocated")
+@require_admin
 def allocated():
     pool, base_net = get_pool_from_request()
     df = load_subnets()
@@ -341,6 +356,7 @@ def allocated():
 
 
 @app.route("/summary_unused")
+@require_admin
 def summary_unused_route():
     pool, base_net = get_pool_from_request()
     df = load_subnets()
@@ -352,6 +368,7 @@ def summary_unused_route():
 
 
 @app.route("/free_summary")
+@require_admin
 def free_summary():
     pool, base_net = get_pool_from_request()
     df = load_subnets()
@@ -456,7 +473,6 @@ def requester_clear():
 
 @app.route("/api/requester/chat", methods=["POST"])
 def requester_chat():
-    import agent_requester as ag
     data = request.get_json(force=True)
     user_msg = (data.get("message") or "").strip()
     if not user_msg:
@@ -467,8 +483,10 @@ def requester_chat():
 
     result = {"reply": "Agent error.", "tool_calls": []}
     try:
+        import agent_requester as ag
         result = ag.chat(history)
     except Exception as exc:
+        log.exception("Requester agent error")
         result["reply"] = f"Agent error: {exc}"
 
     history.append({"role": "assistant", "content": result["reply"]})
@@ -500,7 +518,6 @@ def agent_clear():
 @app.route("/api/agent/chat", methods=["POST"])
 @require_admin
 def agent_chat():
-    import agent_admin as ag
     data = request.get_json(force=True)
     user_msg = (data.get("message") or "").strip()
     if not user_msg:
@@ -511,8 +528,10 @@ def agent_chat():
 
     result = {"reply": "Agent error.", "tool_calls": []}
     try:
+        import agent_admin as ag
         result = ag.chat(history)
     except Exception as exc:
+        log.exception("Admin agent error")
         result["reply"] = f"Agent error: {exc}"
 
     history.append({"role": "assistant", "content": result["reply"]})
