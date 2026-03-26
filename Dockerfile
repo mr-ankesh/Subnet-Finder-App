@@ -18,8 +18,9 @@ COPY app.py .
 COPY config.py .
 COPY models.py .
 COPY notifications.py .
-COPY agent.py .
 COPY azure_tools.py .
+COPY agent_requester.py .
+COPY agent_admin.py .
 COPY templates/ templates/
 COPY static/    static/
 
