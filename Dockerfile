@@ -15,6 +15,11 @@ COPY --from=builder /install /usr/local
 
 # Copy application code
 COPY app.py .
+COPY config.py .
+COPY models.py .
+COPY notifications.py .
+COPY agent.py .
+COPY azure_tools.py .
 COPY templates/ templates/
 COPY static/    static/
 
