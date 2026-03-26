@@ -1,0 +1,15 @@
+# Azure Files PVC — stores requests.db (SQLite) and subnets.xlsx
+# Azure Files supports ReadWriteMany and persists across pod restarts.
+# StorageClass 'azurefile-csi' is available by default on AKS.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: subnet-manager-data
+  namespace: subnet-manager
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: azurefile-csi
+  resources:
+    requests:
+      storage: 5Gi

@@ -455,6 +455,18 @@ def request_vnet_info(req_id):
     return render_template("vnet_form.html", req=req, errors=[], form={})
 
 
+# ── Health check (unauthenticated, for K8s probes) ──────────────────────────
+
+@app.route("/health")
+def health():
+    try:
+        db.session.execute(db.text("SELECT 1"))
+        count = SpokeRequest.query.count()
+        return jsonify({"status": "ok", "db_path": app.config["SQLALCHEMY_DATABASE_URI"], "request_count": count}), 200
+    except Exception as exc:
+        return jsonify({"status": "error", "detail": str(exc)}), 500
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Requester Agent (public)
 # ═══════════════════════════════════════════════════════════════════════════

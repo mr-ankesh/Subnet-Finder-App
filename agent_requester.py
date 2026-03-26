@@ -11,8 +11,6 @@ import notifications
 
 log = logging.getLogger(__name__)
 
-log = logging.getLogger(__name__)
-
 SYSTEM_PROMPT = """You are the Presight R&D Spoke Request Assistant.
 
 You help internal teams submit and track Azure spoke VNET CIDR requests.

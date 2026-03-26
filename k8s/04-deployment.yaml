@@ -1,0 +1,66 @@
+# IMPORTANT: Keep replicas: 1 — SQLite does not support concurrent writers.
+# If you need HA, migrate to PostgreSQL and then scale up.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: subnet-manager
+  namespace: subnet-manager
+  labels:
+    app: subnet-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: subnet-manager
+  strategy:
+    type: Recreate          # Recreate (not RollingUpdate) for SQLite safety
+  template:
+    metadata:
+      labels:
+        app: subnet-manager
+    spec:
+      containers:
+        - name: subnet-manager
+          # Replace with your ACR image: <acr-name>.azurecr.io/subnet-manager:<tag>
+          image: <YOUR_ACR>.azurecr.io/subnet-manager:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: subnet-manager-config
+            - secretRef:
+                name: subnet-manager-secret
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "768Mi"
+              cpu: "500m"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: subnet-manager-data
+      # Pull from ACR using AKS managed identity (attach ACR to AKS cluster):
+      # az aks update -n <aks-name> -g <rg> --attach-acr <acr-name>
+      # If using imagePullSecrets instead:
+      # imagePullSecrets:
+      #   - name: acr-secret
