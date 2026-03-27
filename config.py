@@ -69,5 +69,8 @@ class Config:
     # ── Flask ──────────────────────────────────────────────
     SECRET_KEY: str = _get("FLASK_SECRET_KEY", "change-me-in-production")
 
+    # ── App base URL (used in Teams notification deep-links) ──
+    SUBNET_FINDER_BASE_URL: str = _get("SUBNET_FINDER_BASE_URL", "http://localhost:8080")
+
 
 cfg = Config()

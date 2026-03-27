@@ -55,8 +55,11 @@ def _post(payload: dict) -> bool:
         return False
 
 
-def _url(path: str) -> str:
-    return f"{cfg.SUBNET_FINDER_BASE_URL.rstrip('/')}{path}"
+def _url(path: str) -> str | None:
+    base = cfg.SUBNET_FINDER_BASE_URL.strip()
+    if not base:
+        return None
+    return f"{base.rstrip('/')}{path}"
 
 
 # ── Step 1: CIDR Requested ────────────────────────────────────────────────
