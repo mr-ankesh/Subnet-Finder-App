@@ -405,11 +405,8 @@ def _execute_tool(name: str, inputs: dict) -> str:
 
 def _tool_list_requests(status_filter: str = None) -> str:
     try:
-        from models import SpokeRequest
-        q = SpokeRequest.query.order_by(SpokeRequest.created_at.desc())
-        if status_filter:
-            q = q.filter(SpokeRequest.status == status_filter)
-        reqs = q.all()
+        from db_utils import list_spoke_requests
+        reqs = list_spoke_requests(status_filter)
         return json.dumps([r.to_dict() for r in reqs])
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -417,14 +414,11 @@ def _tool_list_requests(status_filter: str = None) -> str:
 
 def _tool_get_request(request_id: int) -> str:
     try:
-        from models import SpokeRequest
-        req = SpokeRequest.query.get(request_id)
+        from db_utils import get_spoke_request
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
-        data = req.to_dict()
-        if req.vnet_info:
-            data["vnet_info"] = req.vnet_info.to_dict()
-        return json.dumps(data)
+        return json.dumps(req.to_dict())
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
@@ -548,26 +542,26 @@ def _tool_find_subnets(pool: str, prefix: int) -> str:
         _, base_net, used_nets = _read_excel_pool(_POOLS[pool])
         free_blocks = _compute_free(base_net, used_nets)
 
-        candidates = []
+        # Collect ALL candidates first, then sort by IP ascending
+        all_candidates = []
         for block in free_blocks:
             if block.prefixlen <= prefix:
                 for s in (block.subnets(new_prefix=prefix) if block.prefixlen < prefix else [block]):
-                    candidates.append(str(s))
-                    if len(candidates) >= 20:
-                        break
-            if len(candidates) >= 20:
-                break
+                    all_candidates.append(s)
+
+        all_candidates.sort(key=lambda n: int(n.network_address))
+        top25 = [str(n) for n in all_candidates[:25]]
 
         return json.dumps({
             "pool": pool,
             "prefix": f"/{prefix}",
-            "candidates": candidates,
-            "total_shown": len(candidates),
-            "more_available": len(candidates) == 20,
+            "candidates": top25,
+            "total_shown": len(top25),
+            "more_available": len(all_candidates) > 25,
             "source": _EXCEL_PATH,
             "message": (
-                f"Found {len(candidates)} available /{prefix} subnets in {_POOLS[pool]} "
-                f"(read directly from {_EXCEL_PATH}). Present these to admin and ask them to select one."
+                f"Found {len(top25)} available /{prefix} subnets in {_POOLS[pool]} "
+                f"(sorted by IP ascending). Present these to admin and ask them to select one."
             ),
         })
     except Exception as exc:
@@ -579,9 +573,10 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
     if pool not in _POOLS:
         return json.dumps({"error": f"Invalid pool '{pool}'. Must be one of: {list(_POOLS.keys())}"})
     try:
-        from models import db, SpokeRequest, RequestStatus
+        from db_utils import get_spoke_request, update_spoke_request
+        from models import RequestStatus
         from app import allocate_subnet
-        req = SpokeRequest.query.get(request_id)
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
         if req.status != RequestStatus.CIDR_REQUESTED:
@@ -598,14 +593,11 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
         if not ok:
             return json.dumps({"error": msg})
 
-        req.allocated_subnet = subnet
-        req.status = RequestStatus.CIDR_ASSIGNED
-        req.updated_at = datetime.utcnow()
-        db.session.commit()
+        update_spoke_request(request_id, allocated_subnet=subnet, status=RequestStatus.CIDR_ASSIGNED)
+        req = get_spoke_request(request_id)
         log.info("[admin] Request #%s → CIDR_ASSIGNED (%s)", request_id, subnet)
     except Exception as exc:
         log.exception("[admin] DB error assigning CIDR to request #%s", request_id)
-        db.session.rollback()
         return json.dumps({"error": f"Database error: {exc}"})
     try:
         notifications.notify_cidr_assigned(req, subnet)
@@ -620,9 +612,10 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
     if not reason or not reason.strip():
         return json.dumps({"error": "Reason is required for deallocation."})
     try:
-        from models import db, SpokeRequest, RequestStatus
+        from db_utils import get_spoke_request, update_spoke_request
+        from models import RequestStatus
         from app import deallocate_subnet
-        req = SpokeRequest.query.get(request_id)
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
         if not req.allocated_subnet:
@@ -648,15 +641,11 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
                 return json.dumps({"error": f"Failed to release subnet: {msg}"})
 
         old_notes = req.notes or ""
-        req.notes = f"{old_notes}\n[DEALLOCATED {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] {reason}".strip()
-        req.allocated_subnet = None
-        req.status = RequestStatus.CIDR_REQUESTED
-        req.updated_at = datetime.utcnow()
-        db.session.commit()
+        new_notes = f"{old_notes}\n[DEALLOCATED {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] {reason}".strip()
+        update_spoke_request(request_id, notes=new_notes, allocated_subnet=None, status=RequestStatus.CIDR_REQUESTED)
         log.info("[admin] Request #%s deallocated subnet %s — reason: %s", request_id, subnet, reason)
     except Exception as exc:
         log.exception("[admin] DB error deallocating request #%s", request_id)
-        db.session.rollback()
         return json.dumps({"error": f"Database error: {exc}"})
     try:
         notifications.notify_custom(
@@ -675,23 +664,23 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
 
 
 def _tool_update_status(request_id: int, status: str, notes: str = None) -> str:
-    from models import db, SpokeRequest, RequestStatus
+    from models import RequestStatus
     admin_statuses = [RequestStatus.HUB_INTEGRATION_IN_PROGRESS, RequestStatus.HUB_INTEGRATED]
     if status not in admin_statuses:
         return json.dumps({"error": f"Admin can only set: {admin_statuses}"})
     try:
-        req = SpokeRequest.query.get(request_id)
+        from db_utils import get_spoke_request, update_spoke_request
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
-        req.status = status
-        req.updated_at = datetime.utcnow()
+        fields = {"status": status}
         if notes:
-            req.notes = notes
-        db.session.commit()
+            fields["notes"] = notes
+        update_spoke_request(request_id, **fields)
+        req = get_spoke_request(request_id)
         log.info("[admin] Request #%s → %s", request_id, status)
     except Exception as exc:
         log.exception("[admin] DB error updating status for request #%s", request_id)
-        db.session.rollback()
         return json.dumps({"error": f"Database error: {exc}"})
     try:
         if status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS:
