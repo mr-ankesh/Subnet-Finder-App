@@ -4,7 +4,6 @@ No access to admin operations (CIDR assignment, Azure peering, firewall, UDR).
 """
 import json
 import logging
-from datetime import datetime
 
 from config import cfg
 import notifications
@@ -173,24 +172,14 @@ def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_int
     valid_pools = ["10.110.0.0/16", "10.119.0.0/16"]
     if ip_range not in valid_pools:
         return json.dumps({"error": f"Invalid IP range. Must be one of: {valid_pools}"})
-    # Step 1: DB write
+    # Step 1: DB write (direct sqlite3 — bypasses Flask-SQLAlchemy session)
     try:
-        from models import db, SpokeRequest, RequestStatus
-        req = SpokeRequest(
-            cidr_needed=str(cidr_needed),
-            purpose=purpose,
-            requester_name=requester_name,
-            ip_range=ip_range,
-            hub_integration=bool(hub_integration),
-            status=RequestStatus.CIDR_REQUESTED,
-        )
-        db.session.add(req)
-        db.session.commit()
-        req_id = req.id
+        from db_utils import create_spoke_request, get_spoke_request
+        req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration)
         log.info("[requester] Request #%s committed to DB (purpose=%s, requester=%s)", req_id, purpose, requester_name)
+        req = get_spoke_request(req_id)
     except Exception as exc:
         log.exception("[requester] DB error creating request")
-        db.session.rollback()
         return json.dumps({"error": f"Database error: {exc}"})
     # Step 2: notification (best-effort, never blocks success)
     try:
@@ -206,19 +195,18 @@ def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_int
 
 def _tool_update_vnet_created(request_id: int) -> str:
     try:
-        from models import db, SpokeRequest, RequestStatus
-        req = SpokeRequest.query.get(request_id)
+        from db_utils import get_spoke_request, update_spoke_request
+        from models import RequestStatus
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
         if req.status != RequestStatus.CIDR_ASSIGNED:
             return json.dumps({"error": f"Cannot mark VNET Created — current status is '{req.status_label()}'. CIDR must be assigned first."})
-        req.status = RequestStatus.VNET_CREATED
-        req.updated_at = datetime.utcnow()
-        db.session.commit()
+        update_spoke_request(request_id, status=RequestStatus.VNET_CREATED)
+        req = get_spoke_request(request_id)
         log.info("[requester] Request #%s → VNET_CREATED", request_id)
     except Exception as exc:
         log.exception("[requester] DB error updating request #%s to VNET_CREATED", request_id)
-        db.session.rollback()
         return json.dumps({"error": f"Database error: {exc}"})
     try:
         notifications.notify_vnet_created(req)
@@ -239,34 +227,30 @@ def _tool_request_hub_integration(
     outbound_rules: list = None,
 ) -> str:
     try:
-        from models import db, SpokeRequest, VnetInfo, RequestStatus
-        req = SpokeRequest.query.get(request_id)
+        from db_utils import get_spoke_request, update_spoke_request, upsert_vnet_info
+        from models import RequestStatus
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
         if req.status not in (RequestStatus.VNET_CREATED, RequestStatus.CIDR_ASSIGNED):
             return json.dumps({"error": f"Cannot request hub integration — status is '{req.status_label()}'."})
 
-        vi = req.vnet_info or VnetInfo(request_id=request_id)
-        vi.vnet_name       = vnet_name or vi.vnet_name
-        vi.vnet_id         = vnet_id or vi.vnet_id
-        vi.subscription_id = subscription_id or vi.subscription_id
-        vi.resource_group  = resource_group or vi.resource_group
-        vi.region          = region or vi.region
-        vi.address_space   = address_space or vi.address_space
-        vi.vpn_zpa_access  = bool(vpn_zpa_access)
-        if outbound_rules is not None:
-            vi.set_outbound_rules(outbound_rules)
-
-        if not req.vnet_info:
-            db.session.add(vi)
-
-        req.status = RequestStatus.HUB_INTEGRATION_NEEDED
-        req.updated_at = datetime.utcnow()
-        db.session.commit()
+        upsert_vnet_info(
+            request_id,
+            vnet_name=vnet_name,
+            vnet_id=vnet_id,
+            subscription_id=subscription_id,
+            resource_group=resource_group,
+            region=region,
+            address_space=address_space,
+            vpn_zpa_access=1 if vpn_zpa_access else 0,
+            outbound_rules=outbound_rules,
+        )
+        update_spoke_request(request_id, status=RequestStatus.HUB_INTEGRATION_NEEDED)
+        req = get_spoke_request(request_id)
         log.info("[requester] Request #%s → HUB_INTEGRATION_NEEDED", request_id)
     except Exception as exc:
         log.exception("[requester] DB error on hub integration request #%s", request_id)
-        db.session.rollback()
         return json.dumps({"error": f"Database error: {exc}"})
     try:
         notifications.notify_hub_integration_needed(req)
@@ -277,22 +261,19 @@ def _tool_request_hub_integration(
 
 def _tool_check_status(request_id: int) -> str:
     try:
-        from models import SpokeRequest
-        req = SpokeRequest.query.get(request_id)
+        from db_utils import get_spoke_request
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found. Please check your Request ID."})
-        data = req.to_dict()
-        if req.vnet_info:
-            data["vnet_info"] = req.vnet_info.to_dict()
-        return json.dumps(data)
+        return json.dumps(req.to_dict())
     except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
 def _tool_send_reminder(request_id: int, message: str) -> str:
     try:
-        from models import SpokeRequest
-        req = SpokeRequest.query.get(request_id)
+        from db_utils import get_spoke_request
+        req = get_spoke_request(request_id)
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
         ok = notifications.notify_reminder(req, message)
