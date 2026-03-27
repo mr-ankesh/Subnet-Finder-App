@@ -1,6 +1,3 @@
-# Requires nginx ingress controller on AKS.
-# Install: helm install ingress-nginx ingress-nginx/ingress-nginx
-# For TLS: install cert-manager and configure a ClusterIssuer.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -9,12 +6,11 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-    # Uncomment for TLS with cert-manager:
-    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: nginx
   rules:
-    - host: azsubnetmanager.presight.ai    # Replace with your hostname
+    - host: azsubnetmanager.presight.ai
       http:
         paths:
           - path: /
@@ -24,8 +20,7 @@ spec:
                 name: subnet-manager
                 port:
                   number: 80
-  # Uncomment for TLS:
-  # tls:
-  #   - hosts:
-  #       - azsubnetmanager.presight.ai
-  #     secretName: subnet-manager-tls
+  tls:
+    - hosts:
+        - azsubnetmanager.presight.ai
+      secretName: presight-tls    # copy your wildcard cert secret into this namespace (see below)

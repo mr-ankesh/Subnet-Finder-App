@@ -709,7 +709,7 @@ def _get_client():
         if cfg.OPENAI_BASE_URL and "azure.com" in cfg.OPENAI_BASE_URL:
             _client = AzureOpenAI(azure_endpoint=cfg.OPENAI_BASE_URL, api_key=cfg.OPENAI_API_KEY, api_version=cfg.OPENAI_API_VERSION)
         else:
-            kwargs = {"api_key": cfg.OPENAI_API_KEY or "not-needed"}
+            kwargs = {"api_key": cfg.OPENAI_API_KEY or "not-needed", "timeout": 120}
             if cfg.OPENAI_BASE_URL:
                 kwargs["base_url"] = cfg.OPENAI_BASE_URL
             _client = OpenAI(**kwargs)
