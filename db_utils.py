@@ -49,7 +49,14 @@ class RequestProxy:
         return RequestStatus.color(self.status)
 
     def to_dict(self):
-        d = {k: v for k, v in self.__dict__.items() if k != "vnet_info"}
+        d = {}
+        for k, v in self.__dict__.items():
+            if k == "vnet_info":
+                continue
+            if isinstance(v, datetime):
+                d[k] = v.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                d[k] = v
         d["status_label"] = self.status_label()
         if self.vnet_info:
             d["vnet_info"] = self.vnet_info
