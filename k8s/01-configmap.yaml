@@ -34,3 +34,6 @@ data:
 
   # ── Region ────────────────────────────────────────────────────────────────
   DEFAULT_AZURE_REGION: "uaenorth"
+
+  # ── App public URL (used in Teams notification deep-links) ────────────────
+  SUBNET_FINDER_BASE_URL: "https://azsubnetmanager.presight.ai"

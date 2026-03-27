@@ -14,7 +14,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: azsubnetfinder.presight.ai    # Replace with your hostname
+    - host: azsubnetmanager.presight.ai    # Replace with your hostname
       http:
         paths:
           - path: /
@@ -27,5 +27,5 @@ spec:
   # Uncomment for TLS:
   # tls:
   #   - hosts:
-  #       - azsubnetfinder.presight.ai
+  #       - azsubnetmanager.presight.ai
   #     secretName: subnet-manager-tls
