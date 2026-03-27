@@ -5,7 +5,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: subnet-manager-data
-  namespace: subnet-manager
+  namespace: Network-Deployments
 spec:
   accessModes:
     - ReadWriteMany

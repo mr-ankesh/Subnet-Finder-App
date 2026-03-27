@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: subnet-manager-config
-  namespace: subnet-manager
+  namespace: Network-Deployments
 data:
   # ── AI Agent ───────────────────────────────────────────────────────────────
   AGENT_PROVIDER: "openai"                        # openai | anthropic
@@ -34,3 +34,6 @@ data:
 
   # ── Region ────────────────────────────────────────────────────────────────
   DEFAULT_AZURE_REGION: "uaenorth"
+
+  # ── App public URL (used in Teams notification deep-links) ────────────────
+  SUBNET_FINDER_BASE_URL: "https://azsubnetfinder.presight.ai"
