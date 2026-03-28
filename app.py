@@ -486,6 +486,79 @@ def requester_clear():
     return jsonify({"message": "Conversation cleared."})
 
 
+# ── Form API endpoints (no agent — direct DB writes) ────────────────────────
+
+@app.route("/api/requester/new-request", methods=["POST"])
+def requester_new_request():
+    from db_utils import create_spoke_request, get_spoke_request
+    data = request.get_json(force=True)
+    cidr_needed   = str(data.get("cidr_needed", "")).strip()
+    purpose       = str(data.get("purpose", "")).strip()
+    requester_name = str(data.get("requester_name", "")).strip()
+    ip_range      = str(data.get("ip_range", "")).strip()
+    hub_integration = bool(data.get("hub_integration", False))
+    if not all([cidr_needed, purpose, requester_name, ip_range]):
+        return jsonify({"error": "All fields are required."}), 400
+    if ip_range not in ["10.110.0.0/16", "10.119.0.0/16"]:
+        return jsonify({"error": "Invalid IP range."}), 400
+    try:
+        req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration)
+        req = get_spoke_request(req_id)
+        try:
+            notifications.notify_cidr_requested(req)
+        except Exception:
+            pass
+        return jsonify({"success": True, "request_id": req_id})
+    except Exception as exc:
+        log.exception("Form: error creating request")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/requester/status/<int:request_id>")
+def requester_get_status(request_id):
+    from db_utils import get_spoke_request
+    req = get_spoke_request(request_id)
+    if not req:
+        return jsonify({"error": f"Request #{request_id} not found."}), 404
+    return jsonify(req.to_dict())
+
+
+@app.route("/api/requester/vnet-created", methods=["POST"])
+def requester_vnet_created():
+    from db_utils import get_spoke_request, update_spoke_request
+    data = request.get_json(force=True)
+    request_id = data.get("request_id")
+    if not request_id:
+        return jsonify({"error": "Request ID is required."}), 400
+    req = get_spoke_request(int(request_id))
+    if not req:
+        return jsonify({"error": f"Request #{request_id} not found."}), 404
+    if req.status != RequestStatus.CIDR_ASSIGNED:
+        return jsonify({"error": f"Status is '{req.status_label()}' — CIDR must be assigned first."}), 400
+    update_spoke_request(int(request_id), status=RequestStatus.VNET_CREATED)
+    req = get_spoke_request(int(request_id))
+    try:
+        notifications.notify_vnet_created(req)
+    except Exception:
+        pass
+    return jsonify({"success": True, "message": f"Request #{request_id} updated to VNET Created."})
+
+
+@app.route("/api/requester/reminder", methods=["POST"])
+def requester_send_reminder():
+    from db_utils import get_spoke_request
+    data = request.get_json(force=True)
+    request_id = data.get("request_id")
+    message = str(data.get("message", "")).strip()
+    if not request_id or not message:
+        return jsonify({"error": "Request ID and message are required."}), 400
+    req = get_spoke_request(int(request_id))
+    if not req:
+        return jsonify({"error": f"Request #{request_id} not found."}), 404
+    ok = notifications.notify_reminder(req, message)
+    return jsonify({"success": ok})
+
+
 @app.route("/api/requester/chat", methods=["POST"])
 def requester_chat():
     data = request.get_json(force=True)
