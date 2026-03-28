@@ -588,6 +588,68 @@ def requester_chat():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Admin Form API (protected, no AI)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/admin/requests")
+@require_admin
+def admin_list_requests_api():
+    from db_utils import list_spoke_requests
+    status_filter = request.args.get("status") or None
+    reqs = list_spoke_requests(status_filter)
+    return jsonify([r.to_dict() for r in reqs])
+
+
+@app.route("/api/admin/find-subnets")
+@require_admin
+def admin_find_subnets_api():
+    import agent_admin as ag
+    pool  = request.args.get("pool", "10.110")
+    prefix = request.args.get("prefix", type=int, default=24)
+    result = ag._tool_find_subnets(pool=pool, prefix=prefix)
+    return result, 200, {"Content-Type": "application/json"}
+
+
+@app.route("/api/admin/assign-cidr", methods=["POST"])
+@require_admin
+def admin_assign_cidr_api():
+    import agent_admin as ag
+    data = request.get_json(force=True)
+    result = ag._tool_assign_cidr(
+        request_id=int(data.get("request_id")),
+        pool=data.get("pool"),
+        subnet=data.get("subnet"),
+        allocated_by=data.get("allocated_by", "Admin"),
+    )
+    return result, 200, {"Content-Type": "application/json"}
+
+
+@app.route("/api/admin/update-status", methods=["POST"])
+@require_admin
+def admin_update_status_api():
+    import agent_admin as ag
+    data = request.get_json(force=True)
+    result = ag._tool_update_status(
+        request_id=int(data.get("request_id")),
+        status=data.get("status"),
+        notes=data.get("notes"),
+    )
+    return result, 200, {"Content-Type": "application/json"}
+
+
+@app.route("/api/admin/deallocate", methods=["POST"])
+@require_admin
+def admin_deallocate_api():
+    import agent_admin as ag
+    data = request.get_json(force=True)
+    result = ag._tool_deallocate_cidr(
+        request_id=int(data.get("request_id")),
+        reason=data.get("reason", ""),
+    )
+    return result, 200, {"Content-Type": "application/json"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Admin Agent (protected)
 # ═══════════════════════════════════════════════════════════════════════════
 
