@@ -569,18 +569,22 @@ def requester_chat():
     history = session.get("requester_history", [])
     history.append({"role": "user", "content": user_msg})
 
-    result = {"reply": "Agent error.", "tool_calls": []}
+    reply = "Agent error."
+    tool_calls = []
     try:
         import agent_requester as ag
         result = ag.chat(history)
+        reply = result.get("reply", "")
+        for tc in result.get("tool_calls", []):
+            tool_calls.append({"tool": str(tc.get("tool", "")), "status": str(tc.get("status", ""))})
     except Exception as exc:
         log.exception("Requester agent error")
-        result["reply"] = f"Agent error: {exc}"
+        reply = f"Agent error: {exc}"
 
-    history.append({"role": "assistant", "content": result["reply"]})
+    history.append({"role": "assistant", "content": reply})
     session["requester_history"] = history[-40:]
     session.modified = True
-    return jsonify({"reply": result["reply"], "tool_calls": result.get("tool_calls", [])})
+    return jsonify({"reply": reply, "tool_calls": tool_calls})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -606,26 +610,38 @@ def agent_clear():
 @app.route("/api/agent/chat", methods=["POST"])
 @require_admin
 def agent_chat():
-    data = request.get_json(force=True)
-    user_msg = (data.get("message") or "").strip()
-    if not user_msg:
-        return jsonify({"error": "Empty message"}), 400
-
-    history = session.get("agent_history", [])
-    history.append({"role": "user", "content": user_msg})
-
-    result = {"reply": "Agent error.", "tool_calls": []}
     try:
-        import agent_admin as ag
-        result = ag.chat(history)
-    except Exception as exc:
-        log.exception("Admin agent error")
-        result["reply"] = f"Agent error: {exc}"
+        data = request.get_json(force=True)
+        user_msg = (data.get("message") or "").strip()
+        if not user_msg:
+            return jsonify({"error": "Empty message"}), 400
 
-    history.append({"role": "assistant", "content": result["reply"]})
-    session["agent_history"] = history[-40:]
-    session.modified = True
-    return jsonify({"reply": result["reply"], "tool_calls": result.get("tool_calls", [])})
+        history = session.get("agent_history", [])
+        history.append({"role": "user", "content": user_msg})
+
+        reply = "Agent error."
+        tool_calls = []
+        try:
+            import agent_admin as ag
+            result = ag.chat(history)
+            reply = result.get("reply", "")
+            # Sanitise tool_calls — ensure every field is JSON-serialisable
+            for tc in result.get("tool_calls", []):
+                tool_calls.append({
+                    "tool":   str(tc.get("tool", "")),
+                    "status": str(tc.get("status", "")),
+                })
+        except Exception as exc:
+            log.exception("Admin agent error")
+            reply = f"Agent error: {exc}"
+
+        history.append({"role": "assistant", "content": reply})
+        session["agent_history"] = history[-40:]
+        session.modified = True
+        return jsonify({"reply": reply, "tool_calls": tool_calls})
+    except Exception as exc:
+        log.exception("Admin agent chat route error")
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":
