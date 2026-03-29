@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: subnet-manager-config
-  namespace: subnet-manager
+  namespace: Network-Deployments
 data:
   # ── AI Agent ───────────────────────────────────────────────────────────────
   AGENT_PROVIDER: "openai"                        # openai | anthropic

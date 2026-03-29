@@ -4,7 +4,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: subnet-manager
-  namespace: subnet-manager
+  namespace: Network-Deployments
   labels:
     app: subnet-manager
 spec:
