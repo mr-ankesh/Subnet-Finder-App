@@ -486,6 +486,79 @@ def requester_clear():
     return jsonify({"message": "Conversation cleared."})
 
 
+# ── Form API endpoints (no agent — direct DB writes) ────────────────────────
+
+@app.route("/api/requester/new-request", methods=["POST"])
+def requester_new_request():
+    from db_utils import create_spoke_request, get_spoke_request
+    data = request.get_json(force=True)
+    cidr_needed   = str(data.get("cidr_needed", "")).strip()
+    purpose       = str(data.get("purpose", "")).strip()
+    requester_name = str(data.get("requester_name", "")).strip()
+    ip_range      = str(data.get("ip_range", "")).strip()
+    hub_integration = bool(data.get("hub_integration", False))
+    if not all([cidr_needed, purpose, requester_name, ip_range]):
+        return jsonify({"error": "All fields are required."}), 400
+    if ip_range not in ["10.110.0.0/16", "10.119.0.0/16"]:
+        return jsonify({"error": "Invalid IP range."}), 400
+    try:
+        req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration)
+        req = get_spoke_request(req_id)
+        try:
+            notifications.notify_cidr_requested(req)
+        except Exception:
+            pass
+        return jsonify({"success": True, "request_id": req_id})
+    except Exception as exc:
+        log.exception("Form: error creating request")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/requester/status/<int:request_id>")
+def requester_get_status(request_id):
+    from db_utils import get_spoke_request
+    req = get_spoke_request(request_id)
+    if not req:
+        return jsonify({"error": f"Request #{request_id} not found."}), 404
+    return jsonify(req.to_dict())
+
+
+@app.route("/api/requester/vnet-created", methods=["POST"])
+def requester_vnet_created():
+    from db_utils import get_spoke_request, update_spoke_request
+    data = request.get_json(force=True)
+    request_id = data.get("request_id")
+    if not request_id:
+        return jsonify({"error": "Request ID is required."}), 400
+    req = get_spoke_request(int(request_id))
+    if not req:
+        return jsonify({"error": f"Request #{request_id} not found."}), 404
+    if req.status != RequestStatus.CIDR_ASSIGNED:
+        return jsonify({"error": f"Status is '{req.status_label()}' — CIDR must be assigned first."}), 400
+    update_spoke_request(int(request_id), status=RequestStatus.VNET_CREATED)
+    req = get_spoke_request(int(request_id))
+    try:
+        notifications.notify_vnet_created(req)
+    except Exception:
+        pass
+    return jsonify({"success": True, "message": f"Request #{request_id} updated to VNET Created."})
+
+
+@app.route("/api/requester/reminder", methods=["POST"])
+def requester_send_reminder():
+    from db_utils import get_spoke_request
+    data = request.get_json(force=True)
+    request_id = data.get("request_id")
+    message = str(data.get("message", "")).strip()
+    if not request_id or not message:
+        return jsonify({"error": "Request ID and message are required."}), 400
+    req = get_spoke_request(int(request_id))
+    if not req:
+        return jsonify({"error": f"Request #{request_id} not found."}), 404
+    ok = notifications.notify_reminder(req, message)
+    return jsonify({"success": ok})
+
+
 @app.route("/api/requester/chat", methods=["POST"])
 def requester_chat():
     data = request.get_json(force=True)
@@ -496,18 +569,84 @@ def requester_chat():
     history = session.get("requester_history", [])
     history.append({"role": "user", "content": user_msg})
 
-    result = {"reply": "Agent error.", "tool_calls": []}
+    reply = "Agent error."
+    tool_calls = []
     try:
         import agent_requester as ag
         result = ag.chat(history)
+        reply = result.get("reply", "")
+        for tc in result.get("tool_calls", []):
+            tool_calls.append({"tool": str(tc.get("tool", "")), "status": str(tc.get("status", ""))})
     except Exception as exc:
         log.exception("Requester agent error")
-        result["reply"] = f"Agent error: {exc}"
+        reply = f"Agent error: {exc}"
 
-    history.append({"role": "assistant", "content": result["reply"]})
+    history.append({"role": "assistant", "content": reply})
     session["requester_history"] = history[-40:]
     session.modified = True
-    return jsonify({"reply": result["reply"], "tool_calls": result.get("tool_calls", [])})
+    return jsonify({"reply": reply, "tool_calls": tool_calls})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Admin Form API (protected, no AI)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/admin/requests")
+@require_admin
+def admin_list_requests_api():
+    from db_utils import list_spoke_requests
+    status_filter = request.args.get("status") or None
+    reqs = list_spoke_requests(status_filter)
+    return jsonify([r.to_dict() for r in reqs])
+
+
+@app.route("/api/admin/find-subnets")
+@require_admin
+def admin_find_subnets_api():
+    import agent_admin as ag
+    pool  = request.args.get("pool", "10.110")
+    prefix = request.args.get("prefix", type=int, default=24)
+    result = ag._tool_find_subnets(pool=pool, prefix=prefix)
+    return result, 200, {"Content-Type": "application/json"}
+
+
+@app.route("/api/admin/assign-cidr", methods=["POST"])
+@require_admin
+def admin_assign_cidr_api():
+    import agent_admin as ag
+    data = request.get_json(force=True)
+    result = ag._tool_assign_cidr(
+        request_id=int(data.get("request_id")),
+        pool=data.get("pool"),
+        subnet=data.get("subnet"),
+        allocated_by=data.get("allocated_by", "Admin"),
+    )
+    return result, 200, {"Content-Type": "application/json"}
+
+
+@app.route("/api/admin/update-status", methods=["POST"])
+@require_admin
+def admin_update_status_api():
+    import agent_admin as ag
+    data = request.get_json(force=True)
+    result = ag._tool_update_status(
+        request_id=int(data.get("request_id")),
+        status=data.get("status"),
+        notes=data.get("notes"),
+    )
+    return result, 200, {"Content-Type": "application/json"}
+
+
+@app.route("/api/admin/deallocate", methods=["POST"])
+@require_admin
+def admin_deallocate_api():
+    import agent_admin as ag
+    data = request.get_json(force=True)
+    result = ag._tool_deallocate_cidr(
+        request_id=int(data.get("request_id")),
+        reason=data.get("reason", ""),
+    )
+    return result, 200, {"Content-Type": "application/json"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -533,26 +672,38 @@ def agent_clear():
 @app.route("/api/agent/chat", methods=["POST"])
 @require_admin
 def agent_chat():
-    data = request.get_json(force=True)
-    user_msg = (data.get("message") or "").strip()
-    if not user_msg:
-        return jsonify({"error": "Empty message"}), 400
-
-    history = session.get("agent_history", [])
-    history.append({"role": "user", "content": user_msg})
-
-    result = {"reply": "Agent error.", "tool_calls": []}
     try:
-        import agent_admin as ag
-        result = ag.chat(history)
-    except Exception as exc:
-        log.exception("Admin agent error")
-        result["reply"] = f"Agent error: {exc}"
+        data = request.get_json(force=True)
+        user_msg = (data.get("message") or "").strip()
+        if not user_msg:
+            return jsonify({"error": "Empty message"}), 400
 
-    history.append({"role": "assistant", "content": result["reply"]})
-    session["agent_history"] = history[-40:]
-    session.modified = True
-    return jsonify({"reply": result["reply"], "tool_calls": result.get("tool_calls", [])})
+        history = session.get("agent_history", [])
+        history.append({"role": "user", "content": user_msg})
+
+        reply = "Agent error."
+        tool_calls = []
+        try:
+            import agent_admin as ag
+            result = ag.chat(history)
+            reply = result.get("reply", "")
+            # Sanitise tool_calls — ensure every field is JSON-serialisable
+            for tc in result.get("tool_calls", []):
+                tool_calls.append({
+                    "tool":   str(tc.get("tool", "")),
+                    "status": str(tc.get("status", "")),
+                })
+        except Exception as exc:
+            log.exception("Admin agent error")
+            reply = f"Agent error: {exc}"
+
+        history.append({"role": "assistant", "content": reply})
+        session["agent_history"] = history[-40:]
+        session.modified = True
+        return jsonify({"reply": reply, "tool_calls": tool_calls})
+    except Exception as exc:
+        log.exception("Admin agent chat route error")
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":
