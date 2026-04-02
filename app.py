@@ -1,6 +1,5 @@
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from functools import wraps
-import pandas as pd
 import ipaddress
 import logging
 import os
@@ -9,7 +8,7 @@ from datetime import datetime
 log = logging.getLogger(__name__)
 
 from config import cfg
-from models import db, SpokeRequest, VnetInfo, RequestStatus
+from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus
 import notifications
 
 app = Flask(__name__)
@@ -27,9 +26,77 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
 }
 db.init_app(app)
 
+EXCEL_PATH = os.path.join(DATA_DIR, "subnets.xlsx")   # kept for one-time auto-migration only
+POOLS = {"10.110": "10.110.0.0/16", "10.119": "10.119.0.0/16"}
+DEFAULT_POOL = "10.110"
+
+
+def _auto_migrate_excel():
+    """
+    One-time migration: if subnets.xlsx exists and subnet_records table is empty,
+    import 'used' and 'reserved' rows from Excel into the database.
+    Runs inside an app context at startup.
+    """
+    if not os.path.exists(EXCEL_PATH):
+        return
+    try:
+        existing = db.session.execute(db.text("SELECT COUNT(*) FROM subnet_records")).scalar()
+        if existing and existing > 0:
+            log.info("[migration] subnet_records already populated (%d rows) — skipping Excel import", existing)
+            return
+    except Exception:
+        return  # table may not exist yet; create_all handles it
+
+    try:
+        import pandas as pd
+        df = pd.read_excel(EXCEL_PATH, dtype=str).fillna("")
+        df.columns = [c.strip().replace(" ", "") for c in df.columns]
+        if "Subnet" not in df.columns or "Status" not in df.columns:
+            log.warning("[migration] subnets.xlsx missing required columns — skipping")
+            return
+        df["Status"] = df["Status"].str.strip().str.lower()
+
+        from db_utils import get_pool_key
+        imported = 0
+        skipped = 0
+        now = datetime.utcnow()
+        for _, row in df.iterrows():
+            subnet_str = str(row.get("Subnet", "")).strip()
+            status = str(row.get("Status", "")).strip()
+            if status not in ("used", "reserved") or not subnet_str:
+                continue
+            pool_key = get_pool_key(subnet_str)
+            if not pool_key:
+                skipped += 1
+                continue
+            allocated_at_raw = str(row.get("AllocationTime", "")).strip()
+            try:
+                allocated_at = datetime.strptime(allocated_at_raw[:19], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                allocated_at = now
+            record = SubnetRecord(
+                subnet       = subnet_str,
+                pool         = pool_key,
+                status       = status,
+                purpose      = str(row.get("Purpose", "")).strip() or None,
+                requested_by = str(row.get("RequestedBy", "")).strip() or None,
+                allocated_by = str(row.get("AllocatedBy", "")).strip() or None,
+                allocated_at = allocated_at,
+                created_at   = now,
+                updated_at   = now,
+            )
+            db.session.add(record)
+            imported += 1
+        db.session.commit()
+        log.info("[migration] Imported %d subnets from Excel (%d skipped). Excel file kept as backup.", imported, skipped)
+    except Exception as exc:
+        db.session.rollback()
+        log.error("[migration] Excel import failed: %s", exc)
+
+
 with app.app_context():
     db.create_all()
-    # Migrate old status values to new ones
+    # Migrate old request status values
     try:
         STATUS_MAP = {
             "pending": RequestStatus.CIDR_REQUESTED,
@@ -47,9 +114,8 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
-FILE_PATH = os.path.join(DATA_DIR, "subnets.xlsx")
-POOLS = {"10.110": "10.110.0.0/16", "10.119": "10.119.0.0/16"}
-DEFAULT_POOL = "10.110"
+    # Auto-migrate subnet inventory from Excel on first run
+    _auto_migrate_excel()
 
 
 # ── Admin auth ──────────────────────────────────────────────────────────────
@@ -88,27 +154,6 @@ def admin_logout():
     return redirect(url_for("requester_page"))
 
 
-# ── Excel helpers ───────────────────────────────────────────────────────────
-
-def load_subnets():
-    if not os.path.exists(FILE_PATH):
-        return pd.DataFrame(columns=["Subnet", "Status", "Purpose", "RequestedBy", "AllocatedBy", "AllocationTime"])
-    df = pd.read_excel(FILE_PATH, dtype=str).fillna("")
-    df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
-    df.columns = [c.strip().replace(" ", "") for c in df.columns]
-    for col in ["Subnet", "Status", "Purpose", "RequestedBy", "AllocatedBy", "AllocationTime"]:
-        if col not in df.columns:
-            df[col] = ""
-    df["Status"] = df["Status"].str.lower()
-    return df
-
-
-def save_subnets(df):
-    df_copy = df.copy()
-    df_copy.columns = ["Subnet", "Status", "Purpose", "Requested By", "Allocated By", "Allocation Time"]
-    df_copy.to_excel(FILE_PATH, index=False)
-
-
 # ── Pool helpers ────────────────────────────────────────────────────────────
 
 def get_pool_from_request():
@@ -117,17 +162,11 @@ def get_pool_from_request():
     return pool, ipaddress.ip_network(base_cidr)
 
 
-def _in_pool(subnet_str, base_net):
-    try:
-        return ipaddress.ip_network(subnet_str).subnet_of(base_net)
-    except Exception:
-        return False
-
-
-def compute_free_blocks(base_net, df):
-    df_pool = df[df["Subnet"].apply(lambda s: _in_pool(s, base_net))]
+def compute_free_blocks(pool_key, base_net):
+    """Compute free address blocks by subtracting DB-stored used/reserved subnets from base_net."""
+    from db_utils import get_used_subnets_db
     used = []
-    for s in df_pool[df_pool["Status"].isin(["used", "reserved"])]["Subnet"]:
+    for s in get_used_subnets_db(pool_key):
         try:
             n = ipaddress.ip_network(s)
             if n.subnet_of(base_net):
@@ -171,79 +210,39 @@ def candidates_from_free(free_blocks, requested_prefix, limit=1024):
     return sorted(set(out), key=lambda x: (ipaddress.ip_network(x).network_address, ipaddress.ip_network(x).prefixlen)), False
 
 
-def allocate_subnet(selected_cidr, base_net, purpose="", requested_by="", allocated_by=""):
-    df = load_subnets()
+def allocate_subnet(selected_cidr, base_net, pool_key, purpose="", requested_by="", allocated_by=""):
+    """Validate and allocate a subnet, writing the record to the DB."""
+    from db_utils import get_used_subnets_db, allocate_subnet_db
     try:
-        selected_net = ipaddress.ip_network(selected_cidr)
+        selected_net = ipaddress.ip_network(selected_cidr, strict=False)
     except ValueError:
         return False, "Invalid subnet format"
     if not selected_net.subnet_of(base_net):
         return False, f"Selected subnet is not inside {base_net}"
-    df_pool = df[df["Subnet"].apply(lambda s: _in_pool(s, base_net))]
-    for s in df_pool[df_pool["Status"].isin(["used", "reserved"])]["Subnet"]:
+    # Overlap check against existing used/reserved subnets
+    for s in get_used_subnets_db(pool_key):
         try:
             if selected_net.overlaps(ipaddress.ip_network(s)):
                 return False, f"Overlaps with existing subnet {s}"
         except ValueError:
             continue
-    unused_df = df_pool[df_pool["Status"] == "unused"]
-    parent_row = parent_net = None
-    for idx, row in unused_df.iterrows():
-        try:
-            candidate = ipaddress.ip_network(row["Subnet"])
-            if selected_net.subnet_of(candidate):
-                parent_row, parent_net = idx, candidate
-                break
-        except ValueError:
-            continue
-    if parent_row is None:
-        free_blocks = compute_free_blocks(base_net, df)
-        container = next((b for b in free_blocks if selected_net.subnet_of(b)), None)
-        if container is None:
-            return False, "Selected subnet is not part of any available block"
-
-        def _unused_in_container(r):
-            try:
-                n = ipaddress.ip_network(r["Subnet"])
-                return r.get("Status", "").lower() == "unused" and n.subnet_of(container) and n.subnet_of(base_net)
-            except Exception:
-                return False
-
-        df = df[~df.apply(_unused_in_container, axis=1)]
-        df = pd.concat([df, pd.DataFrame([{"Subnet": str(container), "Status": "unused", "Purpose": "", "RequestedBy": "", "AllocatedBy": "", "AllocationTime": ""}])], ignore_index=True)
-        df_pool = df[df["Subnet"].apply(lambda s: _in_pool(s, base_net))]
-        unused_df = df_pool[df_pool["Status"] == "unused"]
-        for idx, row in unused_df.iterrows():
-            try:
-                candidate = ipaddress.ip_network(row["Subnet"])
-                if selected_net.subnet_of(candidate):
-                    parent_row, parent_net = idx, candidate
-                    break
-            except ValueError:
-                continue
-        if parent_row is None:
-            return False, "Internal error: could not create parent unused block"
-    df = df.drop(parent_row)
-    for r in list(parent_net.address_exclude(selected_net)):
-        df = pd.concat([df, pd.DataFrame([{"Subnet": str(r), "Status": "unused", "Purpose": "", "RequestedBy": "", "AllocatedBy": "", "AllocationTime": ""}])], ignore_index=True)
-    df = pd.concat([df, pd.DataFrame([{"Subnet": str(selected_net), "Status": "used", "Purpose": purpose, "RequestedBy": requested_by, "AllocatedBy": allocated_by, "AllocationTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}])], ignore_index=True)
-    save_subnets(df)
-    return True, f"Allocated {selected_cidr} successfully"
+    # Verify it falls within a free block
+    free_blocks = compute_free_blocks(pool_key, base_net)
+    if not any(selected_net.subnet_of(b) for b in free_blocks):
+        return False, "Selected subnet is not part of any available block"
+    return allocate_subnet_db(selected_cidr, pool_key, purpose, requested_by, allocated_by)
 
 
 def deallocate_subnet(selected_cidr, base_net):
-    df = load_subnets()
+    """Remove a subnet allocation from the DB."""
+    from db_utils import deallocate_subnet_db
     try:
-        net = ipaddress.ip_network(selected_cidr)
+        net = ipaddress.ip_network(selected_cidr, strict=False)
     except Exception:
         return False, "Invalid subnet format"
     if not net.subnet_of(base_net):
         return False, f"Subnet is not inside {base_net}"
-    if selected_cidr not in df["Subnet"].tolist():
-        return False, "Subnet not found"
-    df.loc[df["Subnet"] == selected_cidr, ["Status", "Purpose", "RequestedBy", "AllocatedBy", "AllocationTime"]] = ["unused", "", "", "", ""]
-    save_subnets(df)
-    return True, f"Deallocated {selected_cidr} successfully"
+    return deallocate_subnet_db(selected_cidr)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -272,11 +271,10 @@ def allocator(pool_key):
 @app.route("/pool_stats")
 @require_admin
 def pool_stats():
+    from db_utils import count_used_subnets_db
     pool, base_net = get_pool_from_request()
-    df = load_subnets()
-    df_pool = df[df["Subnet"].apply(lambda s: _in_pool(s, base_net))]
-    used_count = len(df_pool[df_pool["Status"] == "used"])
-    free_blocks = compute_free_blocks(base_net, df)
+    used_count = count_used_subnets_db(pool)
+    free_blocks = compute_free_blocks(pool, base_net)
     by_prefix = {}
     for n in free_blocks:
         by_prefix[str(n.prefixlen)] = by_prefix.get(str(n.prefixlen), 0) + 1
@@ -287,7 +285,6 @@ def pool_stats():
 @require_admin
 def get_subnet():
     pool, base_net = get_pool_from_request()
-    df = load_subnets()
     cidr_input = request.form.get("cidr", "").strip()
     if not cidr_input.startswith("/"):
         return jsonify({"error": "Enter prefix like /24"}), 400
@@ -297,7 +294,7 @@ def get_subnet():
         return jsonify({"error": "Invalid prefix length"}), 400
     if not (8 <= requested_prefix <= 32):
         return jsonify({"error": "Prefix must be between /8 and /32"}), 400
-    free_blocks = compute_free_blocks(base_net, df)
+    free_blocks = compute_free_blocks(pool, base_net)
     candidates, truncated = candidates_from_free(free_blocks, requested_prefix)
     if not candidates:
         return jsonify({"candidates": [], "message": "No available subnets found."})
@@ -308,13 +305,13 @@ def get_subnet():
 @require_admin
 def allocate():
     pool, base_net = get_pool_from_request()
-    selected    = request.form.get("selected")
-    purpose     = request.form.get("purpose", "").strip()
+    selected     = request.form.get("selected")
+    purpose      = request.form.get("purpose", "").strip()
     requested_by = request.form.get("requested_by", "").strip()
     allocated_by = request.form.get("allocated_by", "").strip()
     if not all([selected, purpose, requested_by, allocated_by]):
         return jsonify({"error": "All fields are required"}), 400
-    success, msg = allocate_subnet(selected, base_net, purpose, requested_by, allocated_by)
+    success, msg = allocate_subnet(selected, base_net, pool, purpose, requested_by, allocated_by)
     return jsonify({"error": msg} if not success else {"message": msg}), (400 if not success else 200)
 
 
@@ -333,8 +330,7 @@ def deallocate():
 @require_admin
 def all_available():
     pool, base_net = get_pool_from_request()
-    df = load_subnets()
-    free_blocks = compute_free_blocks(base_net, df)
+    free_blocks = compute_free_blocks(pool, base_net)
     return jsonify({"available": [{"Subnet": str(n), "Purpose": ""} for n in free_blocks]})
 
 
@@ -342,28 +338,35 @@ def all_available():
 @require_admin
 def available_base_route():
     pool, base_net = get_pool_from_request()
-    df = load_subnets()
-    return jsonify({"available": [str(n) for n in compute_free_blocks(base_net, df)]})
+    return jsonify({"available": [str(n) for n in compute_free_blocks(pool, base_net)]})
 
 
 @app.route("/allocated")
 @require_admin
 def allocated():
+    from db_utils import get_allocated_subnets_db
     pool, base_net = get_pool_from_request()
-    df = load_subnets()
-    df_pool = df[df["Subnet"].apply(lambda s: _in_pool(s, base_net))]
-    used = df_pool[df_pool["Status"] == "used"]
-    if used.empty:
+    rows = get_allocated_subnets_db(pool)
+    if not rows:
         return jsonify({"allocated": [], "message": "No allocated subnets found"})
-    return jsonify({"allocated": used[["Subnet", "Purpose", "RequestedBy", "AllocatedBy", "AllocationTime"]].to_dict(orient="records")})
+    result = [
+        {
+            "Subnet":         r["subnet"],
+            "Purpose":        r["purpose"]      or "",
+            "RequestedBy":    r["requested_by"] or "",
+            "AllocatedBy":    r["allocated_by"] or "",
+            "AllocationTime": r["allocated_at"] or "",
+        }
+        for r in rows
+    ]
+    return jsonify({"allocated": result})
 
 
 @app.route("/summary_unused")
 @require_admin
 def summary_unused_route():
     pool, base_net = get_pool_from_request()
-    df = load_subnets()
-    free_blocks = compute_free_blocks(base_net, df)
+    free_blocks = compute_free_blocks(pool, base_net)
     by_prefix = {}
     for n in free_blocks:
         by_prefix[n.prefixlen] = by_prefix.get(n.prefixlen, 0) + 1
@@ -374,8 +377,7 @@ def summary_unused_route():
 @require_admin
 def free_summary():
     pool, base_net = get_pool_from_request()
-    df = load_subnets()
-    free_blocks = compute_free_blocks(base_net, df)
+    free_blocks = compute_free_blocks(pool, base_net)
     by_prefix = {}
     for n in free_blocks:
         by_prefix[n.prefixlen] = by_prefix.get(n.prefixlen, 0) + 1

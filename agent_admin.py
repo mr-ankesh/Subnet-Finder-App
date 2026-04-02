@@ -425,33 +425,20 @@ def _tool_get_request(request_id: int) -> str:
 
 _POOLS = {"10.110": "10.110.0.0/16", "10.119": "10.119.0.0/16"}
 
-# Resolve the Excel path relative to this file — same container, same /app/data/
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_EXCEL_PATH = os.path.join(_HERE, "data", "subnets.xlsx")
 
-
-def _read_excel_pool(pool_cidr: str):
-    """Read subnets.xlsx and return (df, base_net, used_nets) for the given pool CIDR."""
+def _get_used_nets(pool_key: str, base_net):
+    """Return list of ip_network objects for used/reserved subnets in a pool (from DB)."""
     import ipaddress as _ip
-    import pandas as pd
-    base_net = _ip.ip_network(pool_cidr)
-    if not os.path.exists(_EXCEL_PATH):
-        return None, base_net, []
-    df = pd.read_excel(_EXCEL_PATH, dtype=str).fillna("")
-    df.columns = [c.strip().replace(" ", "") for c in df.columns]
-    if "Status" not in df.columns or "Subnet" not in df.columns:
-        return df, base_net, []
-    df["Status"] = df["Status"].str.strip().str.lower()
-
-    used = []
-    for _, row in df.iterrows():
+    from db_utils import get_used_subnets_db
+    result = []
+    for s in get_used_subnets_db(pool_key):
         try:
-            net = _ip.ip_network(str(row["Subnet"]).strip())
-            if row["Status"] in ("used", "reserved") and net.subnet_of(base_net):
-                used.append(net)
+            n = _ip.ip_network(s, strict=False)
+            if n.subnet_of(base_net):
+                result.append(n)
         except Exception:
             continue
-    return df, base_net, used
+    return result
 
 
 def _compute_free(base_net, used_nets):
@@ -488,15 +475,15 @@ def _tool_check_cidr(cidr: str, pool: str) -> str:
         return json.dumps({"error": f"Invalid CIDR format: {cidr}"})
 
     try:
-        df, base_net, used_nets = _read_excel_pool(_POOLS[pool])
-        source = _EXCEL_PATH
+        base_net = _ip.ip_network(_POOLS[pool])
+        used_nets = _get_used_nets(pool, base_net)
 
         if not target.subnet_of(base_net):
             return json.dumps({
                 "available": False,
                 "cidr": str(target),
                 "reason": f"{cidr} is not inside pool {_POOLS[pool]}",
-                "source": source,
+                "source": "database",
             })
 
         # Check direct conflicts
@@ -507,7 +494,7 @@ def _tool_check_cidr(cidr: str, pool: str) -> str:
                 "cidr": str(target),
                 "reason": f"Overlaps with already-used subnet(s): {', '.join(conflicts)}",
                 "conflicting_subnets": conflicts,
-                "source": source,
+                "source": "database",
             })
 
         # Check it falls within a free block
@@ -518,14 +505,14 @@ def _tool_check_cidr(cidr: str, pool: str) -> str:
                 "available": False,
                 "cidr": str(target),
                 "reason": "Not within any free block (no containing free space found).",
-                "source": source,
+                "source": "database",
             })
 
         return json.dumps({
             "available": True,
             "cidr": str(target),
             "within_free_block": containing_block,
-            "source": source,
+            "source": "database",
             "message": f"{cidr} is AVAILABLE in pool {_POOLS[pool]}. It falls within free block {containing_block}.",
         })
     except Exception as exc:
@@ -539,7 +526,8 @@ def _tool_find_subnets(pool: str, prefix: int) -> str:
     if not (8 <= prefix <= 29):
         return json.dumps({"error": "Prefix must be between /8 and /29"})
     try:
-        _, base_net, used_nets = _read_excel_pool(_POOLS[pool])
+        base_net = _ip.ip_network(_POOLS[pool])
+        used_nets = _get_used_nets(pool, base_net)
         free_blocks = _compute_free(base_net, used_nets)
 
         # Collect ALL candidates first, then sort by IP ascending
@@ -558,7 +546,7 @@ def _tool_find_subnets(pool: str, prefix: int) -> str:
             "candidates": top25,
             "total_shown": len(top25),
             "more_available": len(all_candidates) > 25,
-            "source": _EXCEL_PATH,
+            "source": "database",
             "message": (
                 f"Found {len(top25)} available /{prefix} subnets in {_POOLS[pool]} "
                 f"(sorted by IP ascending). Present these to admin and ask them to select one."
@@ -586,6 +574,7 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
         ok, msg = allocate_subnet(
             selected_cidr=subnet,
             base_net=base_net,
+            pool_key=pool,
             purpose=req.purpose,
             requested_by=req.requester_name,
             allocated_by=allocated_by,
