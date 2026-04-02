@@ -59,15 +59,33 @@ def _auto_migrate_excel():
         from db_utils import get_pool_key
         imported = 0
         skipped = 0
+        duplicates = 0
+        seen = set()   # guard against duplicate subnets within the Excel file itself
         now = datetime.utcnow()
         for _, row in df.iterrows():
             subnet_str = str(row.get("Subnet", "")).strip()
             status = str(row.get("Status", "")).strip()
             if status not in ("used", "reserved") or not subnet_str:
                 continue
+            # Normalise CIDR so "10.119.100.0/22" and "10.119.100.0/22 " are the same key
+            try:
+                subnet_str = str(ipaddress.ip_network(subnet_str, strict=False))
+            except Exception:
+                skipped += 1
+                continue
+            if subnet_str in seen:
+                log.warning("[migration] Duplicate subnet in Excel, skipping: %s", subnet_str)
+                duplicates += 1
+                continue
+            seen.add(subnet_str)
             pool_key = get_pool_key(subnet_str)
             if not pool_key:
                 skipped += 1
+                continue
+            # Skip rows already in the DB (handles partial previous runs)
+            existing_row = SubnetRecord.query.filter_by(subnet=subnet_str).first()
+            if existing_row:
+                duplicates += 1
                 continue
             allocated_at_raw = str(row.get("AllocationTime", "")).strip()
             try:
@@ -88,7 +106,7 @@ def _auto_migrate_excel():
             db.session.add(record)
             imported += 1
         db.session.commit()
-        log.info("[migration] Imported %d subnets from Excel (%d skipped). Excel file kept as backup.", imported, skipped)
+        log.info("[migration] Imported %d subnets from Excel (%d skipped, %d duplicates ignored). Excel file kept as backup.", imported, skipped, duplicates)
     except Exception as exc:
         db.session.rollback()
         log.error("[migration] Excel import failed: %s", exc)
