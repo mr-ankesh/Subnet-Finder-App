@@ -142,6 +142,109 @@ def get_vnet_info(request_id: int):
     return d
 
 
+# ── Subnet inventory helpers ──────────────────────────────────────────────────
+# These operate directly on sqlite3 (no Flask context needed) so agents can
+# call them safely from within a Flask request thread.
+
+SUBNET_POOLS = {"10.110": "10.110.0.0/16", "10.119": "10.119.0.0/16"}
+
+
+def get_pool_key(subnet_str: str):
+    """Return the pool key ('10.110' / '10.119') for a subnet, or None."""
+    import ipaddress
+    try:
+        net = ipaddress.ip_network(subnet_str, strict=False)
+        for key, cidr in SUBNET_POOLS.items():
+            if net.subnet_of(ipaddress.ip_network(cidr)):
+                return key
+    except Exception:
+        pass
+    return None
+
+
+def get_used_subnets_db(pool: str) -> list:
+    """Return list of subnet CIDR strings with status 'used' or 'reserved' for a pool."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT subnet FROM subnet_records WHERE pool = ? AND status IN ('used', 'reserved')",
+            (pool,),
+        ).fetchall()
+    return [row["subnet"] for row in rows]
+
+
+def allocate_subnet_db(subnet: str, pool: str, purpose: str = "",
+                       requested_by: str = "", allocated_by: str = "") -> tuple:
+    """Insert/update a subnet record as 'used'. Returns (True, msg) or (False, err)."""
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with _conn() as conn:
+            existing = conn.execute(
+                "SELECT id, status FROM subnet_records WHERE subnet = ?", (subnet,)
+            ).fetchone()
+            if existing:
+                if existing["status"] in ("used", "reserved"):
+                    return False, f"Subnet {subnet} is already {existing['status']}"
+                conn.execute(
+                    "UPDATE subnet_records SET status='used', pool=?, purpose=?, "
+                    "requested_by=?, allocated_by=?, allocated_at=?, updated_at=? "
+                    "WHERE subnet=?",
+                    (pool, purpose, requested_by, allocated_by, now, now, subnet),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO subnet_records "
+                    "(subnet, pool, status, purpose, requested_by, allocated_by, "
+                    " allocated_at, created_at, updated_at) "
+                    "VALUES (?, ?, 'used', ?, ?, ?, ?, ?, ?)",
+                    (subnet, pool, purpose, requested_by, allocated_by, now, now, now),
+                )
+            conn.commit()
+        log.info("[db_utils] ALLOCATE subnet %s (pool=%s)", subnet, pool)
+        return True, f"Allocated {subnet} successfully"
+    except Exception as exc:
+        log.error("[db_utils] allocate_subnet_db error: %s", exc)
+        return False, str(exc)
+
+
+def deallocate_subnet_db(subnet: str) -> tuple:
+    """Delete a subnet record. Returns (True, msg) or (False, err)."""
+    try:
+        with _conn() as conn:
+            existing = conn.execute(
+                "SELECT id FROM subnet_records WHERE subnet = ?", (subnet,)
+            ).fetchone()
+            if not existing:
+                return False, f"Subnet {subnet} not found in database"
+            conn.execute("DELETE FROM subnet_records WHERE subnet = ?", (subnet,))
+            conn.commit()
+        log.info("[db_utils] DEALLOCATE subnet %s", subnet)
+        return True, f"Deallocated {subnet} successfully"
+    except Exception as exc:
+        log.error("[db_utils] deallocate_subnet_db error: %s", exc)
+        return False, str(exc)
+
+
+def get_allocated_subnets_db(pool: str) -> list:
+    """Return list of dicts for 'used' subnets in a pool, ordered by subnet."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT subnet, pool, status, purpose, requested_by, allocated_by, allocated_at "
+            "FROM subnet_records WHERE pool = ? AND status = 'used' ORDER BY subnet",
+            (pool,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_used_subnets_db(pool: str) -> int:
+    """Return count of 'used' subnets in a pool."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM subnet_records WHERE pool = ? AND status = 'used'",
+            (pool,),
+        ).fetchone()
+    return row["cnt"] if row else 0
+
+
 def upsert_vnet_info(request_id: int, **fields):
     """Create or update the vnet_info row for a request."""
     if "outbound_rules" in fields and isinstance(fields["outbound_rules"], list):

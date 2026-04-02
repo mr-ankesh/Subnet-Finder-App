@@ -1,5 +1,5 @@
 """
-SQLAlchemy models for Spoke Request workflow.
+SQLAlchemy models for Spoke Request workflow and subnet inventory.
 """
 import json
 from datetime import datetime
@@ -117,6 +117,7 @@ class VnetInfo(db.Model):
     request = db.relationship("SpokeRequest", back_populates="vnet_info")
 
     def get_outbound_rules(self):
+
         if not self.outbound_rules:
             return []
         try:
@@ -139,4 +140,40 @@ class VnetInfo(db.Model):
             "address_space":   self.address_space,
             "outbound_rules":  self.get_outbound_rules(),
             "vpn_zpa_access":  self.vpn_zpa_access,
+        }
+
+
+class SubnetRecord(db.Model):
+    """
+    Persistent record of every allocated (used) or reserved subnet.
+    Free space is computed dynamically — only allocated entries are stored.
+    """
+    __tablename__ = "subnet_records"
+
+    id           = db.Column(db.Integer,     primary_key=True)
+    subnet       = db.Column(db.String(50),  nullable=False, unique=True, index=True)
+    pool         = db.Column(db.String(20),  nullable=False, index=True)   # e.g. "10.110"
+    status       = db.Column(db.String(20),  nullable=False, default="used")  # used | reserved
+    purpose      = db.Column(db.String(500), nullable=True)
+    requested_by = db.Column(db.String(200), nullable=True)
+    allocated_by = db.Column(db.String(200), nullable=True)
+    allocated_at = db.Column(db.DateTime,    nullable=True)
+    created_at   = db.Column(db.DateTime,    default=datetime.utcnow)
+    updated_at   = db.Column(db.DateTime,    default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id":           self.id,
+            "subnet":       self.subnet,
+            "pool":         self.pool,
+            "status":       self.status,
+            "purpose":      self.purpose      or "",
+            "requested_by": self.requested_by or "",
+            "allocated_by": self.allocated_by or "",
+            "allocated_at": self.allocated_at.strftime("%Y-%m-%d %H:%M:%S") if self.allocated_at else "",
+            "Subnet":       self.subnet,
+            "Purpose":      self.purpose      or "",
+            "RequestedBy":  self.requested_by or "",
+            "AllocatedBy":  self.allocated_by or "",
+            "AllocationTime": self.allocated_at.strftime("%Y-%m-%d %H:%M:%S") if self.allocated_at else "",
         }
