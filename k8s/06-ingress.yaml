@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: subnet-manager
+  namespace: Network-Deployments
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: azsubnetmanager.presight.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: subnet-manager
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - azsubnetmanager.presight.ai
+      secretName: presight-tls    # copy your wildcard cert secret into this namespace (see below)

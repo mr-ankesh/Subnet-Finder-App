@@ -1,0 +1,16 @@
+# Azure Disk PVC — stores requests.db (SQLite) and subnets.xlsx
+# Azure Disk (managed-csi) uses block storage with proper POSIX file locking.
+# Azure Files (SMB) does NOT support SQLite file locking — do not use azurefile-csi.
+# ReadWriteOnce is correct here — only 1 pod writes (replicas: 1, strategy: Recreate).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: subnet-manager-data
+  namespace: subnet-manager
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: managed-csi
+  resources:
+    requests:
+      storage: 5Gi

@@ -1,0 +1,719 @@
+{% extends "base.html" %}
+{% block title %}AI Agent — Presight R&D | Azure Subnet Manager{% endblock %}
+
+{% block content %}
+<div class="page-hero" style="background-image: url('{{ url_for('static', filename='2nd Background.png') }}');">
+  <div class="hero-overlay"></div>
+  <div class="hero-content">
+    <div class="hero-badge"><i class="bi bi-robot"></i> AI Operations Agent</div>
+    <h1 class="hero-title">Azure Network Agent</h1>
+    <p class="hero-sub">Natural language driven Azure network operations — subnet allocation, VNET peering, firewall rules, and UDR management.</p>
+  </div>
+</div>
+
+<div class="container-fluid px-4 py-4">
+  <div class="row g-4">
+
+    <!-- Left: Context Panel -->
+    <div class="col-lg-3">
+
+      {% if request_obj %}
+      <div class="glass-card mb-3">
+        <div class="card-header-custom">
+          <i class="bi bi-clipboard-data"></i> Active Request
+        </div>
+        <div class="card-body-custom">
+          <div class="context-item">
+            <span class="context-label">Request ID</span>
+            <span class="context-value">#{{ request_obj.id }}</span>
+          </div>
+          <div class="context-item">
+            <span class="context-label">Requester</span>
+            <span class="context-value">{{ request_obj.requester_name }}</span>
+          </div>
+          <div class="context-item">
+            <span class="context-label">CIDR Needed</span>
+            <span class="context-value">/{{ request_obj.cidr_needed }}</span>
+          </div>
+          <div class="context-item">
+            <span class="context-label">IP Range</span>
+            <span class="context-value font-mono">{{ request_obj.ip_range }}</span>
+          </div>
+          <div class="context-item">
+            <span class="context-label">Status</span>
+            <span class="status-badge status-{{ request_obj.status | lower | replace('_', '-') }}">{{ request_obj.status.replace('_', ' ').title() }}</span>
+          </div>
+          {% if request_obj.allocated_subnet %}
+          <div class="context-item">
+            <span class="context-label">Allocated</span>
+            <span class="context-value font-mono text-success">{{ request_obj.allocated_subnet }}</span>
+          </div>
+          {% endif %}
+          <div class="mt-3">
+            <a href="{{ url_for('request_detail', req_id=request_obj.id) }}" class="btn-outline-sm w-100">
+              <i class="bi bi-arrow-left"></i> Back to Request
+            </a>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="glass-card mb-3">
+        <div class="card-header-custom">
+          <i class="bi bi-lightning-charge"></i> Quick Commands
+        </div>
+        <div class="card-body-custom">
+          <p class="text-muted small mb-2">Click to insert a command:</p>
+          <div class="quick-cmds">
+            {% if request_obj %}
+            <button class="quick-cmd" onclick="insertCmd('Find an available /{{ request_obj.cidr_needed }} subnet in the {{ request_obj.ip_range }} pool for request #{{ request_obj.id }}')">
+              Find subnet for this request
+            </button>
+            {% if request_obj.allocated_subnet and request_obj.vnet_info %}
+            <button class="quick-cmd" onclick="insertCmd('Peer the spoke VNET {{ request_obj.vnet_info.vnet_name }} with the hub VNET for request #{{ request_obj.id }}')">
+              Peer with Hub VNET
+            </button>
+            <button class="quick-cmd" onclick="insertCmd('Check if the UDR has a route for {{ request_obj.allocated_subnet }} and add it if missing for request #{{ request_obj.id }}')">
+              Check and add UDR route
+            </button>
+            <button class="quick-cmd" onclick="insertCmd('Add firewall rule to allow outbound access from {{ request_obj.allocated_subnet }} for request #{{ request_obj.id }}')">
+              Add firewall rule
+            </button>
+            {% endif %}
+            {% else %}
+            <button class="quick-cmd" onclick="insertCmd('Find an available /24 subnet in the 10.110.0.0/16 pool')">
+              Find /24 in 10.110.0.0/16
+            </button>
+            <button class="quick-cmd" onclick="insertCmd('Find an available /25 subnet in the 10.119.0.0/16 pool')">
+              Find /25 in 10.119.0.0/16
+            </button>
+            <button class="quick-cmd" onclick="insertCmd('Show me details for request #1')">
+              Get request details
+            </button>
+            {% endif %}
+            <button class="quick-cmd" onclick="insertCmd('What is the status of all pending subnet requests?')">
+              List pending requests
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="glass-card">
+        <div class="card-header-custom">
+          <i class="bi bi-info-circle"></i> Agent Capabilities
+        </div>
+        <div class="card-body-custom">
+          <ul class="capability-list">
+            <li><i class="bi bi-check-circle text-success"></i> Find available subnets</li>
+            <li><i class="bi bi-check-circle text-success"></i> Allocate subnets</li>
+            <li><i class="bi bi-check-circle text-success"></i> Peer spoke with hub VNET</li>
+            <li><i class="bi bi-check-circle text-success"></i> Check and manage UDR routes</li>
+            <li><i class="bi bi-check-circle text-success"></i> Add firewall rules</li>
+            <li><i class="bi bi-check-circle text-success"></i> Send Teams notifications</li>
+            <li><i class="bi bi-check-circle text-success"></i> Query request status</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right: Chat Interface -->
+    <div class="col-lg-9">
+      <div class="glass-card chat-card">
+        <div class="chat-header">
+          <div class="chat-title">
+            <div class="agent-avatar"><i class="bi bi-robot"></i></div>
+            <div>
+              <div class="fw-600">Presight Network Agent</div>
+              <div class="chat-status"><span class="status-dot"></span> Online</div>
+            </div>
+          </div>
+          <div class="chat-actions">
+            <button class="btn-icon-sm" onclick="clearChat()" title="Clear conversation">
+              <i class="bi bi-trash3"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+          <div class="message agent-message">
+            <div class="message-avatar"><i class="bi bi-robot"></i></div>
+            <div class="message-bubble">
+              <p>Hello! I'm the Presight Network Agent. I can help you with Azure network operations including:</p>
+              <ul>
+                <li>Finding and allocating available subnets from your IP pools</li>
+                <li>Peering spoke VNETs with the hub</li>
+                <li>Managing UDR routes</li>
+                <li>Adding firewall rules</li>
+                <li>Querying request details</li>
+              </ul>
+              {% if request_obj %}
+              <p class="mb-0">I can see you have <strong>Request #{{ request_obj.id }}</strong> loaded ({{ request_obj.requester_name }}, /{{ request_obj.cidr_needed }} subnet). How can I help?</p>
+              {% else %}
+              <p class="mb-0">What would you like me to do? You can use natural language — I'll figure out the right tools to use.</p>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-input-area">
+          <div class="tool-calls-panel" id="toolCallsPanel" style="display:none;">
+            <div class="tool-calls-header">
+              <i class="bi bi-gear-wide-connected spin"></i>
+              <span id="toolCallsStatus">Running tools...</span>
+            </div>
+            <div id="toolCallsList"></div>
+          </div>
+          <div class="chat-input-row">
+            <textarea class="chat-textarea" id="chatInput" placeholder="Ask me to find subnets, peer VNETs, add firewall rules..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+            <button class="chat-send-btn" id="sendBtn" onclick="sendMessage()">
+              <i class="bi bi-send-fill"></i>
+            </button>
+          </div>
+          <div class="chat-hint">Press <kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for new line</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const REQ_ID = {{ request_obj.id if request_obj else 'null' }};
+  let isLoading = false;
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  function insertCmd(text) {
+    const input = document.getElementById('chatInput');
+    input.value = text;
+    autoResize(input);
+    input.focus();
+  }
+
+  function scrollToBottom() {
+    const msgs = document.getElementById('chatMessages');
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function appendMessage(role, content) {
+    const msgs = document.getElementById('chatMessages');
+    const isAgent = role === 'agent';
+    const div = document.createElement('div');
+    div.className = `message ${isAgent ? 'agent-message' : 'user-message'}`;
+    if (isAgent) {
+      div.innerHTML = `
+        <div class="message-avatar"><i class="bi bi-robot"></i></div>
+        <div class="message-bubble">${formatContent(content)}</div>`;
+    } else {
+      div.innerHTML = `
+        <div class="message-bubble user-bubble">${escapeHtml(content)}</div>
+        <div class="message-avatar user-avatar"><i class="bi bi-person-fill"></i></div>`;
+    }
+    msgs.appendChild(div);
+    scrollToBottom();
+    return div;
+  }
+
+  function appendToolCalls(toolCalls) {
+    if (!toolCalls || toolCalls.length === 0) return;
+    const panel = document.getElementById('toolCallsPanel');
+    const list = document.getElementById('toolCallsList');
+    panel.style.display = 'block';
+    toolCalls.forEach(tc => {
+      const el = document.createElement('div');
+      el.className = `tool-call-item tool-${tc.status || 'done'}`;
+      el.innerHTML = `<i class="bi bi-${tc.status === 'error' ? 'x-circle' : 'check-circle'}"></i> <code>${tc.tool}</code>`;
+      if (tc.result_preview) {
+        el.title = tc.result_preview;
+      }
+      list.appendChild(el);
+    });
+  }
+
+  function hideToolPanel() {
+    document.getElementById('toolCallsPanel').style.display = 'none';
+    document.getElementById('toolCallsList').innerHTML = '';
+    document.getElementById('toolCallsStatus').textContent = 'Running tools...';
+  }
+
+  function formatContent(text) {
+    // Convert markdown-like formatting
+    return text
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\n/g, '<br>');
+  }
+
+  function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+  }
+
+  function setLoading(loading) {
+    isLoading = loading;
+    const btn = document.getElementById('sendBtn');
+    const input = document.getElementById('chatInput');
+    btn.disabled = loading;
+    input.disabled = loading;
+    btn.innerHTML = loading
+      ? '<span class="spinner-border spinner-border-sm" role="status"></span>'
+      : '<i class="bi bi-send-fill"></i>';
+  }
+
+  function appendTypingIndicator() {
+    const msgs = document.getElementById('chatMessages');
+    const div = document.createElement('div');
+    div.className = 'message agent-message';
+    div.id = 'typingIndicator';
+    div.innerHTML = `
+      <div class="message-avatar"><i class="bi bi-robot"></i></div>
+      <div class="message-bubble typing-bubble">
+        <span class="typing-dot"></span>
+        <span class="typing-dot"></span>
+        <span class="typing-dot"></span>
+      </div>`;
+    msgs.appendChild(div);
+    scrollToBottom();
+  }
+
+  function removeTypingIndicator() {
+    const el = document.getElementById('typingIndicator');
+    if (el) el.remove();
+  }
+
+  async function sendMessage() {
+    if (isLoading) return;
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim();
+    if (!text) return;
+
+    input.value = '';
+    input.style.height = 'auto';
+    appendMessage('user', text);
+    setLoading(true);
+    hideToolPanel();
+    appendTypingIndicator();
+
+    try {
+      const payload = { message: text };
+      if (REQ_ID) payload.request_id = REQ_ID;
+
+      const resp = await fetch('/api/agent/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      removeTypingIndicator();
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: 'Server error' }));
+        appendMessage('agent', `Sorry, I encountered an error: ${err.error || resp.statusText}`);
+        setLoading(false);
+        return;
+      }
+
+      const data = await resp.json();
+
+      if (data.tool_calls && data.tool_calls.length > 0) {
+        appendToolCalls(data.tool_calls);
+        document.getElementById('toolCallsStatus').textContent =
+          `${data.tool_calls.length} tool${data.tool_calls.length > 1 ? 's' : ''} executed`;
+      }
+
+      appendMessage('agent', data.reply || '(no response)');
+
+    } catch (err) {
+      removeTypingIndicator();
+      appendMessage('agent', `Connection error: ${err.message}`);
+    }
+
+    setLoading(false);
+  }
+
+  async function clearChat() {
+    if (!confirm('Clear the conversation history?')) return;
+    await fetch('/agent/clear', { method: 'POST' });
+    const msgs = document.getElementById('chatMessages');
+    // Keep only the first welcome message
+    while (msgs.children.length > 1) {
+      msgs.removeChild(msgs.lastChild);
+    }
+    hideToolPanel();
+    showToast('Conversation cleared', 'info');
+  }
+</script>
+
+<style>
+.chat-card {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 220px);
+  min-height: 560px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+}
+
+.chat-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.agent-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0078D4, #00BCF2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  color: #fff;
+}
+
+.chat-status {
+  font-size: 0.75rem;
+  color: rgba(255,255,255,0.5);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  background: #107C10;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.chat-actions { display: flex; gap: 0.5rem; }
+
+.btn-icon-sm {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.6);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-icon-sm:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+.message {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  max-width: 85%;
+}
+
+.agent-message { align-self: flex-start; }
+.user-message { align-self: flex-end; flex-direction: row-reverse; }
+
+.message-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0078D4, #00BCF2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.user-avatar {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+
+.message-bubble {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  border-top-left-radius: 2px;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: rgba(255,255,255,0.9);
+}
+
+.message-bubble ul {
+  margin: 0.5rem 0 0.5rem 1rem;
+  padding: 0;
+}
+
+.message-bubble code {
+  background: rgba(0,0,0,0.3);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.82em;
+  font-family: 'IBM Plex Mono', monospace;
+  color: #00BCF2;
+}
+
+.user-bubble {
+  background: linear-gradient(135deg, rgba(0,120,212,0.3), rgba(0,188,242,0.2));
+  border-color: rgba(0,120,212,0.3);
+  border-top-left-radius: 12px;
+  border-top-right-radius: 2px;
+}
+
+.typing-bubble {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.75rem 1rem;
+}
+
+.typing-dot {
+  width: 8px;
+  height: 8px;
+  background: rgba(255,255,255,0.4);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out;
+}
+.typing-dot:nth-child(1) { animation-delay: 0s; }
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0.8); opacity: 0.4; }
+  40% { transform: scale(1.1); opacity: 1; }
+}
+
+.tool-calls-panel {
+  padding: 0.75rem 1rem;
+  background: rgba(0,188,242,0.06);
+  border-top: 1px solid rgba(0,188,242,0.15);
+  border-bottom: 1px solid rgba(0,188,242,0.1);
+}
+
+.tool-calls-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: #00BCF2;
+  margin-bottom: 0.4rem;
+}
+
+.spin { animation: spin 1.5s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.tool-call-item {
+  font-size: 0.78rem;
+  color: rgba(255,255,255,0.6);
+  padding: 0.15rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.tool-call-item.tool-done { color: #107C10; }
+.tool-call-item.tool-error { color: #D13438; }
+.tool-call-item code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.75rem;
+}
+
+.chat-input-area {
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.chat-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+}
+
+.chat-textarea {
+  flex: 1;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  color: #fff;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 0.875rem;
+  padding: 0.6rem 0.9rem;
+  resize: none;
+  line-height: 1.5;
+  transition: border-color 0.2s;
+  max-height: 160px;
+}
+.chat-textarea:focus {
+  outline: none;
+  border-color: rgba(0,120,212,0.5);
+  background: rgba(255,255,255,0.07);
+}
+.chat-textarea::placeholder { color: rgba(255,255,255,0.3); }
+.chat-textarea:disabled { opacity: 0.5; }
+
+.chat-send-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #0078D4, #00BCF2);
+  border: none;
+  color: #fff;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: opacity 0.2s, transform 0.1s;
+}
+.chat-send-btn:hover { opacity: 0.85; transform: scale(1.04); }
+.chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+.chat-hint {
+  padding: 0 1.25rem 0.6rem;
+  font-size: 0.72rem;
+  color: rgba(255,255,255,0.25);
+}
+.chat-hint kbd {
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  font-family: inherit;
+}
+
+/* Context panel styles */
+.glass-card { border-radius: 14px; overflow: hidden; }
+.card-header-custom {
+  padding: 0.75rem 1rem;
+  background: rgba(255,255,255,0.04);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.5);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.card-body-custom { padding: 0.9rem 1rem; }
+
+.context-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 0.82rem;
+  gap: 0.5rem;
+}
+.context-item:last-child { border-bottom: none; }
+.context-label { color: rgba(255,255,255,0.45); flex-shrink: 0; }
+.context-value { color: rgba(255,255,255,0.85); text-align: right; word-break: break-all; }
+.font-mono { font-family: 'IBM Plex Mono', monospace; font-size: 0.78em; }
+
+.btn-outline-sm {
+  display: block;
+  text-align: center;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  color: rgba(255,255,255,0.7);
+  text-decoration: none;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+.btn-outline-sm:hover { background: rgba(255,255,255,0.07); color: #fff; }
+
+.quick-cmds { display: flex; flex-direction: column; gap: 0.4rem; }
+.quick-cmd {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 7px;
+  color: rgba(255,255,255,0.7);
+  font-size: 0.78rem;
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+}
+.quick-cmd:hover { background: rgba(0,120,212,0.15); border-color: rgba(0,120,212,0.3); color: #fff; }
+
+.capability-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.capability-list li {
+  font-size: 0.82rem;
+  color: rgba(255,255,255,0.7);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.2em 0.6em;
+  border-radius: 20px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.status-pending { background: rgba(255,185,0,0.15); color: #FFB900; border: 1px solid rgba(255,185,0,0.3); }
+.status-subnet-allocated { background: rgba(0,120,212,0.15); color: #00BCF2; border: 1px solid rgba(0,120,212,0.3); }
+.status-deploying { background: rgba(100,100,255,0.15); color: #a5b4fc; border: 1px solid rgba(100,100,255,0.3); }
+.status-completed { background: rgba(16,124,16,0.15); color: #4ade80; border: 1px solid rgba(16,124,16,0.3); }
+.status-cancelled { background: rgba(209,52,56,0.15); color: #f87171; border: 1px solid rgba(209,52,56,0.3); }
+
+.fw-600 { font-weight: 600; }
+</style>
+{% endblock %}
