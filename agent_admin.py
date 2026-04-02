@@ -749,7 +749,7 @@ def _chat_openai(messages, max_iterations):
 
     for _ in range(max_iterations):
         response = client.chat.completions.create(
-            model=cfg.OPENAI_MODEL, tools=TOOLS_OPENAI, tool_choice="auto", messages=current_messages,
+            model=cfg.OPENAI_MODEL, tools=TOOLS_OPENAI, messages=current_messages,
         )
         msg = response.choices[0].message
         finish_reason = response.choices[0].finish_reason

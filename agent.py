@@ -398,7 +398,7 @@ def _chat_openai(messages: list, max_iterations: int) -> dict:
         response = client.chat.completions.create(
             model=cfg.OPENAI_MODEL,
             tools=TOOLS_OPENAI,
-            tool_choice="auto",
+
             messages=current_messages,
         )
 
