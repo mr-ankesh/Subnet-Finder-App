@@ -92,6 +92,18 @@ body {
   padding: 6px 14px;
 }
 .nav-clock i { color: var(--accent); }
+.nav-toggle {
+  display: none;               /* shown only on mobile (see media query) */
+  align-items: center; justify-content: center;
+  width: 38px; height: 38px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 1.15rem;
+  cursor: pointer;
+}
+.nav-toggle:hover { background: rgba(255,255,255,0.1); }
 
 /* ── Footer ──────────────────────────────────────────────── */
 .site-footer {
@@ -736,4 +748,24 @@ body {
   .alloc-page-title { font-size: 1.4rem; }
   .alloc-pool-cidr { font-size: 1.3rem; }
   .nav-inner, .footer-inner { padding: 0 20px; }
+
+  /* Mobile navigation: hamburger reveals a stacked dropdown */
+  .nav-toggle { display: inline-flex; }
+  .nav-clock { display: none; }
+  .nav-links {
+    display: none;
+    position: absolute;
+    top: 68px; left: 0; right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    margin: 0;
+    padding: 12px 20px 16px;
+    background: rgba(9,21,37,0.98);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-links.open { display: flex; }
+  .nav-links .nav-link { padding: 0.6rem 0.9rem; font-size: 0.9rem; }
 }

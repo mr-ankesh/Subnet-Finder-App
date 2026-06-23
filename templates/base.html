@@ -27,7 +27,11 @@
         </div>
       </a>
       <div class="nav-right">
-        <nav class="nav-links">
+        <button class="nav-toggle" id="navToggle" type="button"
+                aria-label="Toggle navigation" aria-expanded="false" onclick="toggleNav()">
+          <i class="bi bi-list"></i>
+        </button>
+        <nav class="nav-links" id="navLinks">
           <a href="/" class="nav-link {% if request.endpoint == 'index' %}active{% endif %}">
             <i class="bi bi-house"></i> Home
           </a>
@@ -67,7 +71,7 @@
       <img class="footer-logo"
            src="{{ url_for('static', filename='logo2.svg') }}"
            alt="Presight">
-      <div class="footer-copy">© 2025 Presight · Azure Subnet Manager · All rights reserved.</div>
+      <div class="footer-copy">© <span id="footerYear">2025</span> Presight · Azure Subnet Manager · All rights reserved.</div>
     </div>
   </footer>
 
@@ -82,6 +86,27 @@
     }
     setInterval(updateClock, 1000);
     updateClock();
+
+    // Footer year — keep current automatically
+    (function () {
+      var fy = document.getElementById('footerYear');
+      if (fy) fy.textContent = new Date().getFullYear();
+    })();
+
+    // Mobile navigation toggle
+    function toggleNav() {
+      var nl = document.getElementById('navLinks');
+      var tg = document.getElementById('navToggle');
+      var open = nl.classList.toggle('open');
+      if (tg) tg.setAttribute('aria-expanded', open);
+    }
+    // Close the menu after tapping a link
+    document.addEventListener('click', function (e) {
+      var nl = document.getElementById('navLinks');
+      if (nl && nl.classList.contains('open') && e.target.closest('.nav-link')) {
+        nl.classList.remove('open');
+      }
+    });
 
     function showToast(message, type = 'success') {
       const icons = { success:'check-circle-fill', danger:'x-circle-fill', warning:'exclamation-triangle-fill', info:'info-circle-fill' };
