@@ -727,4 +727,6 @@ def agent_chat():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    # Debug (Werkzeug reloader + interactive debugger) is opt-in via FLASK_DEBUG.
+    # Default off — the debugger is an RCE vector if the port is ever exposed.
+    app.run(host="0.0.0.0", port=8080, debug=cfg.DEBUG)

@@ -25,8 +25,11 @@ class Config:
 
     # Anthropic
     ANTHROPIC_API_KEY: str = _get("ANTHROPIC_API_KEY")
+    ANTHROPIC_MODEL: str   = _get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
-    # OpenAI / Azure OpenAI / compatible
+    # OpenAI / Azure OpenAI / compatible (incl. self-hosted: vLLM, LM Studio, Ollama)
+    # For a self-hosted model, set AGENT_PROVIDER=openai, OPENAI_BASE_URL to the
+    # server's /v1 endpoint, and OPENAI_MODEL to the served model name.
     OPENAI_API_KEY: str     = _get("OPENAI_API_KEY")
     OPENAI_BASE_URL: str    = _get("OPENAI_BASE_URL")
     OPENAI_API_VERSION: str = _get("OPENAI_API_VERSION", "2024-02-15-preview")
@@ -68,6 +71,9 @@ class Config:
 
     # ── Flask ──────────────────────────────────────────────
     SECRET_KEY: str = _get("FLASK_SECRET_KEY", "change-me-in-production")
+    # Werkzeug debugger / auto-reloader. Handy in dev; never enable when the
+    # app is reachable by anyone else (the debugger allows remote code execution).
+    DEBUG: bool = _bool("FLASK_DEBUG", False)
 
     # ── App base URL (used in Teams notification deep-links) ──
     SUBNET_FINDER_BASE_URL: str = _get("SUBNET_FINDER_BASE_URL", "http://localhost:8080")

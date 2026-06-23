@@ -322,8 +322,12 @@ def _chat_anthropic(messages, max_iterations):
 
     for _ in range(max_iterations):
         response = client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=2048,
-            system=SYSTEM_PROMPT, tools=TOOLS_ANTHROPIC, messages=current_messages,
+            model=cfg.ANTHROPIC_MODEL, max_tokens=2048,
+            # Cache the (large, static) system prompt so repeat turns only pay
+            # ~0.1x for the cached prefix instead of re-billing it every call.
+            system=[{"type": "text", "text": SYSTEM_PROMPT,
+                     "cache_control": {"type": "ephemeral"}}],
+            tools=TOOLS_ANTHROPIC, messages=current_messages,
         )
         if response.stop_reason == "end_turn":
             text = "".join(b.text for b in response.content if hasattr(b, "text"))
@@ -360,7 +364,20 @@ def _chat_openai(messages, max_iterations):
         if finish_reason == "stop" or not msg.tool_calls:
             return {"reply": msg.content or "", "tool_calls": tool_calls_log}
         if finish_reason == "tool_calls":
-            current_messages.append(msg)
+            # Normalise the assistant turn to a plain dict before echoing it back.
+            # Appending the raw SDK message object carries null fields (refusal,
+            # function_call, audio, ...) that some self-hosted OpenAI-compatible
+            # servers (vLLM, LM Studio, Ollama) reject.
+            current_messages.append({
+                "role": "assistant",
+                "content": msg.content,
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name,
+                                  "arguments": tc.function.arguments}}
+                    for tc in msg.tool_calls
+                ],
+            })
             for tc in msg.tool_calls:
                 try:
                     inputs = json.loads(tc.function.arguments)
