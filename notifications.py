@@ -3,6 +3,9 @@ Teams notification helpers — Power Automate Workflows webhook (Adaptive Card f
 """
 import json
 import logging
+import smtplib
+from email.message import EmailMessage
+
 import requests as http_requests
 from config import cfg
 
@@ -62,6 +65,42 @@ def _url(path: str) -> str | None:
     return f"{base.rstrip('/')}{path}"
 
 
+# ── Email (SMTP) — direct-to-requester notifications ──────────────────────
+def _send_email(to_addr: str, subject: str, body_text: str) -> bool:
+    if not cfg.SMTP_HOST:
+        log.info("SMTP_HOST not set — email to %s skipped.", to_addr)
+        return False
+    if not to_addr:
+        return False
+    try:
+        msg = EmailMessage()
+        msg["From"] = cfg.SMTP_FROM or cfg.SMTP_USER or "noreply@localhost"
+        msg["To"] = to_addr
+        msg["Subject"] = subject
+        msg.set_content(body_text)
+        with smtplib.SMTP(cfg.SMTP_HOST, cfg.SMTP_PORT, timeout=15) as s:
+            if cfg.SMTP_USE_TLS:
+                s.starttls()
+            if cfg.SMTP_USER:
+                s.login(cfg.SMTP_USER, cfg.SMTP_PASSWORD)
+            s.send_message(msg)
+        log.info("Email sent to %s: %s", to_addr, subject)
+        return True
+    except Exception as exc:
+        log.error("Email to %s failed: %s", to_addr, exc)
+        return False
+
+
+def _email_requester(req, subject: str, body_text: str) -> bool:
+    """Best-effort email to the request's requester (no-op if no email/SMTP)."""
+    to_addr = getattr(req, "requester_email", None)
+    if not to_addr:
+        return False
+    link = _url(f"/requests/{req.id}") or ""
+    footer = f"\n\nTrack your request: {link}" if link else ""
+    return _send_email(to_addr, subject, body_text + footer)
+
+
 # ── Step 1: CIDR Requested ────────────────────────────────────────────────
 def notify_cidr_requested(req) -> bool:
     facts = [
@@ -90,6 +129,9 @@ def notify_cidr_assigned(req, subnet: str) -> bool:
         {"title": "Pool",         "value": req.ip_range},
     ]
     body = f"Subnet **{subnet}** has been assigned to request #{req.id}. Requester can now deploy the spoke VNET."
+    _email_requester(req, f"[Subnet Manager] CIDR {subnet} assigned — Request #{req.id}",
+                     f"Hi {req.requester_name},\n\nYour spoke CIDR request #{req.id} has been "
+                     f"assigned the subnet {subnet}. You can now deploy your spoke VNET.")
     return _post(_adaptive_card(
         title=f"CIDR Assigned — Request #{req.id}",
         subtitle="Presight R&D Azure Subnet Manager",
@@ -106,6 +148,9 @@ def notify_vnet_created(req) -> bool:
         {"title": "Subnet",        "value": req.allocated_subnet or "—"},
         {"title": "Hub Required",  "value": "Yes" if req.hub_integration else "No"},
     ]
+    _email_requester(req, f"[Subnet Manager] VNET created — Request #{req.id}",
+                     f"Hi {req.requester_name},\n\nYour spoke VNET for request #{req.id} "
+                     f"(subnet {req.allocated_subnet or '—'}) has been created.")
     return _post(_adaptive_card(
         title=f"VNET Created — Request #{req.id}",
         subtitle="Presight R&D Azure Subnet Manager",
@@ -146,6 +191,9 @@ def notify_hub_in_progress(req) -> bool:
         {"title": "Requester",  "value": req.requester_name},
         {"title": "Subnet",     "value": req.allocated_subnet or "—"},
     ]
+    _email_requester(req, f"[Subnet Manager] Hub integration started — Request #{req.id}",
+                     f"Hi {req.requester_name},\n\nHub integration for your spoke VNET "
+                     f"(request #{req.id}) has started.")
     return _post(_adaptive_card(
         title=f"Hub Integration In Progress — Request #{req.id}",
         subtitle="Presight R&D Azure Subnet Manager",
@@ -165,6 +213,10 @@ def notify_hub_integrated(req, actions_taken: list = None) -> bool:
     action_text = ""
     if actions_taken:
         action_text = "\n\n" + "  \n".join(f"• {a}" for a in actions_taken)
+    _email_requester(req, f"[Subnet Manager] Request #{req.id} complete — hub integrated",
+                     f"Hi {req.requester_name},\n\nYour spoke VNET (request #{req.id}, subnet "
+                     f"{getattr(req, 'allocated_subnet', None) or '—'}) is fully integrated with the hub. "
+                     f"Onboarding is complete.")
     return _post(_adaptive_card(
         title=f"Hub Integration Complete — Request #{req.id}",
         subtitle="Presight R&D Azure Subnet Manager",

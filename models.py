@@ -63,6 +63,7 @@ class SpokeRequest(db.Model):
     cidr_needed      = db.Column(db.String(20),  nullable=False)
     purpose          = db.Column(db.String(500), nullable=False)
     requester_name   = db.Column(db.String(200), nullable=False)
+    requester_email  = db.Column(db.String(200), nullable=True)
     ip_range         = db.Column(db.String(20),  nullable=False)
     hub_integration  = db.Column(db.Boolean,     nullable=False, default=False)
     status           = db.Column(db.String(40),  nullable=False, default=RequestStatus.CIDR_REQUESTED)
@@ -88,6 +89,7 @@ class SpokeRequest(db.Model):
             "cidr_needed":      self.cidr_needed,
             "purpose":          self.purpose,
             "requester_name":   self.requester_name,
+            "requester_email":  self.requester_email,
             "ip_range":         self.ip_range,
             "hub_integration":  self.hub_integration,
             "status":           self.status,

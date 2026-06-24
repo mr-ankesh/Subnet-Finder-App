@@ -132,6 +132,16 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
+    # Lightweight schema migration: add requester_email if an older DB predates it
+    try:
+        cols = [r[1] for r in db.session.execute(db.text("PRAGMA table_info(spoke_requests)"))]
+        if "requester_email" not in cols:
+            db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN requester_email VARCHAR(200)"))
+            db.session.commit()
+            log.info("[migration] added spoke_requests.requester_email column")
+    except Exception:
+        db.session.rollback()
+
     # Auto-migrate subnet inventory from Excel on first run
     _auto_migrate_excel()
 
@@ -515,6 +525,7 @@ def requester_new_request():
     cidr_needed   = str(data.get("cidr_needed", "")).strip()
     purpose       = str(data.get("purpose", "")).strip()
     requester_name = str(data.get("requester_name", "")).strip()
+    requester_email = str(data.get("requester_email", "")).strip()
     ip_range      = str(data.get("ip_range", "")).strip()
     hub_integration = bool(data.get("hub_integration", False))
     if not all([cidr_needed, purpose, requester_name, ip_range]):
@@ -522,7 +533,8 @@ def requester_new_request():
     if ip_range not in ["10.110.0.0/16", "10.119.0.0/16"]:
         return jsonify({"error": "Invalid IP range."}), 400
     try:
-        req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration)
+        req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range,
+                                      hub_integration, requester_email=requester_email or None)
         req = get_spoke_request(req_id)
         try:
             notifications.notify_cidr_requested(req)
@@ -667,6 +679,52 @@ def admin_deallocate_api():
         reason=data.get("reason", ""),
     )
     return result, 200, {"Content-Type": "application/json"}
+
+
+@app.route("/api/admin/deploy/<int:req_id>", methods=["POST"])
+@require_admin
+def admin_deploy_api(req_id):
+    """
+    Full Azure onboarding for a request: create the spoke VNET + subnet with the
+    assigned CIDR, then peer to hub, add UDR routes, and apply firewall rules.
+    Requires an assigned CIDR and saved VNET info (subscription/RG/name/region).
+    """
+    import azure_tools
+    req = SpokeRequest.query.get_or_404(req_id)
+    if not req.allocated_subnet:
+        return jsonify({"error": "No CIDR has been assigned to this request yet."}), 400
+    vi = req.vnet_info
+    if not vi or not all([vi.subscription_id, vi.resource_group, vi.vnet_name, vi.region]):
+        return jsonify({"error": "VNET info incomplete. Set Subscription ID, Resource Group, "
+                                 "VNET Name and Region first (Edit VNET Info)."}), 400
+
+    result = azure_tools.deploy_full_onboarding(
+        spoke_subscription_id=vi.subscription_id,
+        spoke_resource_group=vi.resource_group,
+        spoke_vnet_name=vi.vnet_name,
+        location=vi.region,
+        address_space=req.allocated_subnet,
+        run_hub_integration=req.hub_integration,
+        outbound_rules=vi.get_outbound_rules(),
+    )
+
+    # Advance status based on what completed
+    new_status = None
+    if result.get("vnet_created"):
+        new_status = RequestStatus.HUB_INTEGRATED if result.get("success") else RequestStatus.VNET_CREATED
+    if new_status:
+        req.status = new_status
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+        try:
+            if new_status == RequestStatus.HUB_INTEGRATED:
+                notifications.notify_hub_integrated(req, result.get("steps"))
+            else:
+                notifications.notify_vnet_created(req)
+        except Exception:
+            pass
+
+    return jsonify(result), (200 if result.get("success") else 207)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

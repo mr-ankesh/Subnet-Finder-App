@@ -19,6 +19,14 @@ class Config:
     # ── Teams ──────────────────────────────────────────────
     TEAMS_WEBHOOK_URL: str = _get("TEAMS_WEBHOOK_URL")
 
+    # ── Email (SMTP) — notifies the individual requester on status updates ──
+    SMTP_HOST: str     = _get("SMTP_HOST")
+    SMTP_PORT: int     = int(_get("SMTP_PORT", "587") or 587)
+    SMTP_USER: str     = _get("SMTP_USER")
+    SMTP_PASSWORD: str = _get("SMTP_PASSWORD")
+    SMTP_FROM: str     = _get("SMTP_FROM") or _get("SMTP_USER")
+    SMTP_USE_TLS: bool = _bool("SMTP_USE_TLS", True)
+
     # ── AI Agent provider ──────────────────────────────────
     # "anthropic" or "openai" (Azure OpenAI, LM Studio, Ollama, etc.)
     AGENT_PROVIDER: str   = _get("AGENT_PROVIDER", "anthropic")
@@ -63,6 +71,10 @@ class Config:
 
     # ── Default region for new Azure resources ─────────────
     DEFAULT_AZURE_REGION: str = _get("DEFAULT_AZURE_REGION", "uaenorth")
+
+    # Hub Azure Firewall private IP — used as the next hop for spoke UDR routes
+    # during full onboarding. If unset, the route step is skipped.
+    HUB_FIREWALL_PRIVATE_IP: str = _get("HUB_FIREWALL_PRIVATE_IP")
 
     # ── Azure Firewall Policy ──────────────────────────────
     FIREWALL_POLICY_NAME:           str = _get("FIREWALL_POLICY_NAME")

@@ -30,6 +30,7 @@
           <div class="detail-row"><dt>IP Pool</dt><dd style="font-family:var(--mono);font-size:13px;">{{ req.ip_range }}</dd></div>
           <div class="detail-row"><dt>Purpose</dt><dd>{{ req.purpose }}</dd></div>
           <div class="detail-row"><dt>Requester</dt><dd style="font-weight:600;">{{ req.requester_name }}</dd></div>
+          {% if req.requester_email %}<div class="detail-row"><dt>Email</dt><dd style="font-size:13px;">{{ req.requester_email }}</dd></div>{% endif %}
           <div class="detail-row"><dt>Hub Integration</dt>
             <dd>{% if req.hub_integration %}<span style="color:#7edb56;font-weight:700;">Yes</span>{% else %}<span style="color:var(--text-muted);">No</span>{% endif %}</dd>
           </div>
@@ -74,9 +75,15 @@
 
         <!-- Admin actions -->
         {% if req.status == RequestStatus.CIDR_REQUESTED %}
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Assign a CIDR to this request via the Admin Agent.</p>
-        <a href="{{ url_for('agent_page') }}?req={{ req.id }}" class="btn btn-glow w-100 mb-2">
-          <i class="bi bi-robot me-2"></i>Open Admin Agent to Assign CIDR
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">
+          Assign a <strong>/{{ req.cidr_needed }}</strong> subnet from <strong>{{ req.ip_range }}</strong>.
+        </p>
+        <button class="btn btn-glow w-100 mb-2" onclick="findSubnets()">
+          <i class="bi bi-search me-2"></i>Find &amp; Assign Subnet
+        </button>
+        <div id="subnetResults" style="display:none;margin-bottom:10px;"></div>
+        <a href="{{ url_for('agent_page') }}?req={{ req.id }}" class="btn btn-glass w-100">
+          <i class="bi bi-robot me-2"></i>Or assign via Admin Agent
         </a>
         {% endif %}
 
@@ -98,6 +105,13 @@
         <button class="btn btn-glass w-100" onclick="updateStatus('{{ RequestStatus.HUB_INTEGRATED }}')">
           <i class="bi bi-check-all me-2"></i>Mark Hub Integrated (Complete)
         </button>
+        {% endif %}
+
+        {% if req.allocated_subnet and req.status in [RequestStatus.CIDR_ASSIGNED, RequestStatus.VNET_CREATED, RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS] %}
+        <button class="btn btn-glow w-100 mb-2" id="deployBtn" onclick="deployAzure()">
+          <i class="bi bi-cloud-arrow-up me-2"></i>Deploy to Azure (Full Onboarding)
+        </button>
+        <div id="deployResults" style="display:none;margin-bottom:10px;"></div>
         {% endif %}
 
         {% if req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS] %}
@@ -195,6 +209,59 @@
 .timeline-line.done { background:var(--accent); }
 </style>
 <script>
+const REQ_ID   = {{ req.id }};
+const POOL_KEY = '{{ req.pool_key() }}';
+const PREFIX   = '{{ req.cidr_needed }}';
+
+async function findSubnets() {
+  const box = document.getElementById('subnetResults');
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Searching…</span>';
+  try {
+    const resp = await fetch(`/api/admin/find-subnets?pool=${encodeURIComponent(POOL_KEY)}&prefix=${encodeURIComponent(PREFIX)}`);
+    const data = await resp.json();
+    if (data.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${data.error}</span>`; return; }
+    const cands = data.candidates || [];
+    if (!cands.length) { box.innerHTML = '<span style="color:var(--text-muted);font-size:12px;">No available subnets.</span>'; return; }
+    box.innerHTML = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Click a subnet to assign:</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:6px;">' +
+      cands.map(c => `<button class="btn btn-sm" style="font-family:var(--mono);font-size:12px;background:rgba(0,163,255,.12);border:1px solid rgba(0,163,255,.3);color:#60a5fa;padding:4px 10px;" onclick="assignCidr('${c}')">${c}</button>`).join('') +
+      '</div>';
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+}
+
+async function assignCidr(subnet) {
+  const box = document.getElementById('subnetResults');
+  box.innerHTML = `<span style="font-size:12px;color:var(--text-muted);">Assigning ${subnet}…</span>`;
+  try {
+    const resp = await fetch('/api/admin/assign-cidr', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: REQ_ID, pool: POOL_KEY, subnet: subnet, allocated_by: 'Admin' })
+    });
+    const data = await resp.json();
+    if (data.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${data.error}</span>`; }
+    else { box.innerHTML = `<span style="color:#7edb56;font-size:12px;">✓ ${subnet} assigned — reloading…</span>`; setTimeout(() => location.reload(), 1200); }
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+}
+
+async function deployAzure() {
+  if (!confirm('Deploy this spoke to Azure now? This creates the VNET and runs hub integration.')) return;
+  const btn = document.getElementById('deployBtn');
+  const box = document.getElementById('deployResults');
+  const reset = () => { btn.disabled = false; btn.innerHTML = '<i class="bi bi-cloud-arrow-up me-2"></i>Deploy to Azure (Full Onboarding)'; };
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Deploying…';
+  box.style.display = 'block'; box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running Azure onboarding…</span>';
+  try {
+    const resp = await fetch(`/api/admin/deploy/${REQ_ID}`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${data.error}</span>`; reset(); return; }
+    const steps = (data.steps || []).map(s => `<div style="font-size:12px;margin:2px 0;">${s}</div>`).join('');
+    const color = data.success ? '#7edb56' : '#f59e0b';
+    box.innerHTML = `<div style="color:${color};font-size:12px;font-weight:600;margin-bottom:6px;">${data.success ? 'Deployment complete' : 'Completed with issues'}</div>${steps}<div style="font-size:11px;color:var(--text-muted);margin-top:8px;">Reloading…</div>`;
+    setTimeout(() => location.reload(), 2500);
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; reset(); }
+}
+
 async function updateStatus(newStatus) {
   const msgEl = document.getElementById('statusMsg');
   try {

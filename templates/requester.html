@@ -75,6 +75,10 @@
                 <input type="text" class="form-input-custom" id="f_name" placeholder="e.g. John Smith">
               </div>
               <div class="col-md-6">
+                <label class="form-label-custom">Your Email <span style="color:rgba(255,255,255,.4);font-weight:400;">(for status updates)</span></label>
+                <input type="email" class="form-input-custom" id="f_email" placeholder="e.g. john@presight.ai">
+              </div>
+              <div class="col-md-6">
                 <label class="form-label-custom">IP Pool *</label>
                 <select class="form-input-custom" id="f_pool">
                   <option value="10.110.0.0/16">10.110.0.0/16 — Primary</option>
@@ -287,16 +291,18 @@ async function apiPost(url, body) {
 // ── Form actions ───────────────────────────────────────────────────────────
 async function submitNewRequest() {
   const name    = document.getElementById('f_name').value.trim();
+  const email   = document.getElementById('f_email').value.trim();
   const pool    = document.getElementById('f_pool').value;
   const cidr    = document.getElementById('f_cidr').value;
   const hub     = document.getElementById('f_hub').checked;
   const purpose = document.getElementById('f_purpose').value.trim();
   if (!name || !purpose) return showResult('newReqResult', resultBox('error', 'Name and Purpose are required.'));
   showResult('newReqResult', resultBox('info', 'Submitting...'));
-  const d = await apiPost('/api/requester/new-request', { cidr_needed: cidr, purpose, requester_name: name, ip_range: pool, hub_integration: hub });
+  const d = await apiPost('/api/requester/new-request', { cidr_needed: cidr, purpose, requester_name: name, requester_email: email, ip_range: pool, hub_integration: hub });
   if (d.success) {
     showResult('newReqResult', resultBox('success', `✅ Request <strong>#${d.request_id}</strong> submitted! Save this ID to track your request.`));
     document.getElementById('f_name').value = '';
+    document.getElementById('f_email').value = '';
     document.getElementById('f_purpose').value = '';
   } else {
     showResult('newReqResult', resultBox('error', d.error || 'Submission failed.'));
