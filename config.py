@@ -72,9 +72,12 @@ class Config:
     # ── Default region for new Azure resources ─────────────
     DEFAULT_AZURE_REGION: str = _get("DEFAULT_AZURE_REGION", "uaenorth")
 
-    # Hub Azure Firewall private IP — used as the next hop for spoke UDR routes
-    # during full onboarding. If unset, the route step is skipped.
-    HUB_FIREWALL_PRIVATE_IP: str = _get("HUB_FIREWALL_PRIVATE_IP")
+    # Hub Azure Firewall private IP — next hop for spoke routes (default route).
+    HUB_FIREWALL_PRIVATE_IP: str = _get("HUB_FIREWALL_PRIVATE_IP", "10.110.2.4")
+
+    # Hub routing tables that get a route to each new spoke during onboarding.
+    UDR_GATEWAY_NAME: str = _get("UDR_GATEWAY_NAME")   # gateway routing table
+    UDR_ZPA_NAME:     str = _get("UDR_ZPA_NAME")       # ZPA routing table
 
     # ── Azure Firewall Policy ──────────────────────────────
     FIREWALL_POLICY_NAME:           str = _get("FIREWALL_POLICY_NAME")

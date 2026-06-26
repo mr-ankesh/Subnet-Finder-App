@@ -704,50 +704,61 @@ def admin_deallocate_api():
     return result, 200, {"Content-Type": "application/json"}
 
 
-@app.route("/api/admin/deploy/<int:req_id>", methods=["POST"])
+@app.route("/api/admin/azure-action/<int:req_id>", methods=["POST"])
 @require_admin
-def admin_deploy_api(req_id):
+def admin_azure_action(req_id):
     """
-    Full Azure onboarding for a request: create the spoke VNET + subnet with the
-    assigned CIDR, then peer to hub, add UDR routes, and apply firewall rules.
-    Requires an assigned CIDR and saved VNET info (subscription/RG/name/region).
+    Run a single Azure onboarding action for a request:
+      vnet          -> create the spoke VNET + subnet (admin-deploy requests)
+      peer          -> peer spoke <-> hub
+      internet      -> allow internet egress on the firewall policy
+      gateway_route -> add a route to the spoke in the gateway routing table
+      zpa_route     -> add a route to the spoke in the ZPA routing table
     """
     import azure_tools
     req = SpokeRequest.query.get_or_404(req_id)
-    if not req.allocated_subnet:
-        return jsonify({"error": "No CIDR has been assigned to this request yet."}), 400
+    action = (request.get_json(force=True) or {}).get("action", "")
+    addr = req.allocated_subnet
+    if not addr:
+        return jsonify({"error": "No CIDR has been assigned yet."}), 400
     vi = req.vnet_info
     if not vi or not all([vi.subscription_id, vi.resource_group, vi.vnet_name, vi.region]):
-        return jsonify({"error": "VNET info incomplete. Set Subscription ID, Resource Group, "
-                                 "VNET Name and Region first (Edit VNET Info)."}), 400
+        return jsonify({"error": "VNET info incomplete (Subscription ID, Resource Group, "
+                                 "VNET Name, Region). Edit VNET Info first."}), 400
 
-    result = azure_tools.deploy_full_onboarding(
-        spoke_subscription_id=vi.subscription_id,
-        spoke_resource_group=vi.resource_group,
-        spoke_vnet_name=vi.vnet_name,
-        location=vi.region,
-        address_space=req.allocated_subnet,
-        run_hub_integration=req.hub_integration,
-        outbound_rules=vi.get_outbound_rules(),
-    )
-
-    # Advance status based on what completed
-    new_status = None
-    if result.get("vnet_created"):
-        new_status = RequestStatus.HUB_INTEGRATED if result.get("success") else RequestStatus.VNET_CREATED
-    if new_status:
-        req.status = new_status
-        req.updated_at = datetime.utcnow()
-        db.session.commit()
-        try:
-            if new_status == RequestStatus.HUB_INTEGRATED:
-                notifications.notify_hub_integrated(req, result.get("steps"))
-            else:
+    if action == "vnet":
+        res = azure_tools.create_spoke_vnet(vi.subscription_id, vi.resource_group,
+                                            vi.vnet_name, vi.region, addr)
+        if res.get("success") and req.status == RequestStatus.CIDR_ASSIGNED:
+            req.status = RequestStatus.VNET_CREATED
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
+            try:
                 notifications.notify_vnet_created(req)
-        except Exception:
-            pass
+            except Exception:
+                pass
+    elif action == "peer":
+        res = azure_tools.peer_hub_vnet(spoke_subscription_id=vi.subscription_id,
+                                        spoke_resource_group=vi.resource_group,
+                                        spoke_vnet_name=vi.vnet_name, spoke_address_space=addr)
+    elif action == "internet":
+        res = azure_tools.allow_internet_rule(addr, f"{vi.vnet_name}-allow-internet")
+    elif action in ("gateway_route", "zpa_route"):
+        table = (cfg.UDR_GATEWAY_NAME or cfg.UDR_NAME_1) if action == "gateway_route" \
+                else (cfg.UDR_ZPA_NAME or cfg.UDR_NAME_2)
+        if not table:
+            return jsonify({"error": f"No routing table configured for {action} "
+                                     f"(set UDR_GATEWAY_NAME / UDR_ZPA_NAME)."}), 400
+        res = azure_tools.add_route_to_table(
+            route_table_name=table, resource_group=cfg.UDR_RESOURCE_GROUP,
+            route_name=f"to-{vi.vnet_name}", address_prefix=addr,
+            next_hop_type="VirtualAppliance", next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
+            subscription_id=cfg.HUB_SUBSCRIPTION_ID,
+        )
+    else:
+        return jsonify({"error": f"Unknown action '{action}'."}), 400
 
-    return jsonify(result), (200 if result.get("success") else 207)
+    return jsonify(res), (200 if res.get("success") else 207)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

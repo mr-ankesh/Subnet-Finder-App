@@ -52,84 +52,17 @@ def create_spoke_vnet(
         return {"success": False, "message": str(exc)}
 
 
-# ── Full onboarding orchestration ──────────────────────────────────────────
+# ── Allow internet egress on the firewall policy for a spoke ───────────────
 
-def deploy_full_onboarding(
-    spoke_subscription_id: str,
-    spoke_resource_group: str,
-    spoke_vnet_name: str,
-    location: str,
-    address_space: str,
-    run_hub_integration: bool = True,
-    outbound_rules: list = None,
-) -> dict:
-    """
-    End-to-end spoke deployment:
-      1. Create the spoke VNET + subnet.
-      2. (if hub) Peer spoke <-> hub.
-      3. (if hub + firewall IP) Add a UDR route for the spoke prefix via the firewall.
-      4. (if hub + firewall policy) Add firewall network rules for each outbound rule.
-    Each step is best-effort and reported individually. Returns:
-      {success, vnet_created, steps: [str], details: [{step, success, message}]}
-    """
-    steps, details = [], []
-    overall = True
-
-    def record(step, res):
-        nonlocal overall
-        ok = bool(res.get("success"))
-        overall = overall and ok
-        mark = "✓" if ok else "✗"
-        steps.append(f"{mark} {step}: {res.get('message', '')}")
-        details.append({"step": step, "success": ok, "message": res.get("message", "")})
-        return ok
-
-    # 1. VNET + subnet
-    vnet_res = create_spoke_vnet(spoke_subscription_id, spoke_resource_group,
-                                 spoke_vnet_name, location, address_space)
-    vnet_created = record("Create VNET", vnet_res)
-    if not vnet_created:
-        return {"success": False, "vnet_created": False, "steps": steps, "details": details}
-
-    if run_hub_integration:
-        # 2. Peering
-        record("Hub peering", peer_hub_vnet(
-            spoke_subscription_id=spoke_subscription_id,
-            spoke_resource_group=spoke_resource_group,
-            spoke_vnet_name=spoke_vnet_name,
-            spoke_address_space=address_space,
-        ))
-
-        # 3. UDR route (spoke prefix -> firewall) if a firewall IP is configured
-        if cfg.HUB_FIREWALL_PRIVATE_IP and (cfg.UDR_NAME_1 or cfg.UDR_NAME_2):
-            record("Hub UDR route", add_udr_routes(
-                route_name=f"to-{spoke_vnet_name}",
-                address_prefix=address_space,
-                next_hop_type="VirtualAppliance",
-                next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
-            ))
-        else:
-            steps.append("• Hub UDR route: skipped (HUB_FIREWALL_PRIVATE_IP / UDR names not set)")
-
-        # 4. Firewall network rules from outbound rules
-        if cfg.FIREWALL_POLICY_NAME and outbound_rules:
-            for i, rule in enumerate(outbound_rules):
-                dest = rule.get("destination", "").strip()
-                port = str(rule.get("port", "")).strip()
-                proto = (rule.get("protocol") or "TCP").strip().upper()
-                if not dest or not port:
-                    continue
-                record(f"Firewall rule ({dest}:{port})", add_firewall_network_rule(
-                    rule_name=f"{spoke_vnet_name}-out-{i+1}",
-                    destination_addresses=[dest],
-                    destination_ports=[port],
-                    protocol=proto,
-                    source_addresses=[address_space],
-                ))
-        elif outbound_rules:
-            steps.append("• Firewall rules: skipped (FIREWALL_POLICY_NAME not set)")
-
-    return {"success": overall, "vnet_created": vnet_created, "steps": steps, "details": details}
+def allow_internet_rule(spoke_address_space: str, rule_name: str) -> dict:
+    """Add a firewall network rule permitting the spoke to reach the internet."""
+    return add_firewall_network_rule(
+        rule_name=rule_name,
+        destination_addresses=["*"],
+        destination_ports=["*"],
+        protocol="Any",
+        source_addresses=[spoke_address_space],
+    )
 
 
 # ── 1. Peer spoke VNET to hub ──────────────────────────────────────────────

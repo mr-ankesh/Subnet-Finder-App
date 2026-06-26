@@ -110,11 +110,35 @@
         </button>
         {% endif %}
 
-        {% if req.allocated_subnet and req.status in [RequestStatus.CIDR_ASSIGNED, RequestStatus.VNET_CREATED, RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS] %}
-        <button class="btn btn-glow w-100 mb-2" id="deployBtn" onclick="deployAzure()">
-          <i class="bi bi-cloud-arrow-up me-2"></i>Deploy to Azure (Full Onboarding)
-        </button>
-        <div id="deployResults" style="display:none;margin-bottom:10px;"></div>
+        {% if req.allocated_subnet and req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.CANCELLED] %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;">
+            <i class="bi bi-cloud-arrow-up"></i> Azure Deployment Actions
+          </div>
+          {% if req.deployment_mode == 'admin' %}
+          <button class="btn btn-glow w-100 mb-2" onclick="runAction('vnet', this)">
+            <i class="bi bi-hdd-network me-2"></i>Deploy VNET
+          </button>
+          {% endif %}
+          {% if req.hub_integration %}
+          <button class="btn btn-glass w-100 mb-2" onclick="runAction('peer', this)">
+            <i class="bi bi-diagram-3 me-2"></i>Peer Hub
+          </button>
+          <button class="btn btn-glass w-100 mb-2" onclick="runAction('internet', this)">
+            <i class="bi bi-globe me-2"></i>Allow Internet (firewall policy)
+          </button>
+          <button class="btn btn-glass w-100 mb-2" onclick="runAction('gateway_route', this)">
+            <i class="bi bi-signpost-split me-2"></i>Add Route — Gateway Table
+          </button>
+          <button class="btn btn-glass w-100" onclick="runAction('zpa_route', this)">
+            <i class="bi bi-signpost-split me-2"></i>Add Route — ZPA Table
+          </button>
+          {% endif %}
+          {% if req.deployment_mode != 'admin' and not req.hub_integration %}
+          <p style="font-size:12px;color:var(--text-muted);margin:0;">Self-deploy, no hub integration — no Azure actions required.</p>
+          {% endif %}
+          <div id="actionResults" style="display:none;margin-top:10px;"></div>
+        </div>
         {% endif %}
 
         {% if req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS] %}
@@ -247,22 +271,25 @@ async function assignCidr(subnet) {
   } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
 }
 
-async function deployAzure() {
-  if (!confirm('Deploy this spoke to Azure now? This creates the VNET and runs hub integration.')) return;
-  const btn = document.getElementById('deployBtn');
-  const box = document.getElementById('deployResults');
-  const reset = () => { btn.disabled = false; btn.innerHTML = '<i class="bi bi-cloud-arrow-up me-2"></i>Deploy to Azure (Full Onboarding)'; };
-  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Deploying…';
-  box.style.display = 'block'; box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running Azure onboarding…</span>';
+async function runAction(action, btn) {
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Running…';
+  const box = document.getElementById('actionResults');
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running…</span>';
   try {
-    const resp = await fetch(`/api/admin/deploy/${REQ_ID}`, { method: 'POST' });
-    const data = await resp.json();
-    if (data.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${data.error}</span>`; reset(); return; }
-    const steps = (data.steps || []).map(s => `<div style="font-size:12px;margin:2px 0;">${s}</div>`).join('');
-    const color = data.success ? '#7edb56' : '#f59e0b';
-    box.innerHTML = `<div style="color:${color};font-size:12px;font-weight:600;margin-bottom:6px;">${data.success ? 'Deployment complete' : 'Completed with issues'}</div>${steps}<div style="font-size:11px;color:var(--text-muted);margin-top:8px;">Reloading…</div>`;
-    setTimeout(() => location.reload(), 2500);
-  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; reset(); }
+    const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const d = await resp.json();
+    const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
+    box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message || (d.success ? 'Done' : 'Completed with issues')}</span>`;
+    if (d.success) setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+  }
+  btn.disabled = false; btn.innerHTML = orig;
 }
 
 async function updateStatus(newStatus) {
