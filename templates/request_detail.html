@@ -133,6 +133,9 @@
           <button class="btn btn-glass w-100" onclick="runAction('zpa_route', this)">
             <i class="bi bi-signpost-split me-2"></i>Add Route — ZPA Table
           </button>
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            Standard routing for outbound internet &amp; Azure VPN via firewall. For any other specific routing via the hub, contact <strong>Ankesh Singh</strong>.
+          </div>
           {% endif %}
           {% if req.deployment_mode != 'admin' and not req.hub_integration %}
           <p style="font-size:12px;color:var(--text-muted);margin:0;">Self-deploy, no hub integration — no Azure actions required.</p>
