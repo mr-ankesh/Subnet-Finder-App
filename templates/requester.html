@@ -2,6 +2,15 @@
 {% block title %}Spoke Request Portal — Presight R&D{% endblock %}
 
 {% block content %}
+<style>
+  .deploy-opt { flex:1 1 220px; display:flex; align-items:center; gap:9px; cursor:pointer;
+    padding:11px 13px; border-radius:10px; border:1px solid rgba(255,255,255,.12);
+    background:rgba(255,255,255,.03); font-size:.85rem; color:rgba(255,255,255,.7); transition:all .15s; }
+  .deploy-opt:hover { border-color:rgba(0,120,212,.4); background:rgba(0,120,212,.06); }
+  .deploy-opt input { accent-color:#00BCF2; flex-shrink:0; }
+  .deploy-opt:has(input:checked) { border-color:#00BCF2; background:rgba(0,120,212,.12); color:#fff; }
+  .deploy-opt small { color:rgba(255,255,255,.45); }
+</style>
 <div class="page-hero" style="background-image: url('{{ url_for('static', filename='background.jpg') }}');">
   <div class="hero-overlay"></div>
   <div class="hero-content">
@@ -105,6 +114,56 @@
                   <span style="font-size:.85rem;color:rgba(255,255,255,.6);">Needs hub peering</span>
                 </div>
               </div>
+
+              <!-- Who deploys? -->
+              <div class="col-12">
+                <label class="form-label-custom">Deployment</label>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                  <label class="deploy-opt">
+                    <input type="radio" name="f_deploy" value="self" checked onchange="onDeployModeChange()">
+                    <span><i class="bi bi-hdd-network"></i> I'll deploy it myself <small>— just allocate a CIDR</small></span>
+                  </label>
+                  <label class="deploy-opt">
+                    <input type="radio" name="f_deploy" value="admin" onchange="onDeployModeChange()">
+                    <span><i class="bi bi-cloud-arrow-up"></i> Admin deploys it for me <small>— provide Azure target</small></span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Admin-deploy target (shown only when 'admin') -->
+              <div class="col-12" id="adminDeployFields" style="display:none;">
+                <div style="background:rgba(0,120,212,.06);border:1px solid rgba(0,120,212,.2);border-radius:10px;padding:14px;">
+                  <div style="font-size:12px;color:#00BCF2;font-weight:600;margin-bottom:10px;">
+                    <i class="bi bi-cloud-arrow-up"></i> Azure deployment target
+                    <span style="font-weight:400;color:rgba(255,255,255,.5);">— so the admin can create the VNET (and peer to hub) for you</span>
+                  </div>
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subscription ID *</label>
+                      <input type="text" class="form-input-custom" id="f_sub" placeholder="00000000-0000-0000-0000-000000000000">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Resource Group *</label>
+                      <input type="text" class="form-input-custom" id="f_rg" placeholder="rg-spoke-myproject">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Name *</label>
+                      <input type="text" class="form-input-custom" id="f_vnet" placeholder="vnet-myproject">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Region *</label>
+                      <select class="form-input-custom" id="f_region">
+                        <option value="uaenorth">UAE North</option>
+                        <option value="uaecentral">UAE Central</option>
+                        <option value="westeurope">West Europe</option>
+                        <option value="northeurope">North Europe</option>
+                        <option value="eastus">East US</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div class="col-12">
                 <label class="form-label-custom">Purpose / Project *</label>
                 <textarea class="form-input-custom" id="f_purpose" rows="2" placeholder="e.g. Dev environment for Project X"></textarea>
@@ -289,6 +348,14 @@ async function apiPost(url, body) {
 }
 
 // ── Form actions ───────────────────────────────────────────────────────────
+function deployMode() {
+  const r = document.querySelector('input[name="f_deploy"]:checked');
+  return r ? r.value : 'self';
+}
+function onDeployModeChange() {
+  document.getElementById('adminDeployFields').style.display = (deployMode() === 'admin') ? 'block' : 'none';
+}
+
 async function submitNewRequest() {
   const name    = document.getElementById('f_name').value.trim();
   const email   = document.getElementById('f_email').value.trim();
@@ -296,14 +363,33 @@ async function submitNewRequest() {
   const cidr    = document.getElementById('f_cidr').value;
   const hub     = document.getElementById('f_hub').checked;
   const purpose = document.getElementById('f_purpose').value.trim();
+  const mode    = deployMode();
   if (!name || !purpose) return showResult('newReqResult', resultBox('error', 'Name and Purpose are required.'));
+
+  const payload = { cidr_needed: cidr, purpose, requester_name: name, requester_email: email,
+                    ip_range: pool, hub_integration: hub, deployment_mode: mode };
+
+  if (mode === 'admin') {
+    const sub = document.getElementById('f_sub').value.trim();
+    const rg  = document.getElementById('f_rg').value.trim();
+    const vnet = document.getElementById('f_vnet').value.trim();
+    const region = document.getElementById('f_region').value;
+    if (!sub || !rg || !vnet || !region) {
+      return showResult('newReqResult', resultBox('error', 'Admin-deploy needs Subscription ID, Resource Group, VNET Name and Region.'));
+    }
+    Object.assign(payload, { subscription_id: sub, resource_group: rg, vnet_name: vnet, region });
+  }
+
   showResult('newReqResult', resultBox('info', 'Submitting...'));
-  const d = await apiPost('/api/requester/new-request', { cidr_needed: cidr, purpose, requester_name: name, requester_email: email, ip_range: pool, hub_integration: hub });
+  const d = await apiPost('/api/requester/new-request', payload);
   if (d.success) {
     showResult('newReqResult', resultBox('success', `✅ Request <strong>#${d.request_id}</strong> submitted! Save this ID to track your request.`));
     document.getElementById('f_name').value = '';
     document.getElementById('f_email').value = '';
     document.getElementById('f_purpose').value = '';
+    document.getElementById('f_sub').value = '';
+    document.getElementById('f_rg').value = '';
+    document.getElementById('f_vnet').value = '';
   } else {
     showResult('newReqResult', resultBox('error', d.error || 'Submission failed.'));
   }

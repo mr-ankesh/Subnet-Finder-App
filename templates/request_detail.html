@@ -34,6 +34,9 @@
           <div class="detail-row"><dt>Hub Integration</dt>
             <dd>{% if req.hub_integration %}<span style="color:#7edb56;font-weight:700;">Yes</span>{% else %}<span style="color:var(--text-muted);">No</span>{% endif %}</dd>
           </div>
+          <div class="detail-row"><dt>Deployment</dt>
+            <dd>{% if req.deployment_mode == 'admin' %}<span style="color:#60a5fa;font-weight:700;"><i class="bi bi-cloud-arrow-up"></i> Admin deploys</span>{% else %}<span style="color:var(--text-muted);">Self-deploy (CIDR only)</span>{% endif %}</dd>
+          </div>
           <div class="detail-row"><dt>Assigned CIDR</dt>
             <dd>{% if req.allocated_subnet %}<span class="cidr-chip">{{ req.allocated_subnet }}</span>{% else %}<span style="color:var(--text-muted);">Pending assignment</span>{% endif %}</dd>
           </div>

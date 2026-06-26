@@ -139,6 +139,10 @@ with app.app_context():
             db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN requester_email VARCHAR(200)"))
             db.session.commit()
             log.info("[migration] added spoke_requests.requester_email column")
+        if "deployment_mode" not in cols:
+            db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN deployment_mode VARCHAR(10) NOT NULL DEFAULT 'self'"))
+            db.session.commit()
+            log.info("[migration] added spoke_requests.deployment_mode column")
     except Exception:
         db.session.rollback()
 
@@ -528,13 +532,32 @@ def requester_new_request():
     requester_email = str(data.get("requester_email", "")).strip()
     ip_range      = str(data.get("ip_range", "")).strip()
     hub_integration = bool(data.get("hub_integration", False))
+    deployment_mode = str(data.get("deployment_mode", "self")).strip().lower()
+    if deployment_mode not in ("self", "admin"):
+        deployment_mode = "self"
     if not all([cidr_needed, purpose, requester_name, ip_range]):
         return jsonify({"error": "All fields are required."}), 400
     if ip_range not in ["10.110.0.0/16", "10.119.0.0/16"]:
         return jsonify({"error": "Invalid IP range."}), 400
+
+    # When the requester wants the admin to deploy, the Azure target is required
+    # up front so the admin can run the deploy without chasing details.
+    azure = {k: str(data.get(k, "")).strip() for k in
+             ("subscription_id", "resource_group", "vnet_name", "region")}
+    if deployment_mode == "admin":
+        missing = [k for k in ("subscription_id", "resource_group", "vnet_name", "region") if not azure[k]]
+        if missing:
+            return jsonify({"error": "Admin-deploy requires: " + ", ".join(missing)}), 400
+
     try:
         req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range,
-                                      hub_integration, requester_email=requester_email or None)
+                                      hub_integration, requester_email=requester_email or None,
+                                      deployment_mode=deployment_mode)
+        if deployment_mode == "admin":
+            from db_utils import upsert_vnet_info
+            upsert_vnet_info(req_id, subscription_id=azure["subscription_id"],
+                             resource_group=azure["resource_group"], vnet_name=azure["vnet_name"],
+                             region=azure["region"])
         req = get_spoke_request(req_id)
         try:
             notifications.notify_cidr_requested(req)

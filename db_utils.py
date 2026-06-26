@@ -66,16 +66,16 @@ class RequestProxy:
 # ── CRUD helpers ─────────────────────────────────────────────────────────────
 
 def create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration,
-                         requester_email=None) -> int:
+                         requester_email=None, deployment_mode="self") -> int:
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")
     with _conn() as conn:
         cur = conn.execute(
             """INSERT INTO spoke_requests
                (cidr_needed, purpose, requester_name, requester_email, ip_range,
-                hub_integration, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                hub_integration, deployment_mode, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (str(cidr_needed), purpose, requester_name, requester_email or None, ip_range,
-             1 if hub_integration else 0, RequestStatus.CIDR_REQUESTED, now, now),
+             1 if hub_integration else 0, deployment_mode, RequestStatus.CIDR_REQUESTED, now, now),
         )
         conn.commit()
         req_id = cur.lastrowid

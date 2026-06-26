@@ -66,6 +66,8 @@ class SpokeRequest(db.Model):
     requester_email  = db.Column(db.String(200), nullable=True)
     ip_range         = db.Column(db.String(20),  nullable=False)
     hub_integration  = db.Column(db.Boolean,     nullable=False, default=False)
+    # 'self' = requester deploys the VNET; 'admin' = admin deploys it for them
+    deployment_mode  = db.Column(db.String(10),  nullable=False, default="self")
     status           = db.Column(db.String(40),  nullable=False, default=RequestStatus.CIDR_REQUESTED)
     allocated_subnet = db.Column(db.String(50),  nullable=True)
     notes            = db.Column(db.Text,        nullable=True)
@@ -92,6 +94,7 @@ class SpokeRequest(db.Model):
             "requester_email":  self.requester_email,
             "ip_range":         self.ip_range,
             "hub_integration":  self.hub_integration,
+            "deployment_mode":  self.deployment_mode,
             "status":           self.status,
             "status_label":     self.status_label(),
             "allocated_subnet": self.allocated_subnet,
