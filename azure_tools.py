@@ -22,7 +22,40 @@ def _network_client(subscription_id: str):
     return NetworkManagementClient(_get_credential(), subscription_id)
 
 
-# ── 0. Create spoke VNET + subnet ──────────────────────────────────────────
+# ── 0. Create resource group + spoke VNET + subnet ─────────────────────────
+
+def _resource_client(subscription_id: str):
+    from azure.mgmt.resource.resources import ResourceManagementClient
+    return ResourceManagementClient(_get_credential(), subscription_id)
+
+
+def ensure_resource_group(subscription_id: str, resource_group: str, location: str) -> dict:
+    """Create the resource group if it doesn't already exist."""
+    try:
+        client = _resource_client(subscription_id)
+        if client.resource_groups.check_existence(resource_group):
+            return {"success": True, "created": False,
+                    "message": f"Resource group '{resource_group}' already exists."}
+        client.resource_groups.create_or_update(resource_group, {"location": location})
+        return {"success": True, "created": True,
+                "message": f"Resource group '{resource_group}' created in {location}."}
+    except Exception as exc:
+        log.error("ensure_resource_group failed: %s", exc)
+        return {"success": False, "created": False, "message": str(exc)}
+
+
+def _subnet_cidr(address_space: str, subnet_size) -> str:
+    """First subnet block of the requested size within the VNET address space."""
+    import ipaddress
+    net = ipaddress.ip_network(address_space, strict=False)
+    try:
+        sz = int(str(subnet_size).lstrip("/")) if subnet_size else net.prefixlen
+    except Exception:
+        sz = net.prefixlen
+    if sz < net.prefixlen:          # a subnet can't be larger than its VNET
+        sz = net.prefixlen
+    return str(next(net.subnets(new_prefix=sz)))
+
 
 def create_spoke_vnet(
     subscription_id: str,
@@ -31,22 +64,32 @@ def create_spoke_vnet(
     location: str,
     address_space: str,
     subnet_name: str = "default",
+    subnet_size=None,
 ) -> dict:
-    """Create a spoke VNET with the given address space and a default subnet."""
+    """Ensure the RG exists, then create the spoke VNET with the requested subnet."""
     try:
+        rg_res = ensure_resource_group(subscription_id, resource_group, location)
+        if not rg_res.get("success"):
+            return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
+
+        subnet_prefix = _subnet_cidr(address_space, subnet_size)
+        sname = subnet_name or "default"
         client = _network_client(subscription_id)
-        log.info("Creating spoke VNET '%s' (%s) in %s/%s", vnet_name, address_space, resource_group, location)
+        log.info("Creating VNET '%s' (%s), subnet '%s' (%s) in %s/%s",
+                 vnet_name, address_space, sname, subnet_prefix, resource_group, location)
         client.virtual_networks.begin_create_or_update(
             resource_group_name=resource_group,
             virtual_network_name=vnet_name,
             parameters={
                 "location": location,
                 "address_space": {"address_prefixes": [address_space]},
-                "subnets": [{"name": subnet_name, "address_prefix": address_space}],
+                "subnets": [{"name": sname, "address_prefix": subnet_prefix}],
             },
         ).result()
-        return {"success": True,
-                "message": f"VNET '{vnet_name}' created ({address_space}) with subnet '{subnet_name}'."}
+        msg = f"VNET '{vnet_name}' ({address_space}) created with subnet '{sname}' ({subnet_prefix})."
+        if rg_res.get("created"):
+            msg = f"RG '{resource_group}' created. " + msg
+        return {"success": True, "message": msg}
     except Exception as exc:
         log.error("create_spoke_vnet failed: %s", exc)
         return {"success": False, "message": str(exc)}

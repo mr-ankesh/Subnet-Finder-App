@@ -143,6 +143,13 @@ with app.app_context():
             db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN deployment_mode VARCHAR(10) NOT NULL DEFAULT 'self'"))
             db.session.commit()
             log.info("[migration] added spoke_requests.deployment_mode column")
+        # vnet_info: subnet detail columns
+        vcols = [r[1] for r in db.session.execute(db.text("PRAGMA table_info(vnet_info)"))]
+        for col, ddl in (("subnet_name", "VARCHAR(120)"), ("subnet_size", "VARCHAR(10)"),
+                         ("subnet_purpose", "VARCHAR(200)")):
+            if col not in vcols:
+                db.session.execute(db.text(f"ALTER TABLE vnet_info ADD COLUMN {col} {ddl}"))
+        db.session.commit()
     except Exception:
         db.session.rollback()
 
@@ -543,9 +550,12 @@ def requester_new_request():
     # When the requester wants the admin to deploy, the Azure target is required
     # up front so the admin can run the deploy without chasing details.
     azure = {k: str(data.get(k, "")).strip() for k in
-             ("subscription_id", "resource_group", "vnet_name", "region")}
+             ("subscription_id", "resource_group", "vnet_name", "region",
+              "subnet_name", "subnet_size", "subnet_purpose")}
     if deployment_mode == "admin":
-        missing = [k for k in ("subscription_id", "resource_group", "vnet_name", "region") if not azure[k]]
+        required = ("subscription_id", "resource_group", "vnet_name", "region",
+                    "subnet_name", "subnet_size")
+        missing = [k for k in required if not azure[k]]
         if missing:
             return jsonify({"error": "Admin-deploy requires: " + ", ".join(missing)}), 400
 
@@ -557,7 +567,8 @@ def requester_new_request():
             from db_utils import upsert_vnet_info
             upsert_vnet_info(req_id, subscription_id=azure["subscription_id"],
                              resource_group=azure["resource_group"], vnet_name=azure["vnet_name"],
-                             region=azure["region"])
+                             region=azure["region"], subnet_name=azure["subnet_name"],
+                             subnet_size=azure["subnet_size"], subnet_purpose=azure["subnet_purpose"] or None)
         req = get_spoke_request(req_id)
         try:
             notifications.notify_cidr_requested(req)
@@ -728,7 +739,9 @@ def admin_azure_action(req_id):
 
     if action == "vnet":
         res = azure_tools.create_spoke_vnet(vi.subscription_id, vi.resource_group,
-                                            vi.vnet_name, vi.region, addr)
+                                            vi.vnet_name, vi.region, addr,
+                                            subnet_name=vi.subnet_name or "default",
+                                            subnet_size=vi.subnet_size)
         if res.get("success") and req.status == RequestStatus.CIDR_ASSIGNED:
             req.status = RequestStatus.VNET_CREATED
             req.updated_at = datetime.utcnow()

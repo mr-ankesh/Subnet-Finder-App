@@ -115,6 +115,9 @@ class VnetInfo(db.Model):
     resource_group   = db.Column(db.String(200), nullable=True)
     region           = db.Column(db.String(100), nullable=True)
     address_space    = db.Column(db.String(100), nullable=True)
+    subnet_name      = db.Column(db.String(120), nullable=True)
+    subnet_size      = db.Column(db.String(10),  nullable=True)   # prefix, e.g. "26"
+    subnet_purpose   = db.Column(db.String(200), nullable=True)
     outbound_rules   = db.Column(db.Text,        nullable=True)   # JSON list
     vpn_zpa_access   = db.Column(db.Boolean,     default=False)
     created_at       = db.Column(db.DateTime,    default=datetime.utcnow)
@@ -143,6 +146,9 @@ class VnetInfo(db.Model):
             "resource_group":  self.resource_group,
             "region":          self.region,
             "address_space":   self.address_space,
+            "subnet_name":     self.subnet_name,
+            "subnet_size":     self.subnet_size,
+            "subnet_purpose":  self.subnet_purpose,
             "outbound_rules":  self.get_outbound_rules(),
             "vpn_zpa_access":  self.vpn_zpa_access,
         }

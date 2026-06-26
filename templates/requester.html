@@ -160,11 +160,11 @@
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Resource Group *</label>
-                      <input type="text" class="form-input-custom" id="f_rg" placeholder="rg-spoke-myproject">
+                      <input type="text" class="form-input-custom" id="f_rg" placeholder="rg-conn-prd-prs-aen-001">
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Name *</label>
-                      <input type="text" class="form-input-custom" id="f_vnet" placeholder="vnet-myproject">
+                      <input type="text" class="form-input-custom" id="f_vnet" placeholder="vnet-conn-prd-prs-aen-001">
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Region *</label>
@@ -176,6 +176,32 @@
                         <option value="eastus">East US</option>
                       </select>
                     </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subnet Name *</label>
+                      <input type="text" class="form-input-custom" id="f_snet" placeholder="snet-appgw-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subnet Size *</label>
+                      <select class="form-input-custom" id="f_snet_size">
+                        <option value="24">/24 — 254 hosts</option>
+                        <option value="25">/25 — 126 hosts</option>
+                        <option value="26">/26 — 62 hosts</option>
+                        <option value="27">/27 — 30 hosts</option>
+                        <option value="28">/28 — 14 hosts</option>
+                        <option value="29">/29 — 6 hosts</option>
+                      </select>
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label-custom">Subnet Purpose *</label>
+                      <input type="text" class="form-input-custom" id="f_snet_purpose" placeholder="e.g. Application Gateway">
+                    </div>
+                  </div>
+                  <div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:10px;line-height:1.7;">
+                    <strong>Naming examples</strong> —
+                    RG <code>rg-conn-prd-prs-aen-001</code>,
+                    VNET <code>vnet-conn-prd-prs-aen-001</code>,
+                    Subnet <code>snet-appgw-conn-prd-prs-aen-001</code><br>
+                    Pattern: <code>&lt;type&gt;-[service]-&lt;subscription&gt;-&lt;env&gt;-prs-&lt;region&gt;-NNN</code>
                   </div>
                 </div>
               </div>
@@ -393,10 +419,14 @@ async function submitNewRequest() {
     const rg  = document.getElementById('f_rg').value.trim();
     const vnet = document.getElementById('f_vnet').value.trim();
     const region = document.getElementById('f_region').value;
-    if (!sub || !rg || !vnet || !region) {
-      return showResult('newReqResult', resultBox('error', 'Admin-deploy needs Subscription ID, Resource Group, VNET Name and Region.'));
+    const snet = document.getElementById('f_snet').value.trim();
+    const snetSize = document.getElementById('f_snet_size').value;
+    const snetPurpose = document.getElementById('f_snet_purpose').value.trim();
+    if (!sub || !rg || !vnet || !region || !snet || !snetSize || !snetPurpose) {
+      return showResult('newReqResult', resultBox('error', 'Admin-deploy needs Subscription ID, Resource Group, VNET Name, Region, Subnet Name, Subnet Size and Subnet Purpose.'));
     }
-    Object.assign(payload, { subscription_id: sub, resource_group: rg, vnet_name: vnet, region });
+    Object.assign(payload, { subscription_id: sub, resource_group: rg, vnet_name: vnet, region,
+      subnet_name: snet, subnet_size: snetSize, subnet_purpose: snetPurpose });
   }
 
   showResult('newReqResult', resultBox('info', 'Submitting...'));
@@ -409,6 +439,8 @@ async function submitNewRequest() {
     document.getElementById('f_sub').value = '';
     document.getElementById('f_rg').value = '';
     document.getElementById('f_vnet').value = '';
+    document.getElementById('f_snet').value = '';
+    document.getElementById('f_snet_purpose').value = '';
   } else {
     showResult('newReqResult', resultBox('error', d.error || 'Submission failed.'));
   }

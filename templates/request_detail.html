@@ -185,6 +185,9 @@
           ('Resource Group',   vi.resource_group),
           ('Region',           vi.region),
           ('Address Space',    vi.address_space),
+          ('Subnet Name',      vi.subnet_name),
+          ('Subnet Size',      ('/' ~ vi.subnet_size) if vi.subnet_size else None),
+          ('Subnet Purpose',   vi.subnet_purpose),
           ('VPN / ZPA Access', 'Yes' if vi.vpn_zpa_access else 'No'),
         ] %}
         <div>
