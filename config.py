@@ -47,6 +47,11 @@ class Config:
     # Password to access admin pages (/requests, /agent)
     ADMIN_PASSWORD: str = _get("ADMIN_PASSWORD", "changeme")
 
+    # ── Azure safety ───────────────────────────────────────
+    # Dry-run is ON by default: Azure mutating operations are SIMULATED and
+    # never reach Azure. Set AZURE_DRY_RUN=false only for the final/live state.
+    AZURE_DRY_RUN: bool = _bool("AZURE_DRY_RUN", True)
+
     # ── Azure Service Principal ────────────────────────────
     AZURE_CLIENT_ID:     str = _get("AZURE_CLIENT_ID")
     AZURE_CLIENT_SECRET: str = _get("AZURE_CLIENT_SECRET")

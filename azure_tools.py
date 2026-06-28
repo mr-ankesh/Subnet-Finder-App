@@ -2,10 +2,23 @@
 Azure SDK helpers — called by the admin agent for hub integration operations.
 All credentials come from config.cfg (service principal).
 """
+import functools
 import logging
 from config import cfg
 
 log = logging.getLogger(__name__)
+
+
+def _guard(fn):
+    """When AZURE_DRY_RUN is on, simulate the call — never touch Azure."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if cfg.AZURE_DRY_RUN:
+            log.info("[dry-run] %s skipped (AZURE_DRY_RUN on)", fn.__name__)
+            return {"success": True, "dry_run": True,
+                    "message": f"[dry-run] {fn.__name__} simulated — no Azure changes made."}
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 def _get_credential():
@@ -29,6 +42,7 @@ def _resource_client(subscription_id: str):
     return ResourceManagementClient(_get_credential(), subscription_id)
 
 
+@_guard
 def ensure_resource_group(subscription_id: str, resource_group: str, location: str) -> dict:
     """Create the resource group if it doesn't already exist."""
     try:
@@ -57,6 +71,7 @@ def _subnet_cidr(address_space: str, subnet_size) -> str:
     return str(next(net.subnets(new_prefix=sz)))
 
 
+@_guard
 def create_spoke_vnet(
     subscription_id: str,
     resource_group: str,
@@ -97,6 +112,7 @@ def create_spoke_vnet(
 
 # ── Allow internet egress on the firewall policy for a spoke ───────────────
 
+@_guard
 def allow_internet_rule(spoke_address_space: str, rule_name: str) -> dict:
     """Add a firewall network rule permitting the spoke to reach the internet."""
     return add_firewall_network_rule(
@@ -110,6 +126,7 @@ def allow_internet_rule(spoke_address_space: str, rule_name: str) -> dict:
 
 # ── 1. Peer spoke VNET to hub ──────────────────────────────────────────────
 
+@_guard
 def peer_hub_vnet(
     spoke_subscription_id: str,
     spoke_resource_group: str,
@@ -194,6 +211,7 @@ def get_peering_defaults() -> dict:
 
 # ── 2. UDR — create route table ────────────────────────────────────────────
 
+@_guard
 def create_route_table(
     name: str,
     resource_group: str,
@@ -226,6 +244,7 @@ def create_route_table(
         return {"success": False, "message": str(exc)}
 
 
+@_guard
 def add_route_to_table(
     route_table_name: str,
     resource_group: str,
@@ -286,6 +305,7 @@ def check_udr(
         return {"success": False, "found": False, "routes": [], "message": str(exc)}
 
 
+@_guard
 def add_udr_routes(
     route_name: str,
     address_prefix: str,
@@ -349,6 +369,7 @@ def list_vnet_subnets(
 
 # ── 5. Assign UDR to a subnet ─────────────────────────────────────────────
 
+@_guard
 def assign_route_table_to_subnet(
     subscription_id: str,
     resource_group: str,
@@ -373,6 +394,7 @@ def assign_route_table_to_subnet(
 
 # ── 6. Firewall — network rule ────────────────────────────────────────────
 
+@_guard
 def add_firewall_network_rule(
     rule_name: str,
     destination_addresses: list,
@@ -415,6 +437,7 @@ def add_firewall_network_rule(
 
 # ── 7. Firewall — application rule (HTTP/HTTPS only) ─────────────────────
 
+@_guard
 def add_firewall_application_rule(
     rule_name: str,
     target_fqdns: list,

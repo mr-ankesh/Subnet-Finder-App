@@ -173,7 +173,8 @@ def require_admin(f):
 
 @app.context_processor
 def inject_globals():
-    return {"is_admin": session.get("is_admin", False), "RequestStatus": RequestStatus}
+    return {"is_admin": session.get("is_admin", False), "RequestStatus": RequestStatus,
+            "AZURE_DRY_RUN": cfg.AZURE_DRY_RUN}
 
 
 @app.route("/admin/login", methods=["GET", "POST"])

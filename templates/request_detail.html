@@ -112,8 +112,9 @@
 
         {% if req.allocated_subnet and req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.CANCELLED] %}
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;">
-            <i class="bi bi-cloud-arrow-up"></i> Azure Deployment Actions
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-cloud-arrow-up"></i> Azure Deployment Actions</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
           </div>
           {% if req.deployment_mode == 'admin' %}
           <button class="btn btn-glow w-100 mb-2" onclick="runAction('vnet', this)">
