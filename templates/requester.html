@@ -242,12 +242,38 @@
         <div class="glass-card action-panel" id="panel-vnet-created" style="display:none;">
           <div class="card-header-custom"><i class="bi bi-cloud-upload text-success"></i> Mark VNET as Created</div>
           <div class="card-body-custom">
-            <p style="font-size:.85rem;color:rgba(255,255,255,.6);margin-bottom:1rem;">Use this once you've deployed your spoke VNET in Azure. Requires CIDR to be assigned first.</p>
+            <p style="font-size:.85rem;color:rgba(255,255,255,.6);margin-bottom:1rem;">Use this once you've deployed your spoke VNET in Azure. Requires CIDR to be assigned first. These VNET details are required for hub peering.</p>
             <div id="vnetResult"></div>
             <div class="row g-3">
               <div class="col-md-6">
                 <label class="form-label-custom">Request ID *</label>
                 <input type="number" class="form-input-custom" id="v_id" placeholder="e.g. 5" min="1">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label-custom">Region *</label>
+                <select class="form-input-custom" id="v_region">
+                  <option value="uaenorth">UAE North</option>
+                  <option value="uaecentral">UAE Central</option>
+                  <option value="westeurope">West Europe</option>
+                  <option value="northeurope">North Europe</option>
+                  <option value="eastus">East US</option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label-custom">Subscription ID *</label>
+                <input type="text" class="form-input-custom" id="v_sub" placeholder="00000000-0000-0000-0000-000000000000">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label-custom">Resource Group *</label>
+                <input type="text" class="form-input-custom" id="v_rg" placeholder="rg-conn-prd-prs-aen-001">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label-custom">VNET Name *</label>
+                <input type="text" class="form-input-custom" id="v_vnet" placeholder="vnet-conn-prd-prs-aen-001">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label-custom">Address Space (CIDR) *</label>
+                <input type="text" class="form-input-custom" id="v_addr" placeholder="e.g. 10.110.51.0/24 (your assigned CIDR)">
               </div>
               <div class="col-12">
                 <button class="btn-primary-custom" onclick="markVnetCreated()">
@@ -458,9 +484,19 @@ async function checkStatus() {
 
 async function markVnetCreated() {
   const id = document.getElementById('v_id').value;
+  const sub = document.getElementById('v_sub').value.trim();
+  const rg = document.getElementById('v_rg').value.trim();
+  const vnet = document.getElementById('v_vnet').value.trim();
+  const region = document.getElementById('v_region').value;
+  const addr = document.getElementById('v_addr').value.trim();
   if (!id) return showResult('vnetResult', resultBox('error', 'Please enter a Request ID.'));
+  if (!sub || !rg || !vnet || !region || !addr)
+    return showResult('vnetResult', resultBox('error', 'All VNET details (subscription, resource group, VNET name, region, address space) are required for peering.'));
   showResult('vnetResult', resultBox('info', 'Updating...'));
-  const d = await apiPost('/api/requester/vnet-created', { request_id: parseInt(id) });
+  const d = await apiPost('/api/requester/vnet-created', {
+    request_id: parseInt(id), subscription_id: sub, resource_group: rg,
+    vnet_name: vnet, region: region, address_space: addr
+  });
   showResult('vnetResult', d.success ? resultBox('success', d.message) : resultBox('error', d.error));
 }
 

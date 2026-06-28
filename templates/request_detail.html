@@ -122,9 +122,28 @@
           </button>
           {% endif %}
           {% if req.hub_integration %}
-          <button class="btn btn-glass w-100 mb-2" onclick="runAction('peer', this)">
+          <button class="btn btn-glass w-100 mb-2" onclick="togglePeerConfirm()">
             <i class="bi bi-diagram-3 me-2"></i>Peer Hub
           </button>
+          <div id="peerConfirm" style="display:none;border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-bottom:10px;">
+            {% set vi = req.vnet_info %}
+            {% if vi and vi.subscription_id and vi.resource_group and vi.vnet_name %}
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Confirm peering for this spoke VNET:</div>
+            <div style="font-size:12px;line-height:1.7;">
+              <div><span style="color:var(--text-muted);">Subscription:</span> <span style="font-family:var(--mono);">{{ vi.subscription_id }}</span></div>
+              <div><span style="color:var(--text-muted);">Resource Group:</span> {{ vi.resource_group }}</div>
+              <div><span style="color:var(--text-muted);">VNET:</span> {{ vi.vnet_name }}</div>
+              <div><span style="color:var(--text-muted);">Region:</span> {{ vi.region or '—' }}</div>
+              <div><span style="color:var(--text-muted);">Address space:</span> <span style="font-family:var(--mono);">{{ vi.address_space or req.allocated_subnet }}</span></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button class="btn btn-glow btn-sm" style="flex:1;" onclick="runAction('peer', this)"><i class="bi bi-check2 me-1"></i>Confirm &amp; Peer</button>
+              <button class="btn btn-glass btn-sm" style="flex:1;" onclick="togglePeerConfirm()">Cancel</button>
+            </div>
+            {% else %}
+            <div style="font-size:12px;color:#f59e0b;">VNET details not provided yet — the requester must mark <strong>VNET Created</strong> with details (or use Edit VNET Info) before peering.</div>
+            {% endif %}
+          </div>
           <button class="btn btn-glass w-100 mb-2" onclick="runAction('internet', this)">
             <i class="bi bi-globe me-2"></i>Allow Internet (firewall policy)
           </button>
@@ -276,6 +295,11 @@ async function assignCidr(subnet) {
     if (data.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${data.error}</span>`; }
     else { box.innerHTML = `<span style="color:#7edb56;font-size:12px;">✓ ${subnet} assigned — reloading…</span>`; setTimeout(() => location.reload(), 1200); }
   } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+}
+
+function togglePeerConfirm() {
+  const el = document.getElementById('peerConfirm');
+  el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
 }
 
 async function runAction(action, btn) {

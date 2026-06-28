@@ -592,7 +592,7 @@ def requester_get_status(request_id):
 
 @app.route("/api/requester/vnet-created", methods=["POST"])
 def requester_vnet_created():
-    from db_utils import get_spoke_request, update_spoke_request
+    from db_utils import get_spoke_request, update_spoke_request, upsert_vnet_info
     data = request.get_json(force=True)
     request_id = data.get("request_id")
     if not request_id:
@@ -602,6 +602,16 @@ def requester_vnet_created():
         return jsonify({"error": f"Request #{request_id} not found."}), 404
     if req.status != RequestStatus.CIDR_ASSIGNED:
         return jsonify({"error": f"Status is '{req.status_label()}' — CIDR must be assigned first."}), 400
+
+    # Capture the spoke VNET details — required for hub peering later.
+    vnet = {k: str(data.get(k, "")).strip() for k in
+            ("subscription_id", "resource_group", "vnet_name", "region", "address_space")}
+    missing = [k for k in vnet if not vnet[k]]
+    if missing:
+        return jsonify({"error": "VNET details required for peering: " + ", ".join(missing)}), 400
+    upsert_vnet_info(int(request_id), subscription_id=vnet["subscription_id"],
+                     resource_group=vnet["resource_group"], vnet_name=vnet["vnet_name"],
+                     region=vnet["region"], address_space=vnet["address_space"])
     update_spoke_request(int(request_id), status=RequestStatus.VNET_CREATED)
     req = get_spoke_request(int(request_id))
     try:
