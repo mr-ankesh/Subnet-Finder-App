@@ -18,11 +18,13 @@ class RequestStatus:
     CANCELLED                 = "CANCELLED"
 
     # Ordered workflow steps (not including CANCELLED)
+    # Active workflow order. HUB_INTEGRATION_NEEDED is retired (kept as a constant
+    # only for backward compatibility with any legacy rows) — VNET_CREATED is the
+    # state where the admin runs hub integration.
     ORDERED = [
         CIDR_REQUESTED,
         CIDR_ASSIGNED,
         VNET_CREATED,
-        HUB_INTEGRATION_NEEDED,
         HUB_INTEGRATION_IN_PROGRESS,
         HUB_INTEGRATED,
     ]

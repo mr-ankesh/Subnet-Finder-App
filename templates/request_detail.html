@@ -58,7 +58,6 @@
             (RequestStatus.CIDR_REQUESTED,            'bi-send',          'CIDR Requested'),
             (RequestStatus.CIDR_ASSIGNED,             'bi-check-circle',  'CIDR Assigned'),
             (RequestStatus.VNET_CREATED,              'bi-cloud-upload',  'VNET Created'),
-            (RequestStatus.HUB_INTEGRATION_NEEDED,    'bi-diagram-3',     'Hub Needed'),
             (RequestStatus.HUB_INTEGRATION_IN_PROGRESS,'bi-gear-wide-connected','In Progress'),
             (RequestStatus.HUB_INTEGRATED,            'bi-check-all',     'Hub Integrated'),
           ] %}
@@ -90,22 +89,16 @@
         </a>
         {% endif %}
 
-        {% if req.status == RequestStatus.HUB_INTEGRATION_NEEDED %}
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Requester has requested hub integration. Start the process.</p>
+        {% if req.status == RequestStatus.VNET_CREATED and req.hub_integration %}
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">VNET is created. Run the Azure actions below, then mark hub integration in progress.</p>
         <button class="btn btn-glow w-100 mb-2" onclick="updateStatus('{{ RequestStatus.HUB_INTEGRATION_IN_PROGRESS }}')">
           <i class="bi bi-gear-wide-connected me-2"></i>Mark Hub Integration In Progress
         </button>
-        <a href="{{ url_for('agent_page') }}?req={{ req.id }}" class="btn btn-glass w-100">
-          <i class="bi bi-robot me-2"></i>Run Hub Integration via Agent
-        </a>
         {% endif %}
 
         {% if req.status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS %}
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Hub integration is in progress. Use the Agent to run Azure operations.</p>
-        <a href="{{ url_for('agent_page') }}?req={{ req.id }}" class="btn btn-glow w-100 mb-2">
-          <i class="bi bi-robot me-2"></i>Continue in Admin Agent
-        </a>
-        <button class="btn btn-glass w-100" onclick="updateStatus('{{ RequestStatus.HUB_INTEGRATED }}')">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Hub integration is in progress. Run the Azure actions below, then mark it complete.</p>
+        <button class="btn btn-glow w-100" onclick="updateStatus('{{ RequestStatus.HUB_INTEGRATED }}')">
           <i class="bi bi-check-all me-2"></i>Mark Hub Integrated (Complete)
         </button>
         {% endif %}
@@ -164,15 +157,21 @@
         </div>
         {% endif %}
 
-        {% if req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS] %}
+        {% if req.status == RequestStatus.HUB_INTEGRATED %}
         <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
-          {% if req.status == RequestStatus.HUB_INTEGRATED %}
           <i class="bi bi-check-circle-fill" style="color:#7edb56;"></i> Fully completed.
-          {% elif req.status == RequestStatus.CANCELLED %}
+        </p>
+        {% elif req.status == RequestStatus.CANCELLED %}
+        <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
           <i class="bi bi-x-circle-fill" style="color:#f87171;"></i> Cancelled.
-          {% else %}
-          Waiting for requester action.
-          {% endif %}
+        </p>
+        {% elif req.status == RequestStatus.CIDR_ASSIGNED %}
+        <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
+          Waiting for the requester to deploy and mark <strong>VNET Created</strong>.
+        </p>
+        {% elif req.status == RequestStatus.VNET_CREATED and not req.hub_integration %}
+        <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
+          <i class="bi bi-check-circle-fill" style="color:#7edb56;"></i> VNET created — no hub integration requested. Complete.
         </p>
         {% endif %}
 

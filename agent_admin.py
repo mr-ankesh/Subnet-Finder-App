@@ -610,7 +610,7 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
         if not req.allocated_subnet:
             return json.dumps({"error": f"Request #{request_id} has no allocated subnet."})
         if req.status not in (RequestStatus.CIDR_ASSIGNED, RequestStatus.VNET_CREATED,
-                               RequestStatus.HUB_INTEGRATION_NEEDED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS):
+                               RequestStatus.HUB_INTEGRATION_IN_PROGRESS):
             return json.dumps({"error": f"Cannot deallocate — status is '{req.status_label()}'. Only pre-integration statuses are allowed."})
 
         subnet = req.allocated_subnet

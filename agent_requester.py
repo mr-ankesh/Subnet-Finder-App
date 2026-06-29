@@ -75,8 +75,8 @@ TOOLS_OPENAI = [
         "function": {
             "name": "request_hub_integration",
             "description": (
-                "Update request to HUB_INTEGRATION_NEEDED with outbound access rules and spoke VNET details. "
-                "Saves all collected information and notifies admin."
+                "Mark the spoke VNET as created (status VNET_CREATED) and save the spoke VNET "
+                "details + outbound access rules needed for hub integration. Notifies admin."
             ),
             "parameters": {
                 "type": "object",
@@ -246,17 +246,17 @@ def _tool_request_hub_integration(
             vpn_zpa_access=1 if vpn_zpa_access else 0,
             outbound_rules=outbound_rules,
         )
-        update_spoke_request(request_id, status=RequestStatus.HUB_INTEGRATION_NEEDED)
+        update_spoke_request(request_id, status=RequestStatus.VNET_CREATED)
         req = get_spoke_request(request_id)
-        log.info("[requester] Request #%s → HUB_INTEGRATION_NEEDED", request_id)
+        log.info("[requester] Request #%s → VNET_CREATED (VNET details + hub request saved)", request_id)
     except Exception as exc:
         log.exception("[requester] DB error on hub integration request #%s", request_id)
         return json.dumps({"error": f"Database error: {exc}"})
     try:
-        notifications.notify_hub_integration_needed(req)
+        notifications.notify_vnet_created(req)
     except Exception as exc:
         log.warning("[requester] Notification failed for request #%s: %s", request_id, exc)
-    return json.dumps({"success": True, "message": f"Request #{request_id} updated to Hub Integration Needed. VNET details saved. Admin notified."})
+    return json.dumps({"success": True, "message": f"Request #{request_id} updated to VNET Created. VNET details saved for hub integration. Admin notified."})
 
 
 def _tool_check_status(request_id: int) -> str:

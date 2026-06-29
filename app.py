@@ -122,6 +122,8 @@ with app.app_context():
             "deploying": RequestStatus.VNET_CREATED,
             "completed": RequestStatus.HUB_INTEGRATED,
             "cancelled": RequestStatus.CANCELLED,
+            # Retired status — fold back into VNET_CREATED
+            "HUB_INTEGRATION_NEEDED": RequestStatus.VNET_CREATED,
         }
         for old, new in STATUS_MAP.items():
             db.session.execute(
