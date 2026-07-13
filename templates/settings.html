@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}Settings | Subnet Manager{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:1100px; padding:2rem 1rem;">
+
+  <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.75rem; margin-bottom:1.25rem;">
+    <div>
+      <h2 style="font-family:var(--font-heading); margin:0;"><i class="bi bi-gear"></i> Admin Settings</h2>
+      <div style="color:var(--text-muted); font-size:.9rem;">
+        Changes apply immediately — no restart. Effective value = <span class="src-badge src-override">Override</span> →
+        <span class="src-badge src-env">Env</span> → <span class="src-badge src-default">Default</span>.
+      </div>
+    </div>
+    {% if AZURE_DRY_RUN %}
+    <span class="badge" style="background:rgba(250,204,21,.15); color:#facc15; border:1px solid rgba(250,204,21,.4); font-size:.8rem; padding:.45rem .7rem;">
+      <i class="bi bi-shield-check"></i> DRY-RUN ON — Azure changes are simulated
+    </span>
+    {% else %}
+    <span class="badge" style="background:rgba(248,113,113,.15); color:var(--danger); border:1px solid rgba(248,113,113,.4); font-size:.8rem; padding:.45rem .7rem;">
+      <i class="bi bi-exclamation-triangle-fill"></i> LIVE MODE — Azure changes are real
+    </span>
+    {% endif %}
+  </div>
+
+  {% if weak_secret_key %}
+  <div style="border:1px solid rgba(250,204,21,.4); background:rgba(250,204,21,.08); color:#facc15; border-radius:10px; padding:.7rem 1rem; margin-bottom:1rem; font-size:.85rem;">
+    <i class="bi bi-exclamation-triangle-fill"></i>
+    <strong>FLASK_SECRET_KEY is the default value.</strong> Stored secrets are weakly protected — set a strong
+    FLASK_SECRET_KEY in the environment (note: changing it invalidates already-saved secrets).
+  </div>
+  {% endif %}
+
+  <div style="display:grid; grid-template-columns:220px 1fr; gap:1.25rem; align-items:start;">
+
+    <!-- Tab list -->
+    <div class="glass-card" style="padding:.5rem; position:sticky; top:90px;">
+      {% for cat in categories %}
+      <button type="button" class="settings-tab" data-tab="{{ cat.key }}" onclick="showTab('{{ cat.key }}')">
+        {{ cat.title }}
+      </button>
+      {% endfor %}
+    </div>
+
+    <!-- Panels -->
+    <div>
+      {% for cat in categories %}
+      <div class="glass-card settings-panel" id="panel-{{ cat.key }}" style="padding:1.5rem; display:none;">
+        <h5 style="font-family:var(--font-heading); margin-bottom:.25rem;">{{ cat.title }}</h5>
+        <div style="color:var(--text-muted); font-size:.85rem; margin-bottom:1.25rem;">{{ cat.desc }}</div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem 1.25rem;" class="settings-grid">
+          {% for f in cat.fields %}
+          <div {% if f.type == 'bool' %}style="align-self:center;"{% endif %}>
+            <label class="form-label" style="display:flex; align-items:center; gap:.5rem; margin-bottom:.3rem;">
+              <span>{{ f.label }}</span>
+              <span class="src-badge src-{{ f.source }}" id="src-{{ f.key }}">{{ f.source }}</span>
+              {% if f.source == 'override' %}
+              <a href="#" onclick="resetKey('{{ f.key }}'); return false;" title="Remove override (revert to env/default)"
+                 style="color:var(--text-muted); font-size:.8rem; text-decoration:none;"><i class="bi bi-arrow-counterclockwise"></i></a>
+              {% endif %}
+            </label>
+
+            {% if f.type == 'bool' %}
+              <div class="form-check form-switch">
+                <input class="form-check-input setting-input" type="checkbox" data-key="{{ f.key }}" data-type="bool"
+                       id="in-{{ f.key }}" {% if f.value|lower in ('true','1','yes') %}checked{% endif %}
+                       {% if f.key == 'AZURE_DRY_RUN' %}onchange="dryRunWarn(this)"{% endif %}>
+              </div>
+            {% elif f.options %}
+              <select class="form-select setting-input" data-key="{{ f.key }}" id="in-{{ f.key }}"
+                      {% if f.key == 'AZURE_AUTH_MODE' %}onchange="authModeChanged(this.value)"{% endif %}>
+                {% for opt in f.options %}
+                <option value="{{ opt }}" {% if f.value == opt %}selected{% endif %}>{{ opt.replace('_',' ')|title }}</option>
+                {% endfor %}
+              </select>
+            {% elif f.secret %}
+              <input type="password" class="form-control setting-input" data-key="{{ f.key }}" data-secret="1"
+                     id="in-{{ f.key }}" autocomplete="new-password"
+                     placeholder="{% if f.is_set %}•••••••• set{% if f.last4 %} (…{{ f.last4 }}){% endif %} — leave blank to keep{% else %}not set{% endif %}">
+            {% else %}
+              <input type="text" class="form-control setting-input" data-key="{{ f.key }}" id="in-{{ f.key }}"
+                     value="{{ f.value }}" {% if f.default %}placeholder="default: {{ f.default }}"{% endif %}
+                     {% if cat.key == 'naming' %}oninput="namingPreview('{{ f.key }}')"{% endif %}>
+            {% endif %}
+
+            {% if cat.key == 'naming' and f.key.startswith('TPL_') %}
+            <div style="font-family:var(--mono); font-size:.75rem; color:#4ade80; margin-top:.25rem;" id="preview-{{ f.key }}"></div>
+            {% endif %}
+            {% if f.help %}<div style="color:var(--text-muted); font-size:.75rem; margin-top:.25rem;">{{ f.help }}</div>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+
+        <div style="display:flex; gap:.75rem; margin-top:1.5rem; align-items:center;">
+          <button class="btn-hero" onclick="savePanel('{{ cat.key }}')"><i class="bi bi-check2-circle"></i> Save {{ cat.title }}</button>
+          {% if cat.key == 'credentials' %}
+          <button class="btn-glass" onclick="testAzure(this)"><i class="bi bi-plug"></i> Test Connection</button>
+          <span id="testResult" style="font-size:.85rem;"></span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<style>
+  .settings-tab {
+    display:block; width:100%; text-align:left; background:none; border:none;
+    color:var(--text-muted); padding:.55rem .8rem; border-radius:8px; font-size:.88rem; cursor:pointer;
+  }
+  .settings-tab:hover { color:#fff; background:rgba(255,255,255,.05); }
+  .settings-tab.active { color:#fff; background:rgba(0,123,255,.18); }
+  .src-badge {
+    font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; padding:.1rem .4rem; border-radius:5px;
+  }
+  .src-override { background:rgba(0,123,255,.2);   color:#60a5fa; }
+  .src-env      { background:rgba(74,222,128,.15); color:#4ade80; }
+  .src-default  { background:rgba(255,255,255,.08); color:var(--text-muted); }
+  @media (max-width: 860px) {
+    .settings-grid { grid-template-columns: 1fr !important; }
+  }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // ── Tabs (persisted in location.hash so saves/reloads keep the tab) ──
+  function showTab(key) {
+    document.querySelectorAll('.settings-panel').forEach(p => p.style.display = 'none');
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    const panel = document.getElementById('panel-' + key);
+    const tab = document.querySelector(`.settings-tab[data-tab="${key}"]`);
+    if (panel) panel.style.display = 'block';
+    if (tab) tab.classList.add('active');
+    history.replaceState(null, '', '#' + key);
+  }
+  showTab(location.hash ? location.hash.slice(1) : '{{ categories[0].key }}');
+
+  // ── Save a panel ──
+  async function savePanel(key) {
+    const payload = {};
+    document.querySelectorAll(`#panel-${key} .setting-input`).forEach(el => {
+      const k = el.dataset.key;
+      if (el.dataset.type === 'bool')      payload[k] = el.checked ? 'true' : 'false';
+      else if (el.dataset.secret === '1') { if (el.value.trim() !== '') payload[k] = el.value.trim(); }
+      else                                 payload[k] = el.value.trim();
+    });
+    try {
+      const r = await fetch('/api/admin/settings', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+      });
+      const data = await r.json();
+      if (!r.ok || !data.success) {
+        const msgs = Object.entries(data.errors || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
+        showToast(msgs || 'Save failed.', 'danger');
+        return;
+      }
+      showToast(data.saved.length ? `Saved: ${data.saved.join(', ')}` : 'No changes.', 'success');
+      if (data.saved.length) setTimeout(() => location.reload(), 700);
+    } catch (e) { showToast('Save failed: ' + e, 'danger'); }
+  }
+
+  // ── Reset one override ──
+  async function resetKey(key) {
+    try {
+      const r = await fetch('/api/admin/settings/reset', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({key})
+      });
+      const data = await r.json();
+      if (data.success) { showToast(`${key} reverted to ${data.source}.`, 'info'); setTimeout(() => location.reload(), 700); }
+      else showToast(data.error || 'Reset failed.', 'danger');
+    } catch (e) { showToast('Reset failed: ' + e, 'danger'); }
+  }
+
+  // ── Test Azure connection ──
+  async function testAzure(btn) {
+    const out = document.getElementById('testResult');
+    btn.disabled = true;
+    out.style.color = 'var(--text-muted)';
+    out.textContent = 'Connecting…';
+    try {
+      const r = await fetch('/api/admin/settings/test-azure', {method: 'POST'});
+      const data = await r.json();
+      out.style.color = data.success ? '#4ade80' : 'var(--danger)';
+      out.textContent = data.message;
+    } catch (e) {
+      out.style.color = 'var(--danger)'; out.textContent = 'Request failed: ' + e;
+    } finally { btn.disabled = false; }
+  }
+
+  // ── Auth-mode field visibility ──
+  function authModeChanged(mode) {
+    const sp = ['AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET'];
+    const mi = ['AZURE_MI_CLIENT_ID'];
+    sp.forEach(k => { const el = document.getElementById('in-' + k); if (el) el.closest('div[style], div').parentElement.style.opacity = mode === 'service_principal' ? 1 : .4; });
+    mi.forEach(k => { const el = document.getElementById('in-' + k); if (el) el.closest('div[style], div').parentElement.style.opacity = mode === 'managed_identity' ? 1 : .4; });
+  }
+  const authSel = document.getElementById('in-AZURE_AUTH_MODE');
+  if (authSel) authModeChanged(authSel.value);
+
+  // ── Dry-run warning ──
+  function dryRunWarn(el) {
+    if (!el.checked && !confirm('Turn OFF dry-run mode?\n\nAzure actions will make REAL changes to your environment (VNETs, peerings, routes, firewall rules).')) {
+      el.checked = true;
+    }
+  }
+
+  // ── Naming live preview (debounced) ──
+  let previewTimers = {};
+  function namingPreview(changedKey) {
+    document.querySelectorAll('[id^="preview-TPL_"]').forEach(el => {
+      const key = el.id.replace('preview-', '');
+      clearTimeout(previewTimers[key]);
+      previewTimers[key] = setTimeout(async () => {
+        const body = {
+          key,
+          template: document.getElementById('in-' + key).value,
+          prefix:   document.getElementById('in-NAME_PREFIX').value,
+          suffix:   document.getElementById('in-NAME_SUFFIX').value,
+        };
+        try {
+          const r = await fetch('/api/admin/settings/preview-name', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+          });
+          const data = await r.json();
+          if (data.preview) el.textContent = '→ ' + data.preview;
+        } catch (e) { /* preview is best-effort */ }
+      }, 350);
+    });
+  }
+  // Initial previews on the naming tab
+  if (document.getElementById('in-NAME_PREFIX')) namingPreview();
+</script>
+{% endblock %}

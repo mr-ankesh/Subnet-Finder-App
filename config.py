@@ -1,102 +1,191 @@
 """
-Central config — reads from .env (or real env vars injected by Docker/systemd).
+Central config — every value resolves live as: DB override → env var → default.
+
+SETTINGS_SPEC is the single source of truth for the admin Settings UI
+(/admin/settings): categories become tabs, and each entry carries its label,
+help text, type and secret flag. Editing a value in the UI writes a row to
+the app_settings table (see settings_store.py) and takes effect immediately —
+no restart needed, because Config resolves attributes on every access.
+
+Security-critical bootstrap values (FLASK_SECRET_KEY, ADMIN_PASSWORD, DEBUG,
+AI provider keys) stay env-only and are NOT editable from the UI.
 """
 import os
 from dotenv import load_dotenv
 
+import settings_store
+
 load_dotenv()
 
 
-def _get(key: str, default: str = "") -> str:
-    return os.environ.get(key, default)
+# ── UI categories (tab order) ───────────────────────────────────────────────
+
+CATEGORIES = {
+    "credentials":   {"title": "Azure Credentials",  "desc": "Identity used for all Azure operations. Needs Network Contributor on hub & spoke scopes."},
+    "hub":           {"title": "Hub & Subscriptions", "desc": "Hub VNET topology and default subscriptions/region for new spokes."},
+    "firewall":      {"title": "Firewall",            "desc": "Azure Firewall policy that receives spoke egress rules."},
+    "routing":       {"title": "Routing / UDRs",      "desc": "Hub route tables updated when a spoke is onboarded."},
+    "peering":       {"title": "Peering Defaults",    "desc": "Defaults applied to hub↔spoke peerings (overridable per action)."},
+    "naming":        {"title": "Naming Conventions",  "desc": "Templates for generated resource names. Placeholders: {vnet} {request_id} {region} {cidr_mask} {purpose} {date}. Global prefix/suffix are joined with '-'."},
+    "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
+    "safety":        {"title": "Safety",              "desc": "Guard rails for Azure execution."},
+}
 
 
-def _bool(key: str, default: bool = False) -> bool:
-    return os.environ.get(key, str(default)).lower() in ("true", "1", "yes")
+def _f(category, label, default="", type="str", secret=False, help="", options=None):
+    return {"category": category, "label": label, "default": default,
+            "type": type, "secret": secret, "help": help, "options": options}
+
+
+# key → field spec (env var name == key)
+SETTINGS_SPEC = {
+    # ── Azure Credentials ──
+    "AZURE_AUTH_MODE":      _f("credentials", "Authentication mode", "service_principal",
+                               options=["service_principal", "managed_identity"],
+                               help="Service Principal uses tenant/client/secret below. Managed Identity is used when hosted on Azure (AKS, App Service, VM)."),
+    "AZURE_TENANT_ID":      _f("credentials", "Tenant ID", help="Entra ID tenant GUID (Service Principal mode)."),
+    "AZURE_CLIENT_ID":      _f("credentials", "Client ID", help="App registration (client) GUID (Service Principal mode)."),
+    "AZURE_CLIENT_SECRET":  _f("credentials", "Client secret", secret=True,
+                               help="Stored encrypted. Leave blank on save to keep the current value."),
+    "AZURE_MI_CLIENT_ID":   _f("credentials", "Managed Identity client ID",
+                               help="Only for user-assigned Managed Identity; leave blank for system-assigned."),
+
+    # ── Hub & Subscriptions ──
+    "HUB_SUBSCRIPTION_ID":   _f("hub", "Hub subscription ID"),
+    "HUB_RESOURCE_GROUP":    _f("hub", "Hub resource group"),
+    "HUB_VNET_NAME":         _f("hub", "Hub VNET name"),
+    "SPOKE_SUBSCRIPTION_ID": _f("hub", "Default spoke subscription ID",
+                                help="Used when a request doesn't specify its own subscription."),
+    "DEFAULT_AZURE_REGION":  _f("hub", "Default region", "uaenorth"),
+
+    # ── Firewall ──
+    "FIREWALL_POLICY_NAME":           _f("firewall", "Firewall policy name"),
+    "FIREWALL_POLICY_RG":             _f("firewall", "Firewall policy resource group"),
+    "FIREWALL_RULE_COLLECTION_GROUP": _f("firewall", "Rule collection group",
+                                         help="Rule collection group receiving spoke network/application rules."),
+    "HUB_FIREWALL_PRIVATE_IP":        _f("firewall", "Firewall private IP", "10.110.2.4",
+                                         help="Next hop for spoke default routes (0.0.0.0/0)."),
+
+    # ── Routing / UDRs ──
+    "UDR_RESOURCE_GROUP": _f("routing", "UDR resource group", help="Resource group holding the hub route tables below."),
+    "UDR_GATEWAY_NAME":   _f("routing", "Gateway route table", help="Gets a route to each new spoke."),
+    "UDR_ZPA_NAME":       _f("routing", "ZPA route table", help="Gets a route to each new spoke."),
+    "UDR_NAME_1":         _f("routing", "Hub UDR #1", help="Legacy pair updated by 'add routes to both hub UDRs'."),
+    "UDR_NAME_2":         _f("routing", "Hub UDR #2"),
+
+    # ── Peering defaults ──
+    "PEERING_ALLOW_VNET_ACCESS":       _f("peering", "Allow virtual network access", "true",  type="bool"),
+    "PEERING_ALLOW_FORWARDED_TRAFFIC": _f("peering", "Allow forwarded traffic",      "true",  type="bool"),
+    "PEERING_ALLOW_GATEWAY_TRANSIT":   _f("peering", "Allow gateway transit (hub side)", "false", type="bool"),
+    "PEERING_USE_REMOTE_GATEWAYS":     _f("peering", "Use remote gateways (spoke side)", "false", type="bool"),
+
+    # ── Naming conventions ──
+    "NAME_PREFIX":              _f("naming", "Global prefix", help="Prepended to every generated name (e.g. 'corp'). Blank = none."),
+    "NAME_SUFFIX":              _f("naming", "Global suffix", help="Appended to every generated name (e.g. 'prd'). Blank = none."),
+    "TPL_PEERING_SPOKE_TO_HUB": _f("naming", "Peering: spoke → hub", "spoke-to-hub"),
+    "TPL_PEERING_HUB_TO_SPOKE": _f("naming", "Peering: hub → spoke", "hub-to-{vnet}"),
+    "TPL_ROUTE_NAME":           _f("naming", "Route name (hub UDRs)", "to-{vnet}"),
+    "TPL_ROUTE_TABLE_NAME":     _f("naming", "Route table name (spoke)", "rt-{vnet}"),
+    "TPL_FW_RULE_NAME":         _f("naming", "Firewall rule name", "{vnet}-allow-internet"),
+
+    # ── Notifications ──
+    "TEAMS_WEBHOOK_URL":      _f("notifications", "Teams webhook URL", secret=True,
+                                 help="Incoming-webhook URL (treated as a secret)."),
+    "SMTP_HOST":              _f("notifications", "SMTP host"),
+    "SMTP_PORT":              _f("notifications", "SMTP port", "587", type="int"),
+    "SMTP_USER":              _f("notifications", "SMTP user"),
+    "SMTP_PASSWORD":          _f("notifications", "SMTP password", secret=True,
+                                 help="Stored encrypted. Leave blank on save to keep the current value."),
+    "SMTP_FROM":              _f("notifications", "From address", help="Defaults to SMTP user when blank."),
+    "SMTP_USE_TLS":           _f("notifications", "Use STARTTLS", "true", type="bool"),
+    "SUBNET_FINDER_BASE_URL": _f("notifications", "App base URL", "http://localhost:8080",
+                                 help="Used for deep-links in Teams/email notifications."),
+
+    # ── Safety ──
+    "AZURE_DRY_RUN": _f("safety", "Dry-run mode (simulate Azure changes)", "true", type="bool",
+                        help="ON: every mutating Azure call is simulated. Turn OFF only when ready to make real changes."),
+}
+
+# Env-only values — never DB-overridable, never shown in the settings UI.
+_ENV_ONLY = {
+    "AGENT_PROVIDER":     ("AGENT_PROVIDER", "anthropic"),
+    "ANTHROPIC_API_KEY":  ("ANTHROPIC_API_KEY", ""),
+    "ANTHROPIC_MODEL":    ("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+    "OPENAI_API_KEY":     ("OPENAI_API_KEY", ""),
+    "OPENAI_BASE_URL":    ("OPENAI_BASE_URL", ""),
+    "OPENAI_API_VERSION": ("OPENAI_API_VERSION", "2024-02-15-preview"),
+    "OPENAI_MODEL":       ("OPENAI_MODEL", "gpt-4o"),
+    "ADMIN_PASSWORD":     ("ADMIN_PASSWORD", "changeme"),
+    "SECRET_KEY":         ("FLASK_SECRET_KEY", "change-me-in-production"),
+    "DEBUG":              ("FLASK_DEBUG", "false"),
+}
+_ENV_ONLY_BOOLS = {"DEBUG"}
+
+
+def _coerce(raw: str, type_: str):
+    if type_ == "bool":
+        return str(raw).lower() in ("true", "1", "yes")
+    if type_ == "int":
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+    return raw if raw is not None else ""
+
+
+def resolve(key: str):
+    """Effective raw string value + its source: ('override'|'env'|'default')."""
+    spec = SETTINGS_SPEC[key]
+    override = settings_store.get_override(key)
+    if override is not None:
+        return override, "override"
+    env_val = os.environ.get(key)
+    if env_val not in (None, ""):
+        return env_val, "env"
+    return spec["default"], "default"
 
 
 class Config:
-    # ── Teams ──────────────────────────────────────────────
-    TEAMS_WEBHOOK_URL: str = _get("TEAMS_WEBHOOK_URL")
+    """Attribute access resolves live: DB override → env → default."""
 
-    # ── Email (SMTP) — notifies the individual requester on status updates ──
-    SMTP_HOST: str     = _get("SMTP_HOST")
-    SMTP_PORT: int     = int(_get("SMTP_PORT", "587") or 587)
-    SMTP_USER: str     = _get("SMTP_USER")
-    SMTP_PASSWORD: str = _get("SMTP_PASSWORD")
-    SMTP_FROM: str     = _get("SMTP_FROM") or _get("SMTP_USER")
-    SMTP_USE_TLS: bool = _bool("SMTP_USE_TLS", True)
-
-    # ── AI Agent provider ──────────────────────────────────
-    # "anthropic" or "openai" (Azure OpenAI, LM Studio, Ollama, etc.)
-    AGENT_PROVIDER: str   = _get("AGENT_PROVIDER", "anthropic")
-
-    # Anthropic
-    ANTHROPIC_API_KEY: str = _get("ANTHROPIC_API_KEY")
-    ANTHROPIC_MODEL: str   = _get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-
-    # OpenAI / Azure OpenAI / compatible (incl. self-hosted: vLLM, LM Studio, Ollama)
-    # For a self-hosted model, set AGENT_PROVIDER=openai, OPENAI_BASE_URL to the
-    # server's /v1 endpoint, and OPENAI_MODEL to the served model name.
-    OPENAI_API_KEY: str     = _get("OPENAI_API_KEY")
-    OPENAI_BASE_URL: str    = _get("OPENAI_BASE_URL")
-    OPENAI_API_VERSION: str = _get("OPENAI_API_VERSION", "2024-02-15-preview")
-    OPENAI_MODEL: str       = _get("OPENAI_MODEL", "gpt-4o")
-
-    # ── Admin auth ─────────────────────────────────────────
-    # Password to access admin pages (/requests, /agent)
-    ADMIN_PASSWORD: str = _get("ADMIN_PASSWORD", "changeme")
-
-    # ── Azure safety ───────────────────────────────────────
-    # Dry-run is ON by default: Azure mutating operations are SIMULATED and
-    # never reach Azure. Set AZURE_DRY_RUN=false only for the final/live state.
-    AZURE_DRY_RUN: bool = _bool("AZURE_DRY_RUN", True)
-
-    # ── Azure Service Principal ────────────────────────────
-    AZURE_CLIENT_ID:     str = _get("AZURE_CLIENT_ID")
-    AZURE_CLIENT_SECRET: str = _get("AZURE_CLIENT_SECRET")
-    AZURE_TENANT_ID:     str = _get("AZURE_TENANT_ID")
-
-    # ── Azure Hub / Spoke topology ─────────────────────────
-    HUB_SUBSCRIPTION_ID:   str = _get("HUB_SUBSCRIPTION_ID")
-    HUB_RESOURCE_GROUP:    str = _get("HUB_RESOURCE_GROUP")
-    HUB_VNET_NAME:         str = _get("HUB_VNET_NAME")
-    SPOKE_SUBSCRIPTION_ID: str = _get("SPOKE_SUBSCRIPTION_ID")
-
-    # ── VNET Peering defaults (applied to all spokes unless overridden) ────
-    PEERING_ALLOW_VNET_ACCESS:      bool = _bool("PEERING_ALLOW_VNET_ACCESS",      True)
-    PEERING_ALLOW_FORWARDED_TRAFFIC: bool = _bool("PEERING_ALLOW_FORWARDED_TRAFFIC", True)
-    PEERING_ALLOW_GATEWAY_TRANSIT:  bool = _bool("PEERING_ALLOW_GATEWAY_TRANSIT",  False)
-    PEERING_USE_REMOTE_GATEWAYS:    bool = _bool("PEERING_USE_REMOTE_GATEWAYS",    False)
-
-    # ── UDR tables (hub UDRs that get spoke route updates) ────────────────
-    UDR_NAME_1:        str = _get("UDR_NAME_1")
-    UDR_NAME_2:        str = _get("UDR_NAME_2")
-    UDR_RESOURCE_GROUP: str = _get("UDR_RESOURCE_GROUP")
-
-    # ── Default region for new Azure resources ─────────────
-    DEFAULT_AZURE_REGION: str = _get("DEFAULT_AZURE_REGION", "uaenorth")
-
-    # Hub Azure Firewall private IP — next hop for spoke routes (default route).
-    HUB_FIREWALL_PRIVATE_IP: str = _get("HUB_FIREWALL_PRIVATE_IP", "10.110.2.4")
-
-    # Hub routing tables that get a route to each new spoke during onboarding.
-    UDR_GATEWAY_NAME: str = _get("UDR_GATEWAY_NAME")   # gateway routing table
-    UDR_ZPA_NAME:     str = _get("UDR_ZPA_NAME")       # ZPA routing table
-
-    # ── Azure Firewall Policy ──────────────────────────────
-    FIREWALL_POLICY_NAME:           str = _get("FIREWALL_POLICY_NAME")
-    FIREWALL_POLICY_RG:             str = _get("FIREWALL_POLICY_RG")
-    FIREWALL_RULE_COLLECTION_GROUP: str = _get("FIREWALL_RULE_COLLECTION_GROUP")
-
-    # ── Flask ──────────────────────────────────────────────
-    SECRET_KEY: str = _get("FLASK_SECRET_KEY", "change-me-in-production")
-    # Werkzeug debugger / auto-reloader. Handy in dev; never enable when the
-    # app is reachable by anyone else (the debugger allows remote code execution).
-    DEBUG: bool = _bool("FLASK_DEBUG", False)
-
-    # ── App base URL (used in Teams notification deep-links) ──
-    SUBNET_FINDER_BASE_URL: str = _get("SUBNET_FINDER_BASE_URL", "http://localhost:8080")
+    def __getattr__(self, name):
+        if name in SETTINGS_SPEC:
+            raw, _src = resolve(name)
+            val = _coerce(raw, SETTINGS_SPEC[name]["type"])
+            if name == "SMTP_FROM" and not val:      # legacy fallback
+                val = self.SMTP_USER
+            return val
+        if name in _ENV_ONLY:
+            env, default = _ENV_ONLY[name]
+            raw = os.environ.get(env, default)
+            return _coerce(raw, "bool") if name in _ENV_ONLY_BOOLS else raw
+        raise AttributeError(name)
 
 
 cfg = Config()
+
+
+# ── Settings UI view model ──────────────────────────────────────────────────
+
+def settings_view():
+    """
+    Per-category field list for the settings page. Secret values are never
+    included — only whether one is set and its last 4 characters.
+    """
+    cats = {k: {"key": k, **v, "fields": []} for k, v in CATEGORIES.items()}
+    for key, spec in SETTINGS_SPEC.items():
+        raw, source = resolve(key)
+        field = {
+            "key": key, "label": spec["label"], "help": spec["help"],
+            "type": spec["type"], "options": spec["options"],
+            "secret": spec["secret"], "source": source,
+            "default": spec["default"],
+        }
+        if spec["secret"]:
+            field["value"] = ""
+            field["is_set"] = bool(raw)
+            field["last4"] = raw[-4:] if raw and len(raw) >= 8 else ""
+        else:
+            field["value"] = raw
+        cats[spec["category"]]["fields"].append(field)
+    return list(cats.values())

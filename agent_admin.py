@@ -13,7 +13,7 @@ import notifications
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the Presight R&D Azure Network Admin Agent.
+_SYSTEM_PROMPT_TEMPLATE = """You are the Presight R&D Azure Network Admin Agent.
 
 You help the network admin team manage spoke VNET requests end-to-end.
 
@@ -63,17 +63,22 @@ Azure environment:
 - Hub UDR 1: {udr1} | Hub UDR 2: {udr2} (RG: {udr_rg})
 - Firewall Policy: {fw_policy} / RCG: {fw_rcg}
 - Default region: {region}
-""".format(
-    hub_vnet=cfg.HUB_VNET_NAME              or "<not set>",
-    hub_rg=cfg.HUB_RESOURCE_GROUP           or "<not set>",
-    hub_sub=cfg.HUB_SUBSCRIPTION_ID         or "<not set>",
-    udr1=cfg.UDR_NAME_1                     or "<not set>",
-    udr2=cfg.UDR_NAME_2                     or "<not set>",
-    udr_rg=cfg.UDR_RESOURCE_GROUP           or "<not set>",
-    fw_policy=cfg.FIREWALL_POLICY_NAME      or "<not set>",
-    fw_rcg=cfg.FIREWALL_RULE_COLLECTION_GROUP or "<not set>",
-    region=cfg.DEFAULT_AZURE_REGION,
-)
+"""
+
+
+def build_system_prompt() -> str:
+    """Built per-request so live settings edits (/admin/settings) apply immediately."""
+    return _SYSTEM_PROMPT_TEMPLATE.format(
+        hub_vnet=cfg.HUB_VNET_NAME              or "<not set>",
+        hub_rg=cfg.HUB_RESOURCE_GROUP           or "<not set>",
+        hub_sub=cfg.HUB_SUBSCRIPTION_ID         or "<not set>",
+        udr1=cfg.UDR_NAME_1                     or "<not set>",
+        udr2=cfg.UDR_NAME_2                     or "<not set>",
+        udr_rg=cfg.UDR_RESOURCE_GROUP           or "<not set>",
+        fw_policy=cfg.FIREWALL_POLICY_NAME      or "<not set>",
+        fw_rcg=cfg.FIREWALL_RULE_COLLECTION_GROUP or "<not set>",
+        region=cfg.DEFAULT_AZURE_REGION,
+    )
 
 # ── Tool definitions ───────────────────────────────────────────────────────
 
@@ -716,13 +721,14 @@ def _chat_anthropic(messages, max_iterations):
     client = _get_client()
     tool_calls_log = []
     current_messages = list(messages)
+    system_prompt = build_system_prompt()
 
     for _ in range(max_iterations):
         response = client.messages.create(
             model=cfg.ANTHROPIC_MODEL, max_tokens=4096,
             # Cache the (large, static) system prompt so repeat turns only pay
             # ~0.1x for the cached prefix instead of re-billing it every call.
-            system=[{"type": "text", "text": SYSTEM_PROMPT,
+            system=[{"type": "text", "text": system_prompt,
                      "cache_control": {"type": "ephemeral"}}],
             tools=TOOLS_ANTHROPIC, messages=current_messages,
         )
@@ -749,7 +755,7 @@ def _chat_anthropic(messages, max_iterations):
 def _chat_openai(messages, max_iterations):
     client = _get_client()
     tool_calls_log = []
-    current_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + list(messages)
+    current_messages = [{"role": "system", "content": build_system_prompt()}] + list(messages)
 
     for _ in range(max_iterations):
         response = client.chat.completions.create(

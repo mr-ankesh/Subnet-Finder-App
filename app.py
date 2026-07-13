@@ -7,8 +7,10 @@ from datetime import datetime
 
 log = logging.getLogger(__name__)
 
-from config import cfg
+import settings_store
+from config import cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view
 from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus
+from naming import render_name
 import notifications
 
 app = Flask(__name__)
@@ -158,6 +160,9 @@ with app.app_context():
     # Auto-migrate subnet inventory from Excel on first run
     _auto_migrate_excel()
 
+    # Settings overrides table (admin settings UI)
+    settings_store.ensure_table()
+
 
 # ── Admin auth ──────────────────────────────────────────────────────────────
 
@@ -194,6 +199,111 @@ def admin_login():
 def admin_logout():
     session.pop("is_admin", None)
     return redirect(url_for("requester_page"))
+
+
+# ── Admin settings (DB-backed config overrides) ─────────────────────────────
+
+def _validate_setting(key: str, spec: dict, value: str):
+    """Return an error string, or None if the value is acceptable."""
+    if spec["options"] and value not in spec["options"]:
+        return f"Must be one of: {', '.join(spec['options'])}."
+    if spec["type"] == "bool" and value.lower() not in ("true", "false", "1", "0", "yes", "no"):
+        return "Must be true or false."
+    if spec["type"] == "int":
+        if not value.isdigit():
+            return "Must be a whole number."
+    if key == "HUB_FIREWALL_PRIVATE_IP" and value:
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            return "Must be a valid IP address."
+    if key.startswith("TPL_") and not value:
+        return "Naming template cannot be empty."
+    return None
+
+
+@app.route("/admin/settings")
+@require_admin
+def admin_settings():
+    return render_template(
+        "settings.html",
+        categories=settings_view(),
+        weak_secret_key=settings_store.using_default_secret_key(),
+    )
+
+
+@app.route("/api/admin/settings", methods=["POST"])
+@require_admin
+def admin_settings_save():
+    data = request.get_json(force=True) or {}
+    to_save, errors = [], {}
+    for key, value in data.items():
+        spec = SETTINGS_SPEC.get(key)
+        if spec is None:
+            errors[key] = "Unknown setting."
+            continue
+        value = ("" if value is None else str(value)).strip()
+        if spec["secret"] and value == "":
+            continue                     # blank secret input = keep current value
+        err = _validate_setting(key, spec, value)
+        if err:
+            errors[key] = err
+            continue
+        current, _source = resolve(key)
+        if value == str(current):
+            continue                     # unchanged — don't create a needless override
+        to_save.append((key, value, spec["secret"]))
+
+    # Atomic-ish: apply nothing if any field failed validation
+    saved = []
+    if not errors:
+        for key, value, is_secret in to_save:
+            settings_store.set_override(key, value, is_secret=is_secret)
+            saved.append(key)
+    if saved:
+        log.info("[settings] admin updated: %s", ", ".join(saved))
+    return jsonify({"success": not errors, "saved": saved, "errors": errors}), (200 if not errors else 400)
+
+
+@app.route("/api/admin/settings/reset", methods=["POST"])
+@require_admin
+def admin_settings_reset():
+    key = (request.get_json(force=True) or {}).get("key", "")
+    if key not in SETTINGS_SPEC:
+        return jsonify({"success": False, "error": "Unknown setting."}), 400
+    settings_store.delete_override(key)
+    log.info("[settings] admin reset override: %s", key)
+    raw, source = resolve(key)
+    spec = SETTINGS_SPEC[key]
+    value = "" if spec["secret"] else raw
+    return jsonify({"success": True, "key": key, "value": value, "source": source,
+                    "is_set": bool(raw) if spec["secret"] else None})
+
+
+@app.route("/api/admin/settings/test-azure", methods=["POST"])
+@require_admin
+def admin_settings_test_azure():
+    import azure_tools
+    res = azure_tools.test_connection()
+    return jsonify(res), (200 if res.get("success") else 400)
+
+
+@app.route("/api/admin/settings/preview-name", methods=["POST"])
+@require_admin
+def admin_settings_preview_name():
+    """Live preview for the naming tab — renders a template with sample values."""
+    data = request.get_json(force=True) or {}
+    key = data.get("key", "")
+    if key not in SETTINGS_SPEC or not key.startswith("TPL_"):
+        return jsonify({"error": "Unknown template."}), 400
+    preview = render_name(
+        key, vnet="my-spoke-vnet", request_id=42, region=cfg.DEFAULT_AZURE_REGION,
+        cidr_mask=24, purpose="analytics platform",
+        template_override=str(data.get("template", "")).strip() or None,
+        prefix_override=str(data.get("prefix", "")) if "prefix" in data else None,
+        suffix_override=str(data.get("suffix", "")) if "suffix" in data else None,
+    )
+    return jsonify({"preview": preview})
 
 
 # ── Pool helpers ────────────────────────────────────────────────────────────
@@ -768,16 +878,20 @@ def admin_azure_action(req_id):
                                         spoke_resource_group=vi.resource_group,
                                         spoke_vnet_name=vi.vnet_name, spoke_address_space=addr)
     elif action == "internet":
-        res = azure_tools.allow_internet_rule(addr, f"{vi.vnet_name}-allow-internet")
+        rule_name = render_name("TPL_FW_RULE_NAME", vnet=vi.vnet_name, request_id=req.id,
+                                region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
+        res = azure_tools.allow_internet_rule(addr, rule_name)
     elif action in ("gateway_route", "zpa_route"):
         table = (cfg.UDR_GATEWAY_NAME or cfg.UDR_NAME_1) if action == "gateway_route" \
                 else (cfg.UDR_ZPA_NAME or cfg.UDR_NAME_2)
         if not table:
             return jsonify({"error": f"No routing table configured for {action} "
                                      f"(set UDR_GATEWAY_NAME / UDR_ZPA_NAME)."}), 400
+        route_name = render_name("TPL_ROUTE_NAME", vnet=vi.vnet_name, request_id=req.id,
+                                 region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
         res = azure_tools.add_route_to_table(
             route_table_name=table, resource_group=cfg.UDR_RESOURCE_GROUP,
-            route_name=f"to-{vi.vnet_name}", address_prefix=addr,
+            route_name=route_name, address_prefix=addr,
             next_hop_type="VirtualAppliance", next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
             subscription_id=cfg.HUB_SUBSCRIPTION_ID,
         )

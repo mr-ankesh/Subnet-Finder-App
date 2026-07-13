@@ -1,10 +1,12 @@
 """
 Azure SDK helpers — called by the admin agent for hub integration operations.
-All credentials come from config.cfg (service principal).
+Credentials come from config.cfg: Service Principal or Managed Identity,
+selected by the AZURE_AUTH_MODE setting (editable in /admin/settings).
 """
 import functools
 import logging
 from config import cfg
+from naming import render_name
 
 log = logging.getLogger(__name__)
 
@@ -14,20 +16,46 @@ def _guard(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         if cfg.AZURE_DRY_RUN:
-            log.info("[dry-run] %s skipped (AZURE_DRY_RUN on)", fn.__name__)
+            detail = ", ".join(f"{k}={v}" for k, v in kwargs.items()
+                               if v not in (None, "") and isinstance(v, (str, int, bool)))
+            log.info("[dry-run] %s skipped (AZURE_DRY_RUN on) %s", fn.__name__, detail)
             return {"success": True, "dry_run": True,
-                    "message": f"[dry-run] {fn.__name__} simulated — no Azure changes made."}
+                    "message": f"[dry-run] {fn.__name__} simulated — no Azure changes made."
+                               + (f" ({detail})" if detail else "")}
         return fn(*args, **kwargs)
     return wrapper
 
 
 def _get_credential():
+    if cfg.AZURE_AUTH_MODE == "managed_identity":
+        from azure.identity import ManagedIdentityCredential
+        return ManagedIdentityCredential(client_id=cfg.AZURE_MI_CLIENT_ID or None)
     from azure.identity import ClientSecretCredential
     return ClientSecretCredential(
         tenant_id=cfg.AZURE_TENANT_ID,
         client_id=cfg.AZURE_CLIENT_ID,
         client_secret=cfg.AZURE_CLIENT_SECRET,
     )
+
+
+def test_connection() -> dict:
+    """
+    Read-only connectivity check for the settings UI: authenticate with the
+    configured credential and fetch the hub VNET. Never mutates anything,
+    so it runs for real even when AZURE_DRY_RUN is on.
+    """
+    if not cfg.HUB_SUBSCRIPTION_ID or not cfg.HUB_RESOURCE_GROUP or not cfg.HUB_VNET_NAME:
+        return {"success": False,
+                "message": "Set Hub subscription ID, resource group and VNET name first."}
+    try:
+        client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        vnet = client.virtual_networks.get(cfg.HUB_RESOURCE_GROUP, cfg.HUB_VNET_NAME)
+        spaces = ", ".join(vnet.address_space.address_prefixes or [])
+        return {"success": True,
+                "message": f"Connected ({cfg.AZURE_AUTH_MODE}). Hub VNET '{vnet.name}' found — address space: {spaces}."}
+    except Exception as exc:
+        log.error("test_connection failed: %s", exc)
+        return {"success": False, "message": str(exc)}
 
 
 def _network_client(subscription_id: str):
@@ -167,7 +195,7 @@ def peer_hub_vnet(
         spoke_client.virtual_network_peerings.begin_create_or_update(
             resource_group_name=spoke_resource_group,
             virtual_network_name=spoke_vnet_name,
-            virtual_network_peering_name="spoke-to-hub",
+            virtual_network_peering_name=render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name),
             virtual_network_peering_parameters={
                 "allow_virtual_network_access": allow_vnet_access,
                 "allow_forwarded_traffic":      allow_forwarded_traffic,
@@ -182,7 +210,7 @@ def peer_hub_vnet(
         hub_client.virtual_network_peerings.begin_create_or_update(
             resource_group_name=cfg.HUB_RESOURCE_GROUP,
             virtual_network_name=cfg.HUB_VNET_NAME,
-            virtual_network_peering_name=f"hub-to-{spoke_vnet_name}",
+            virtual_network_peering_name=render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name),
             virtual_network_peering_parameters={
                 "allow_virtual_network_access": allow_vnet_access,
                 "allow_forwarded_traffic":      allow_forwarded_traffic,

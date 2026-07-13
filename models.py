@@ -156,6 +156,20 @@ class VnetInfo(db.Model):
         }
 
 
+class AppSetting(db.Model):
+    """
+    Admin-editable config override (see settings_store.py, which reads/writes
+    this table via raw sqlite3 so config resolution works without app context).
+    Secret values are Fernet-encrypted at rest.
+    """
+    __tablename__ = "app_settings"
+
+    key        = db.Column(db.Text,    primary_key=True)
+    value      = db.Column(db.Text,    nullable=True)
+    is_secret  = db.Column(db.Integer, nullable=False, default=0)
+    updated_at = db.Column(db.Text,    nullable=True)
+
+
 class SubnetRecord(db.Model):
     """
     Persistent record of every allocated (used) or reserved subnet.
