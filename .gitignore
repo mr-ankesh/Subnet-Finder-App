@@ -16,6 +16,9 @@ env/
 # Data files (keep directory, ignore actual data)
 data/*.xlsx
 data/*.xls
+data/*.db
+data/*.db-shm
+data/*.db-wal
 !data/.gitkeep
 
 # Environment / secrets
