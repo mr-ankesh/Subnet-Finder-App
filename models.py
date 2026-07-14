@@ -345,6 +345,30 @@ class AuditLog(db.Model):
     data       = db.Column(db.Text,    nullable=True)
 
 
+class FwCollection(db.Model):
+    """
+    Admin-defined firewall rule collection group / rule collection pairs
+    (one-time setup with descriptions). Azure itself has no description field
+    for these, so the app keeps them here; the request-processing UI merges
+    this list with what actually exists in the policy.
+    """
+    __tablename__ = "fw_collections"
+    __table_args__ = (db.UniqueConstraint("rcg", "collection", name="uq_fw_rcg_collection"),)
+
+    id          = db.Column(db.Integer,     primary_key=True)
+    rcg         = db.Column(db.String(120), nullable=False)   # rule collection group name
+    collection  = db.Column(db.String(120), nullable=False)   # rule collection name
+    priority    = db.Column(db.Integer,     nullable=False, default=200)
+    action      = db.Column(db.String(10),  nullable=False, default="Allow")  # Allow | Deny
+    description = db.Column(db.String(300), nullable=True)
+    created_at  = db.Column(db.DateTime,    default=datetime.utcnow)
+
+    def to_dict(self):
+        return {"id": self.id, "rcg": self.rcg, "collection": self.collection,
+                "priority": self.priority, "action": self.action,
+                "description": self.description or ""}
+
+
 class SubnetRecord(db.Model):
     """
     Persistent record of every allocated (used) or reserved subnet.

@@ -99,6 +99,33 @@
           <span id="testResult" style="font-size:.85rem;"></span>
           {% endif %}
         </div>
+
+        {% if cat.key == 'firewall' %}
+        <hr style="border-color:rgba(255,255,255,.1); margin:1.5rem 0;">
+        <h6 style="font-family:var(--font-heading); margin-bottom:.25rem;">
+          <i class="bi bi-collection"></i> Rule Collection Groups &amp; Collections
+        </h6>
+        <div style="color:var(--text-muted); font-size:.8rem; margin-bottom:1rem;">
+          One-time definitions used when processing firewall requests — the admin picks the
+          target group and collection from these (merged with what already exists in Azure).
+          Descriptions live only in this app; Azure has no description field for collections.
+        </div>
+        <div id="fwColTable" style="margin-bottom:1rem; font-size:.85rem; color:var(--text-muted);">Loading…</div>
+        <div style="display:grid; grid-template-columns:1.2fr 1.2fr .6fr .7fr 2fr auto; gap:.5rem; align-items:end;" class="fwcol-grid">
+          <div><label class="form-label" style="font-size:.75rem;">Rule collection group *</label>
+            <input type="text" class="form-control" id="fwc_rcg" placeholder="e.g. rcg-01"></div>
+          <div><label class="form-label" style="font-size:.75rem;">Rule collection *</label>
+            <input type="text" class="form-control" id="fwc_col" placeholder="e.g. rc-app-allow"></div>
+          <div><label class="form-label" style="font-size:.75rem;">Priority</label>
+            <input type="number" class="form-control" id="fwc_prio" value="200" min="100" max="65000"></div>
+          <div><label class="form-label" style="font-size:.75rem;">Action</label>
+            <select class="form-select" id="fwc_action"><option>Allow</option><option>Deny</option></select></div>
+          <div><label class="form-label" style="font-size:.75rem;">Description</label>
+            <input type="text" class="form-control" id="fwc_desc" placeholder="What this collection is for"></div>
+          <button class="btn-glass" onclick="fwColAdd()" style="height:38px;"><i class="bi bi-plus-lg"></i> Add</button>
+        </div>
+        <div id="fwColMsg" style="font-size:.8rem; margin-top:.5rem;"></div>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -232,5 +259,57 @@
   }
   // Initial previews on the naming tab
   if (document.getElementById('in-NAME_PREFIX')) namingPreview();
+
+  // ── Firewall collection definitions ────────────────────────────────────
+  async function fwColLoad() {
+    const box = document.getElementById('fwColTable');
+    if (!box) return;
+    try {
+      const d = await (await fetch('/api/admin/firewall/collections')).json();
+      if (!d.defined.length) {
+        box.innerHTML = '<span style="color:var(--text-muted);">No collections defined yet — add the ones your firewall policy uses below.</span>';
+        return;
+      }
+      box.innerHTML = `<table class="table table-dark table-sm" style="font-size:.82rem;">
+        <thead><tr><th>Group</th><th>Collection</th><th>Priority</th><th>Action</th><th>Description</th><th></th></tr></thead><tbody>` +
+        d.defined.map(r => `<tr>
+          <td style="font-family:var(--mono);">${r.rcg}</td>
+          <td style="font-family:var(--mono);">${r.collection}</td>
+          <td>${r.priority}</td>
+          <td><span style="color:${r.action === 'Deny' ? '#f87171' : '#4ade80'};">${r.action}</span></td>
+          <td style="color:var(--text-muted);">${r.description || '—'}</td>
+          <td><a href="#" onclick="fwColDel(${r.id}); return false;" title="Remove definition"
+                 style="color:#f87171;"><i class="bi bi-trash3"></i></a></td>
+        </tr>`).join('') + '</tbody></table>';
+    } catch (e) {
+      box.innerHTML = '<span style="color:#f87171;">Could not load collection definitions.</span>';
+    }
+  }
+
+  async function fwColAdd() {
+    const msg = document.getElementById('fwColMsg');
+    const body = {
+      rcg: document.getElementById('fwc_rcg').value.trim(),
+      collection: document.getElementById('fwc_col').value.trim(),
+      priority: document.getElementById('fwc_prio').value,
+      action: document.getElementById('fwc_action').value,
+      description: document.getElementById('fwc_desc').value.trim(),
+    };
+    const r = await fetch('/api/admin/firewall/collections', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (d.error) { msg.style.color = '#f87171'; msg.textContent = d.error; return; }
+    msg.style.color = '#4ade80'; msg.textContent = `Added ${body.rcg} / ${body.collection}.`;
+    ['fwc_rcg','fwc_col','fwc_desc'].forEach(id => document.getElementById(id).value = '');
+    fwColLoad();
+  }
+
+  async function fwColDel(id) {
+    if (!confirm('Remove this collection definition from the app? (Nothing is changed in Azure.)')) return;
+    await fetch(`/api/admin/firewall/collections/${id}/delete`, {method: 'POST'});
+    fwColLoad();
+  }
+
+  if (document.getElementById('fwColTable')) fwColLoad();
 </script>
 {% endblock %}

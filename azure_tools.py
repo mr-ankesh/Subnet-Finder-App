@@ -99,6 +99,35 @@ def _subnet_cidr(address_space: str, subnet_size) -> str:
     return str(next(net.subnets(new_prefix=sz)))
 
 
+def carve_subnets(address_space: str, entries: list) -> list:
+    """
+    Sequentially carve N subnets inside the VNET address space.
+    entries: [{"name": ..., "size": 26}, ...] → [{"name", "address_prefix"}, ...]
+    Raises ValueError when they don't fit.
+    """
+    import ipaddress
+    net = ipaddress.ip_network(address_space, strict=False)
+    addr, out = int(net.network_address), []
+    for i, e in enumerate(entries):
+        try:
+            sz = int(str(e.get("size", "")).lstrip("/"))
+        except (TypeError, ValueError):
+            sz = net.prefixlen
+        if sz < net.prefixlen:
+            sz = net.prefixlen
+        block_size = 2 ** (32 - sz)
+        if addr % block_size:                      # align up to the block boundary
+            addr = (addr // block_size + 1) * block_size
+        block = ipaddress.ip_network((addr, sz))
+        if not block.subnet_of(net):
+            raise ValueError(f"Requested subnets do not fit inside {address_space} "
+                             f"(ran out at subnet #{i + 1}, /{sz}).")
+        out.append({"name": (e.get("name") or f"subnet{i + 1}").strip(),
+                    "address_prefix": str(block)})
+        addr += block_size
+    return out
+
+
 @_guard
 def create_spoke_vnet(
     subscription_id: str,
@@ -108,33 +137,71 @@ def create_spoke_vnet(
     address_space: str,
     subnet_name: str = "default",
     subnet_size=None,
+    subnets: list = None,           # [{"name", "size"}, ...] — overrides the single-subnet args
 ) -> dict:
-    """Ensure the RG exists, then create the spoke VNET with the requested subnet."""
+    """Ensure the RG exists, then create the spoke VNET with the requested subnet(s)."""
     try:
         rg_res = ensure_resource_group(subscription_id, resource_group, location)
         if not rg_res.get("success"):
             return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
 
-        subnet_prefix = _subnet_cidr(address_space, subnet_size)
-        sname = subnet_name or "default"
+        if subnets:
+            try:
+                subnet_params = carve_subnets(address_space, subnets)
+            except ValueError as exc:
+                return {"success": False, "message": str(exc)}
+        else:
+            subnet_params = [{"name": subnet_name or "default",
+                              "address_prefix": _subnet_cidr(address_space, subnet_size)}]
         client = _network_client(subscription_id)
-        log.info("Creating VNET '%s' (%s), subnet '%s' (%s) in %s/%s",
-                 vnet_name, address_space, sname, subnet_prefix, resource_group, location)
+        log.info("Creating VNET '%s' (%s) with %d subnet(s) in %s/%s",
+                 vnet_name, address_space, len(subnet_params), resource_group, location)
         client.virtual_networks.begin_create_or_update(
             resource_group_name=resource_group,
             virtual_network_name=vnet_name,
             parameters={
                 "location": location,
                 "address_space": {"address_prefixes": [address_space]},
-                "subnets": [{"name": sname, "address_prefix": subnet_prefix}],
+                "subnets": subnet_params,
             },
         ).result()
-        msg = f"VNET '{vnet_name}' ({address_space}) created with subnet '{sname}' ({subnet_prefix})."
+        snet_desc = ", ".join(f"{s['name']} ({s['address_prefix']})" for s in subnet_params)
+        msg = f"VNET '{vnet_name}' ({address_space}) created with subnet(s): {snet_desc}."
         if rg_res.get("created"):
             msg = f"RG '{resource_group}' created. " + msg
         return {"success": True, "message": msg}
     except Exception as exc:
         log.error("create_spoke_vnet failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def delete_spoke_route_table(subscription_id: str, resource_group: str,
+                             vnet_name: str, route_table_name: str) -> dict:
+    """Disassociate a route table from the VNET's subnets, then delete it."""
+    try:
+        client = _network_client(subscription_id)
+        cleared = []
+        try:
+            for s in client.subnets.list(resource_group, vnet_name):
+                if s.route_table and s.route_table.id.split("/")[-1] == route_table_name:
+                    s.route_table = None
+                    client.subnets.begin_create_or_update(
+                        resource_group, vnet_name, s.name, s).result()
+                    cleared.append(s.name)
+        except Exception as exc:
+            if not _is_not_found(exc):        # VNET already gone → nothing associated
+                raise
+        client.route_tables.begin_delete(resource_group, route_table_name).result()
+        msg = f"Route table '{route_table_name}' deleted."
+        if cleared:
+            msg = f"Unassigned from subnet(s) {', '.join(cleared)}. " + msg
+        return {"success": True, "message": msg}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True,
+                    "message": f"Route table '{route_table_name}' not found (already deleted)."}
+        log.error("delete_spoke_route_table failed: %s", exc)
         return {"success": False, "message": str(exc)}
 
 
@@ -420,44 +487,479 @@ def assign_route_table_to_subnet(
         return {"success": False, "message": str(exc)}
 
 
+# ── Revert / decommission helpers ──────────────────────────────────────────
+# Deletions treat "not found" as success so reverts are idempotent.
+
+def _is_not_found(exc) -> bool:
+    try:
+        from azure.core.exceptions import ResourceNotFoundError
+        if isinstance(exc, ResourceNotFoundError):
+            return True
+    except ImportError:
+        pass
+    return "NotFound" in str(exc) or "was not found" in str(exc)
+
+
+@_guard
+def delete_route_from_table(
+    route_table_name: str,
+    resource_group: str,
+    route_name: str,
+    subscription_id: str = None,
+) -> dict:
+    """Delete a single named route from a route table."""
+    try:
+        sub = subscription_id or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID
+        client = _network_client(sub)
+        log.info("Deleting route '%s' from table '%s'", route_name, route_table_name)
+        client.routes.begin_delete(resource_group, route_table_name, route_name).result()
+        return {"success": True, "message": f"Route '{route_name}' removed from {route_table_name}."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True,
+                    "message": f"Route '{route_name}' not present in {route_table_name} (already removed)."}
+        log.error("delete_route_from_table failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def remove_routes_by_prefix(
+    route_table_name: str,
+    resource_group: str,
+    address_prefix: str,
+    subscription_id: str = None,
+) -> dict:
+    """Delete every route in a table whose address prefix matches (e.g. a spoke CIDR)."""
+    try:
+        sub = subscription_id or cfg.HUB_SUBSCRIPTION_ID
+        client = _network_client(sub)
+        rt = client.route_tables.get(resource_group, route_table_name)
+        matches = [r.name for r in (rt.routes or []) if r.address_prefix == address_prefix]
+        for name in matches:
+            log.info("Deleting route '%s' (%s) from '%s'", name, address_prefix, route_table_name)
+            client.routes.begin_delete(resource_group, route_table_name, name).result()
+        if matches:
+            return {"success": True,
+                    "message": f"Removed {len(matches)} route(s) for {address_prefix} from {route_table_name}: {', '.join(matches)}."}
+        return {"success": True,
+                "message": f"No routes for {address_prefix} in {route_table_name} (nothing to remove)."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "message": f"Route table '{route_table_name}' not found (nothing to remove)."}
+        log.error("remove_routes_by_prefix failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def remove_firewall_rule(rule_name: str, rcg_name: str = None,
+                         collection_name: str = None) -> dict:
+    """
+    Remove a named rule from the policy's filter rule collections.
+    Searches the given RCG (or every RCG when unspecified); not-found = success.
+    """
+    try:
+        client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        for rcg in _iter_rcgs(client, rcg_name):
+            removed = False
+            for rc in (rcg.rule_collections or []):
+                if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
+                    continue
+                if collection_name and rc.name != collection_name:
+                    continue
+                before = len(rc.rules or [])
+                rc.rules = [r for r in (rc.rules or []) if r.name != rule_name]
+                if len(rc.rules) < before:
+                    removed = True
+            if removed:
+                log.info("Removing firewall rule '%s' from RCG '%s'", rule_name, rcg.name)
+                client.firewall_policy_rule_collection_groups.begin_create_or_update(
+                    cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
+                ).result()
+                return {"success": True,
+                        "message": f"Firewall rule '{rule_name}' removed (RCG '{rcg.name}')."}
+        return {"success": True, "message": f"Firewall rule '{rule_name}' not present (already removed)."}
+    except Exception as exc:
+        log.error("remove_firewall_rule failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def delete_hub_spoke_peerings(
+    spoke_subscription_id: str,
+    spoke_resource_group: str,
+    spoke_vnet_name: str,
+) -> dict:
+    """Delete both peering directions (spoke→hub and hub→spoke)."""
+    results = []
+    # Hub side first — it survives even if the spoke VNET was already deleted
+    try:
+        hub_client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        name = render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name)
+        log.info("Deleting hub→spoke peering '%s'", name)
+        hub_client.virtual_network_peerings.begin_delete(
+            cfg.HUB_RESOURCE_GROUP, cfg.HUB_VNET_NAME, name).result()
+        results.append(f"hub→spoke '{name}' deleted")
+    except Exception as exc:
+        if _is_not_found(exc):
+            results.append("hub→spoke peering already absent")
+        else:
+            log.error("delete hub→spoke peering failed: %s", exc)
+            return {"success": False, "message": f"Hub-side peering delete failed: {exc}"}
+    try:
+        spoke_client = _network_client(spoke_subscription_id)
+        name = render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name)
+        log.info("Deleting spoke→hub peering '%s'", name)
+        spoke_client.virtual_network_peerings.begin_delete(
+            spoke_resource_group, spoke_vnet_name, name).result()
+        results.append(f"spoke→hub '{name}' deleted")
+    except Exception as exc:
+        if _is_not_found(exc):
+            results.append("spoke→hub peering already absent")
+        else:
+            log.error("delete spoke→hub peering failed: %s", exc)
+            return {"success": False, "message": f"Spoke-side peering delete failed: {exc}"}
+    return {"success": True, "message": "Peerings removed: " + "; ".join(results) + "."}
+
+
+@_guard
+def delete_spoke_vnet(subscription_id: str, resource_group: str, vnet_name: str) -> dict:
+    """Delete a spoke VNET (fails in Azure if any subnet still has attached devices)."""
+    try:
+        client = _network_client(subscription_id)
+        log.info("Deleting VNET '%s' in %s", vnet_name, resource_group)
+        client.virtual_networks.begin_delete(resource_group, vnet_name).result()
+        return {"success": True, "message": f"VNET '{vnet_name}' deleted."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "message": f"VNET '{vnet_name}' not found (already deleted)."}
+        log.error("delete_spoke_vnet failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+def decommission_check(subscription_id: str, resource_group: str, vnet_name: str) -> dict:
+    """
+    Read-only pre-decommission report: does the VNET exist, what peerings does it
+    have, and do any subnets still have attached devices (NIC ip-configurations)?
+    Runs for real even in dry-run mode — it never mutates anything.
+    """
+    try:
+        client = _network_client(subscription_id)
+        try:
+            vnet = client.virtual_networks.get(resource_group, vnet_name)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return {"success": True, "exists": False, "clear": True,
+                        "peerings": [], "subnets": [], "total_devices": 0,
+                        "message": f"VNET '{vnet_name}' not found in {resource_group} — already deleted?"}
+            raise
+        peerings = [{"name": p.name,
+                     "state": str(p.peering_state or ""),
+                     "remote": (p.remote_virtual_network.id.split("/")[-1]
+                                if p.remote_virtual_network and p.remote_virtual_network.id else "")}
+                    for p in client.virtual_network_peerings.list(resource_group, vnet_name)]
+        subnets, total_devices = [], 0
+        for s in client.subnets.list(resource_group, vnet_name):
+            devices = len(s.ip_configurations or [])
+            total_devices += devices
+            prefix = s.address_prefix or ", ".join(getattr(s, "address_prefixes", None) or [])
+            subnets.append({"name": s.name, "prefix": prefix,
+                            "devices": devices, "has_udr": s.route_table is not None})
+        spaces = ", ".join(vnet.address_space.address_prefixes or [])
+        return {
+            "success": True, "exists": True, "address_space": spaces,
+            "peerings": peerings, "subnets": subnets, "total_devices": total_devices,
+            "clear": total_devices == 0,
+            "message": (f"VNET '{vnet_name}' ({spaces}): {len(peerings)} peering(s), "
+                        f"{len(subnets)} subnet(s), {total_devices} attached device(s). "
+                        + ("Clear to decommission." if total_devices == 0
+                           else "NOT clear — devices are still attached; ask the requester to remove them.")),
+        }
+    except Exception as exc:
+        log.error("decommission_check failed: %s", exc)
+        return {"success": False, "exists": None, "clear": False, "message": str(exc)}
+
+
+# ── Firewall policy lifecycle: status / create-if-missing / modify ─────────
+
+def _describe_fw_rule(rule, collection_name: str) -> dict:
+    """Serialize an SDK rule object for display in the admin UI."""
+    d = {"name": rule.name, "collection": collection_name,
+         "kind": "application" if rule.rule_type == "ApplicationRule" else "network",
+         "sources": list(rule.source_addresses or [])}
+    if rule.rule_type == "ApplicationRule":
+        d["fqdns"] = list(rule.target_fqdns or [])
+        d["protocols"] = [f"{p.protocol_type}/{p.port}" for p in (rule.protocols or [])]
+    else:
+        d["destinations"] = list(rule.destination_addresses or [])
+        d["ports"] = list(rule.destination_ports or [])
+        d["protocols"] = list(rule.ip_protocols or [])
+    return d
+
+
+def get_firewall_policy_status(rule_name: str = None) -> dict:
+    """
+    Read-only firewall report for the admin UI: does the policy exist, what
+    rule collection groups / collections / rules does it hold (across ALL
+    RCGs), and — if rule_name is given — the current definition of that rule.
+    Runs for real even in dry-run mode (never mutates).
+    """
+    if not cfg.FIREWALL_POLICY_NAME or not cfg.FIREWALL_POLICY_RG:
+        return {"success": False,
+                "message": "Firewall policy name / resource group not configured in Settings → Firewall."}
+    out = {"success": True, "policy_exists": False, "rcg_exists": False,
+           "policy": cfg.FIREWALL_POLICY_NAME, "rcg": cfg.FIREWALL_RULE_COLLECTION_GROUP,
+           "collections": [], "rule": None}
+    try:
+        client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        try:
+            client.firewall_policies.get(cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME)
+            out["policy_exists"] = True
+        except Exception as exc:
+            if _is_not_found(exc):
+                out["message"] = (f"Firewall policy '{cfg.FIREWALL_POLICY_NAME}' does NOT exist "
+                                  f"in {cfg.FIREWALL_POLICY_RG} — use 'Create Policy' to create it.")
+                return out
+            raise
+        rcgs = list(client.firewall_policy_rule_collection_groups.list(
+            cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME))
+        out["rcg_exists"] = any(g.name == cfg.FIREWALL_RULE_COLLECTION_GROUP for g in rcgs)
+        for g in rcgs:
+            for rc in (g.rule_collections or []):
+                is_filter = rc.rule_collection_type == "FirewallPolicyFilterRuleCollection"
+                # Azure forbids mixing network and application rules in one collection —
+                # expose the collection's current rule type so the UI can match it.
+                kinds = {("application" if r.rule_type == "ApplicationRule" else "network")
+                         for r in (rc.rules or [])}
+                out["collections"].append({
+                    "rcg": g.name, "rcg_priority": g.priority,
+                    "name": rc.name, "priority": rc.priority,
+                    "action": getattr(getattr(rc, "action", None), "type", "") or "",
+                    "filter": is_filter, "rules": [r.name for r in (rc.rules or [])],
+                    "rule_type": kinds.pop() if len(kinds) == 1 else ("mixed" if kinds else ""),
+                })
+                if rule_name and is_filter and out["rule"] is None:
+                    for r in (rc.rules or []):
+                        if r.name == rule_name:
+                            out["rule"] = _describe_fw_rule(r, rc.name)
+                            out["rule"]["rcg"] = g.name
+        total = sum(len(c["rules"]) for c in out["collections"])
+        out["message"] = (f"Policy '{cfg.FIREWALL_POLICY_NAME}' OK — {len(rcgs)} rule collection "
+                          f"group(s), {len(out['collections'])} collection(s), {total} rule(s)."
+                          + (f" Rule '{rule_name}' " + ("found." if out["rule"] else "NOT found.")
+                             if rule_name else ""))
+        return out
+    except Exception as exc:
+        log.error("get_firewall_policy_status failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def ensure_firewall_policy(location: str = None, rcg_name: str = None,
+                           collection_name: str = None, rcg_priority: int = 200,
+                           collection_priority: int = 200, action: str = "Allow") -> dict:
+    """
+    Create whatever is missing so rules can be managed: the firewall policy,
+    the given rule collection group, and the given filter rule collection.
+    Existing pieces are left untouched.
+    """
+    try:
+        loc = location or cfg.DEFAULT_AZURE_REGION
+        rcg_name = rcg_name or cfg.FIREWALL_RULE_COLLECTION_GROUP
+        collection_name = collection_name or "app-managed-rules"
+        client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        steps = []
+
+        try:
+            client.firewall_policies.get(cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME)
+            steps.append(f"policy '{cfg.FIREWALL_POLICY_NAME}' exists")
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+            log.info("Creating firewall policy '%s'", cfg.FIREWALL_POLICY_NAME)
+            client.firewall_policies.begin_create_or_update(
+                cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME,
+                {"location": loc, "sku": {"tier": "Standard"}},
+            ).result()
+            steps.append(f"policy '{cfg.FIREWALL_POLICY_NAME}' created")
+
+        rcg = None
+        try:
+            rcg = client.firewall_policy_rule_collection_groups.get(
+                cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg_name)
+            steps.append(f"rule collection group '{rcg_name}' exists")
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+
+        filter_collection = {
+            "rule_collection_type": "FirewallPolicyFilterRuleCollection",
+            "name": collection_name, "priority": int(collection_priority),
+            "action": {"type": action or "Allow"}, "rules": [],
+        }
+        if rcg is None:
+            log.info("Creating rule collection group '%s'", rcg_name)
+            client.firewall_policy_rule_collection_groups.begin_create_or_update(
+                cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg_name,
+                {"priority": int(rcg_priority), "rule_collections": [filter_collection]},
+            ).result()
+            steps.append(f"rule collection group '{rcg_name}' + collection '{collection_name}' created")
+        elif not any(rc.name == collection_name for rc in (rcg.rule_collections or [])):
+            rcg.rule_collections = list(rcg.rule_collections or []) + [filter_collection]
+            client.firewall_policy_rule_collection_groups.begin_create_or_update(
+                cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg_name, rcg,
+            ).result()
+            steps.append(f"filter collection '{collection_name}' added to '{rcg_name}'")
+        else:
+            steps.append(f"collection '{collection_name}' exists in '{rcg_name}'")
+
+        return {"success": True, "message": "Firewall ready: " + "; ".join(steps) + "."}
+    except Exception as exc:
+        log.error("ensure_firewall_policy failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+def _build_fw_rule(rule_name, rule_kind, source_addresses, destinations,
+                   ports=None, ip_protocols=None, app_protocols=None):
+    from azure.mgmt.network.models import (NetworkRule, ApplicationRule,
+                                           FirewallPolicyRuleApplicationProtocol)
+    if rule_kind == "application":
+        return ApplicationRule(
+            name=rule_name, rule_type="ApplicationRule",
+            source_addresses=source_addresses or ["*"],
+            target_fqdns=destinations,
+            protocols=[FirewallPolicyRuleApplicationProtocol(
+                protocol_type=p["protocol_type"], port=p.get("port", 443))
+                for p in (app_protocols or [{"protocol_type": "Https", "port": 443}])],
+        )
+    return NetworkRule(
+        name=rule_name, rule_type="NetworkRule",
+        ip_protocols=ip_protocols or ["Any"],
+        source_addresses=source_addresses or ["*"],
+        destination_addresses=destinations,
+        destination_ports=ports or ["*"],
+    )
+
+
+def _iter_rcgs(client, rcg_name=None):
+    """RCGs to search: the named one, or every RCG of the policy."""
+    if rcg_name:
+        return [client.firewall_policy_rule_collection_groups.get(
+            cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg_name)]
+    return list(client.firewall_policy_rule_collection_groups.list(
+        cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME))
+
+
+@_guard
+def replace_firewall_rule(
+    rule_name: str,
+    rule_kind: str,                 # "network" | "application"
+    source_addresses: list,
+    destinations: list,             # IP/CIDRs (network) or FQDNs (application)
+    ports: list = None,
+    ip_protocols: list = None,
+    app_protocols: list = None,     # [{"protocol_type": "Https", "port": 443}]
+    rcg_name: str = None,           # search this RCG only (else all RCGs)
+    collection_name: str = None,    # restrict to this collection
+) -> dict:
+    """Modify an existing rule in place (keeps its collection & position)."""
+    try:
+        client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        new_rule = _build_fw_rule(rule_name, rule_kind, source_addresses, destinations,
+                                  ports=ports, ip_protocols=ip_protocols,
+                                  app_protocols=app_protocols)
+        for rcg in _iter_rcgs(client, rcg_name):
+            found = False
+            for rc in (rcg.rule_collections or []):
+                if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
+                    continue
+                if collection_name and rc.name != collection_name:
+                    continue
+                for i, r in enumerate(rc.rules or []):
+                    if r.name == rule_name:
+                        rc.rules[i] = new_rule
+                        found = True
+            if found:
+                log.info("Replacing firewall rule '%s' in RCG '%s'", rule_name, rcg.name)
+                client.firewall_policy_rule_collection_groups.begin_create_or_update(
+                    cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
+                ).result()
+                return {"success": True,
+                        "message": f"Rule '{rule_name}' updated in place (RCG '{rcg.name}')."}
+        where = f" in {rcg_name}/{collection_name}" if (rcg_name or collection_name) else ""
+        return {"success": False,
+                "message": f"Rule '{rule_name}' not found{where} — cannot modify. "
+                           f"Run the check to see existing rule names."}
+    except Exception as exc:
+        log.error("replace_firewall_rule failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
 # ── 6. Firewall — network rule ────────────────────────────────────────────
+
+def _find_target_collection(rcg, collection_name=None):
+    """Filter collection to add into: the named one, or the first filter collection."""
+    for rc in (rcg.rule_collections or []):
+        if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
+            continue
+        if collection_name is None or rc.name == collection_name:
+            return rc
+    return None
+
+
+def _collection_kind_conflict(target, rule_kind: str):
+    """
+    Azure rejects mixing network and application rules in one collection.
+    Returns an error message when the target collection already holds the
+    other rule type, else None.
+    """
+    kinds = {("application" if r.rule_type == "ApplicationRule" else "network")
+             for r in (target.rules or [])}
+    if kinds and rule_kind not in kinds:
+        return (f"Collection '{target.name}' holds {'/'.join(sorted(kinds))} rules — Azure does "
+                f"not allow {rule_kind} rules in the same collection. Pick or create a "
+                f"{rule_kind}-rule collection instead.")
+    return None
+
 
 @_guard
 def add_firewall_network_rule(
     rule_name: str,
     destination_addresses: list,
     destination_ports: list,
-    protocol: str = "TCP",
+    protocol="TCP",                 # str or list of IP protocols
     source_addresses: list = None,
+    rcg_name: str = None,
+    collection_name: str = None,
 ) -> dict:
-    """Add a network rule to the configured firewall policy rule collection group."""
+    """Add a network rule to a firewall policy rule collection."""
     try:
-        from azure.mgmt.network.models import NetworkRule
         client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
         rcg = client.firewall_policy_rule_collection_groups.get(
-            cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, cfg.FIREWALL_RULE_COLLECTION_GROUP
-        )
-        target = next(
-            (rc for rc in (rcg.rule_collections or [])
-             if rc.rule_collection_type == "FirewallPolicyFilterRuleCollection"), None
-        )
-        if target is None:
-            return {"success": False, "message": "No FirewallPolicyFilterRuleCollection found."}
-
-        new_rule = NetworkRule(
-            name=rule_name, rule_type="NetworkRule",
-            ip_protocols=[protocol],
-            source_addresses=source_addresses or ["*"],
-            destination_addresses=destination_addresses,
-            destination_ports=destination_ports,
-        )
-        target.rules = list(target.rules or []) + [new_rule]
-        log.info("Adding network rule '%s'", rule_name)
-        client.firewall_policy_rule_collection_groups.begin_create_or_update(
             cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME,
-            cfg.FIREWALL_RULE_COLLECTION_GROUP, rcg,
+            rcg_name or cfg.FIREWALL_RULE_COLLECTION_GROUP)
+        target = _find_target_collection(rcg, collection_name)
+        if target is None:
+            return {"success": False,
+                    "message": f"Rule collection '{collection_name or '(any filter)'}' "
+                               f"not found in RCG '{rcg.name}'."}
+        if any(r.name == rule_name for r in (target.rules or [])):
+            return {"success": False,
+                    "message": f"A rule named '{rule_name}' already exists in "
+                               f"'{target.name}' — use modify instead."}
+        conflict = _collection_kind_conflict(target, "network")
+        if conflict:
+            return {"success": False, "message": conflict}
+        protocols = [protocol] if isinstance(protocol, str) else list(protocol or ["Any"])
+        new_rule = _build_fw_rule(rule_name, "network", source_addresses,
+                                  destination_addresses, ports=destination_ports,
+                                  ip_protocols=protocols)
+        target.rules = list(target.rules or []) + [new_rule]
+        log.info("Adding network rule '%s' to %s/%s", rule_name, rcg.name, target.name)
+        client.firewall_policy_rule_collection_groups.begin_create_or_update(
+            cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
         ).result()
-        return {"success": True, "message": f"Network rule '{rule_name}' added."}
+        return {"success": True,
+                "message": f"Network rule '{rule_name}' added to {rcg.name}/{target.name}."}
     except Exception as exc:
         log.error("add_firewall_network_rule failed: %s", exc)
         return {"success": False, "message": str(exc)}
@@ -471,12 +973,14 @@ def add_firewall_application_rule(
     target_fqdns: list,
     protocols: list,           # list of {"protocol_type": "Https"|"Http", "port": 443}
     source_addresses: list = None,
+    rcg_name: str = None,
+    collection_name: str = None,
 ) -> dict:
     """
     Add an application rule (HTTP/HTTPS only) to the firewall policy.
-    protocols must only contain Http or Https — other protocols are rejected.
+    protocols must only contain Http or Https; target_fqdns must be FQDNs
+    (Azure application rules cannot target IP addresses).
     """
-    # Validate protocols
     for p in protocols:
         pt = p.get("protocol_type", "")
         if pt not in ("Http", "Https"):
@@ -484,40 +988,43 @@ def add_firewall_application_rule(
                 "success": False,
                 "message": f"Application rules only support Http/Https. '{pt}' is not allowed. Use a Network Rule for other protocols.",
             }
+    import ipaddress as _ip
+    for f in target_fqdns:
+        try:
+            _ip.ip_network(str(f).strip(), strict=False)
+            return {"success": False,
+                    "message": f"'{f}' is an IP address — Azure application rules only accept "
+                               f"FQDNs (e.g. *.example.com). Use a Network Rule for IP destinations."}
+        except ValueError:
+            pass
 
     try:
-        from azure.mgmt.network.models import ApplicationRule, FirewallPolicyRuleApplicationProtocol
         client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
         rcg = client.firewall_policy_rule_collection_groups.get(
-            cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, cfg.FIREWALL_RULE_COLLECTION_GROUP
-        )
-        target = next(
-            (rc for rc in (rcg.rule_collections or [])
-             if rc.rule_collection_type == "FirewallPolicyFilterRuleCollection"), None
-        )
-        if target is None:
-            return {"success": False, "message": "No FirewallPolicyFilterRuleCollection found."}
-
-        app_protocols = [
-            FirewallPolicyRuleApplicationProtocol(
-                protocol_type=p["protocol_type"],
-                port=p.get("port", 443 if p["protocol_type"] == "Https" else 80),
-            )
-            for p in protocols
-        ]
-        new_rule = ApplicationRule(
-            name=rule_name, rule_type="ApplicationRule",
-            source_addresses=source_addresses or ["*"],
-            target_fqdns=target_fqdns,
-            protocols=app_protocols,
-        )
-        target.rules = list(target.rules or []) + [new_rule]
-        log.info("Adding application rule '%s'", rule_name)
-        client.firewall_policy_rule_collection_groups.begin_create_or_update(
             cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME,
-            cfg.FIREWALL_RULE_COLLECTION_GROUP, rcg,
+            rcg_name or cfg.FIREWALL_RULE_COLLECTION_GROUP)
+        target = _find_target_collection(rcg, collection_name)
+        if target is None:
+            return {"success": False,
+                    "message": f"Rule collection '{collection_name or '(any filter)'}' "
+                               f"not found in RCG '{rcg.name}'."}
+        if any(r.name == rule_name for r in (target.rules or [])):
+            return {"success": False,
+                    "message": f"A rule named '{rule_name}' already exists in "
+                               f"'{target.name}' — use modify instead."}
+        conflict = _collection_kind_conflict(target, "application")
+        if conflict:
+            return {"success": False, "message": conflict}
+        new_rule = _build_fw_rule(rule_name, "application", source_addresses,
+                                  target_fqdns, app_protocols=protocols)
+        target.rules = list(target.rules or []) + [new_rule]
+        log.info("Adding application rule '%s' to %s/%s", rule_name, rcg.name, target.name)
+        client.firewall_policy_rule_collection_groups.begin_create_or_update(
+            cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
         ).result()
-        return {"success": True, "message": f"Application rule '{rule_name}' added for {target_fqdns}."}
+        return {"success": True,
+                "message": f"Application rule '{rule_name}' added to {rcg.name}/{target.name} "
+                           f"for {target_fqdns}."}
     except Exception as exc:
         log.error("add_firewall_application_rule failed: %s", exc)
         return {"success": False, "message": str(exc)}

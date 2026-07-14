@@ -75,6 +75,11 @@ SETTINGS_SPEC = {
                                 help="ZPA R&D connector subnet — routed into a spoke's UDR when ZPA routing is requested."),
     "UDR_NAME_1":         _f("routing", "Hub UDR #1", help="Legacy pair updated by 'add routes to both hub UDRs'."),
     "UDR_NAME_2":         _f("routing", "Hub UDR #2"),
+    "SPOKE_DEFAULT_ROUTES": _f("routing", "Spoke default routes",
+                               "udr-to-azurevpn1=10.108.201.0/25, udr-to-azurevpn2=10.108.201.128/25, "
+                               "udr-to-default=0.0.0.0/0, udr-to-zpa-rnd=10.110.5.32/27",
+                               help="name=prefix pairs (comma-separated) added to every new spoke route "
+                                    "table. Next hop is always the firewall private IP above."),
 
     # ── Peering defaults ──
     "PEERING_ALLOW_VNET_ACCESS":       _f("peering", "Allow virtual network access", "true",  type="bool"),

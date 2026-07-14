@@ -11,7 +11,7 @@ import audit
 import search
 import settings_store
 from config import cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view
-from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus, RequestType
+from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus, RequestType, FwCollection
 from naming import render_name
 import notifications
 
@@ -311,6 +311,68 @@ def admin_settings_reset():
                     "is_set": bool(raw) if spec["secret"] else None})
 
 
+# ── Firewall collection definitions (one-time admin setup) ─────────────────
+
+@app.route("/api/admin/firewall/collections", methods=["GET", "POST"])
+@require_admin
+def fw_collections():
+    if request.method == "POST":
+        data = request.get_json(force=True) or {}
+        rcg = str(data.get("rcg", "")).strip()
+        col = str(data.get("collection", "")).strip()
+        desc = str(data.get("description", "")).strip()[:300]
+        act = str(data.get("action", "Allow")).strip().title()
+        try:
+            prio = int(data.get("priority", 200))
+        except (TypeError, ValueError):
+            prio = 0
+        if not rcg or not col:
+            return jsonify({"error": "Rule collection group and rule collection names are required."}), 400
+        if act not in ("Allow", "Deny"):
+            return jsonify({"error": "Action must be Allow or Deny."}), 400
+        if not (100 <= prio <= 65000):
+            return jsonify({"error": "Priority must be between 100 and 65000."}), 400
+        if FwCollection.query.filter_by(rcg=rcg, collection=col).first():
+            return jsonify({"error": f"'{rcg} / {col}' is already defined."}), 400
+        row = FwCollection(rcg=rcg, collection=col, priority=prio, action=act,
+                           description=desc or None)
+        db.session.add(row)
+        db.session.commit()
+        audit.record("fw_collection_defined", actor=current_actor(), actor_role="admin",
+                     summary=f"Firewall collection defined: {rcg} / {col} ({act}, prio {prio})",
+                     data=row.to_dict())
+        return jsonify({"success": True, "item": row.to_dict()})
+
+    include_azure = request.args.get("azure") == "1"
+    defined = [f.to_dict() for f in
+               FwCollection.query.order_by(FwCollection.rcg, FwCollection.priority).all()]
+    azure_list, azure_error = [], None
+    if include_azure:
+        import azure_tools
+        st = azure_tools.get_firewall_policy_status()
+        if st.get("success") and st.get("policy_exists"):
+            azure_list = [{"rcg": c["rcg"], "collection": c["name"], "priority": c["priority"],
+                           "action": c["action"], "filter": c["filter"],
+                           "rule_type": c.get("rule_type", ""),
+                           "rules": len(c["rules"])} for c in st["collections"]]
+        else:
+            azure_error = st.get("message")
+    return jsonify({"defined": defined, "azure": azure_list, "azure_error": azure_error})
+
+
+@app.route("/api/admin/firewall/collections/<int:cid>/delete", methods=["POST"])
+@require_admin
+def fw_collections_delete(cid):
+    row = FwCollection.query.get_or_404(cid)
+    info = row.to_dict()
+    db.session.delete(row)
+    db.session.commit()
+    audit.record("fw_collection_removed", actor=current_actor(), actor_role="admin",
+                 summary=f"Firewall collection definition removed: {info['rcg']} / {info['collection']}",
+                 data=info)
+    return jsonify({"success": True})
+
+
 @app.route("/api/admin/settings/test-azure", methods=["POST"])
 @require_admin
 def admin_settings_test_azure():
@@ -592,7 +654,45 @@ def request_detail(req_id):
     req = SpokeRequest.query.get_or_404(req_id)
     history = audit.list_entries(request_id=req_id, limit=50)
     return render_template("request_detail.html", req=req, RequestStatus=RequestStatus,
-                           history=history)
+                           history=history, done_actions=_done_actions(req),
+                           spoke_default_routes=_spoke_default_routes(),
+                           fw_private_ip=cfg.HUB_FIREWALL_PRIVATE_IP)
+
+
+@app.route("/requests/<int:req_id>/complete-manual", methods=["POST"])
+@require_admin
+def request_complete_manual(req_id):
+    """
+    Escape hatch: mark a request completed when the work was done manually
+    outside the portal. Requires a note saying what was done; fully audited.
+    """
+    req = SpokeRequest.query.get_or_404(req_id)
+    if req.status in RequestType.TERMINALS:
+        return jsonify({"error": f"Request is already {req.status_label()}."}), 400
+    final = req.workflow()[-1]
+    if req.status == final:
+        return jsonify({"error": "Request is already completed."}), 400
+    note = str((request.get_json(force=True) or {}).get("note", "")).strip()
+    if not note:
+        return jsonify({"error": "Please describe what was done manually outside the portal."}), 400
+
+    old = req.status
+    req.status = final
+    req.updated_at = datetime.utcnow()
+    stamp = (f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] Completed manually outside "
+             f"the portal by {current_actor()}: {note}")
+    req.notes = f"{req.notes}\n{stamp}" if req.notes else stamp
+    db.session.commit()
+    audit.record("completed_manually", actor=current_actor(), actor_role="admin", request_id=req.id,
+                 summary=f"Marked {RequestStatus.label(final)} — done manually outside the portal: "
+                         f"{note[:200]}",
+                 data={"old": old, "new": final, "note": note[:400]})
+    try:
+        notifications.notify_status_changed(req)
+    except Exception:
+        pass
+    return jsonify({"success": True, "status": final,
+                    "message": f"Marked {RequestStatus.label(final)} (manual completion noted)."})
 
 
 @app.route("/admin/audit")
@@ -723,7 +823,8 @@ TYPE_REQUIRED_DETAILS = {
     RequestType.ZPA_RND_ROUTING:   ["spoke_vnet_name", "spoke_cidr"],
     RequestType.ZPA_OTHER_ROUTING: ["spoke_vnet_name", "spoke_cidr", "connector_name"],
     RequestType.SUBNET_ADDITIONAL: ["vnet_name", "subnet_size"],
-    RequestType.VNET_DECOMMISSION: ["vnet_name", "resource_group", "confirm"],
+    RequestType.VNET_DECOMMISSION: ["vnet_name", "resource_group", "confirm",
+                                    "created_by_admin", "manual_changes"],
     RequestType.DNS:               ["dns_kind", "zone"],
     RequestType.OTHER:             ["description"],
 }
@@ -744,6 +845,28 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     missing = [k for k in TYPE_REQUIRED_DETAILS.get(request_type, []) if not details.get(k)]
     if missing:
         return {"error": "Missing required fields: " + ", ".join(missing)}, 400
+
+    # Firewall guard: catch bad input at submission time, not at apply time.
+    if request_type == RequestType.FIREWALL_POLICY:
+        _s, dests, _ip, _po, _ap, perrors = _fw_params(details)
+        fw_action = (details.get("action") or "add").lower()
+        if perrors and fw_action in ("add", "modify"):
+            return {"error": "; ".join(perrors)}, 400
+        if (details.get("rule_kind") == "application" and fw_action in ("add", "modify")):
+            bad = _fqdn_errors(dests)
+            if bad:
+                return {"error": "Application rules only accept FQDN destinations "
+                                 "(e.g. *.example.com, *.presight.ai) — these are IP addresses: "
+                                 + ", ".join(bad) + ". Choose a network rule for IP destinations."}, 400
+
+    # Decommission guard: manual changes made outside the portal must be removed
+    # by the requester before the admin will decommission the VNET.
+    if (request_type == RequestType.VNET_DECOMMISSION
+            and details.get("manual_changes") == "yes"
+            and not details.get("manual_changes_removed")):
+        return {"error": "You reported manual changes outside this portal. Please remove them "
+                         "(extra subnets, NSGs, private endpoints, attached devices, peerings…) "
+                         "and then confirm removal before submitting the decommission request."}, 400
 
     req_id = create_spoke_request(
         cidr_needed="", purpose=purpose, requester_name=requester_name, ip_range="",
@@ -816,23 +939,67 @@ def requester_new_request():
     azure = {k: str(data.get(k, "")).strip() for k in
              ("subscription_id", "resource_group", "vnet_name", "region",
               "subnet_name", "subnet_size", "subnet_purpose")}
+    subnets = []
+    for s in (data.get("subnets") or []):
+        name, size = str(s.get("name", "")).strip(), str(s.get("size", "")).strip()
+        if name or size:
+            subnets.append({"name": name, "size": size,
+                            "purpose": str(s.get("purpose", "")).strip()})
+    if not subnets and azure["subnet_name"]:            # legacy single-subnet payload
+        subnets = [{"name": azure["subnet_name"], "size": azure["subnet_size"],
+                    "purpose": azure["subnet_purpose"]}]
     if deployment_mode == "admin":
-        required = ("subscription_id", "resource_group", "vnet_name", "region",
-                    "subnet_name", "subnet_size")
-        missing = [k for k in required if not azure[k]]
+        missing = [k for k in ("subscription_id", "resource_group", "vnet_name", "region")
+                   if not azure[k]]
         if missing:
             return jsonify({"error": "Admin-deploy requires: " + ", ".join(missing)}), 400
+        if not subnets:
+            return jsonify({"error": "Admin-deploy requires at least one subnet."}), 400
+        if any(not s["name"] or not s["size"] for s in subnets):
+            return jsonify({"error": "Every subnet needs a name and a size."}), 400
+
+    # Internet access requested for the spoke (via hub firewall)
+    internet_access = str(data.get("internet_access", "")).strip().lower()
+    internet_dest = str(data.get("internet_dest", "")).strip()
+    internet_ports = str(data.get("internet_ports", "")).strip()
+    if internet_access and internet_access not in ("full", "network", "application", "none"):
+        return jsonify({"error": "Invalid internet access option."}), 400
+    if internet_access in ("network", "application"):
+        _s, dests, _ip, _po, _ap, perrors = _fw_params(
+            {"source": "", "destination": internet_dest, "ports_protocol": internet_ports})
+        if perrors:
+            return jsonify({"error": "; ".join(perrors)}), 400
+        if not dests:
+            return jsonify({"error": f"A {internet_access} internet rule needs destination(s)."}), 400
+        if internet_access == "application":
+            bad = _fqdn_errors(dests)
+            if bad:
+                return jsonify({"error": "Application rules only accept FQDN destinations "
+                                         "(e.g. *.presight.ai) — these are IPs: "
+                                         + ", ".join(bad)}), 400
+
+    details_payload = {}
+    if subnets:
+        details_payload["subnets"] = subnets
+    if internet_access:
+        details_payload["internet_access"] = internet_access
+        if internet_dest:
+            details_payload["internet_dest"] = internet_dest
+        if internet_ports:
+            details_payload["internet_ports"] = internet_ports
 
     try:
         req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range,
                                       hub_integration, requester_email=requester_email or None,
-                                      deployment_mode=deployment_mode)
+                                      deployment_mode=deployment_mode,
+                                      details=details_payload or None)
         if deployment_mode == "admin":
             from db_utils import upsert_vnet_info
+            first = subnets[0]
             upsert_vnet_info(req_id, subscription_id=azure["subscription_id"],
                              resource_group=azure["resource_group"], vnet_name=azure["vnet_name"],
-                             region=azure["region"], subnet_name=azure["subnet_name"],
-                             subnet_size=azure["subnet_size"], subnet_purpose=azure["subnet_purpose"] or None)
+                             region=azure["region"], subnet_name=first["name"],
+                             subnet_size=first["size"], subnet_purpose=first["purpose"] or None)
         req = get_spoke_request(req_id)
         audit.record("request_created", actor=requester_name, actor_role="requester", request_id=req_id,
                      summary=f"New VNET request: /{cidr_needed} in {ip_range} — {purpose[:100]}",
@@ -1000,6 +1167,69 @@ def admin_deallocate_api():
     return result, 200, {"Content-Type": "application/json"}
 
 
+def _fw_params(details: dict):
+    """
+    Parse the firewall-request details into SDK-ready parameters.
+
+    ports_protocol accepts comma/semicolon-separated entries in any of these
+    shapes: "TCP/443", "TCP 443", "TCP:443", "https:443", "http 8080", "443",
+    "udp", "*". Unrecognised entries are returned as errors — they must never
+    silently fall back to Any/*.
+
+    Returns (sources, destinations, ip_protocols, ports, app_protocols, errors).
+    """
+    import re
+
+    def _split(v):
+        return [s.strip() for s in str(v or "").replace(";", ",").split(",") if s.strip()]
+
+    sources = _split(details.get("source")) or ["*"]
+    dests = _split(details.get("destination"))
+    ip_protocols, ports, app_protocols, errors = [], [], [], []
+    for part in _split(details.get("ports_protocol")):
+        m = re.match(r"(?i)^([a-z]+)?[\s/:]*(\d+|\*)?$", part)
+        proto = (m.group(1) or "").upper() if m else None
+        port = (m.group(2) or "") if m else ""
+        if not m or (not proto and not port):
+            errors.append(f"Unrecognised ports/protocol entry: '{part}' "
+                          f"(use e.g. TCP/443, https:443 or a bare port)")
+            continue
+        if proto in ("HTTP", "HTTPS"):
+            app_protocols.append({
+                "protocol_type": "Https" if proto == "HTTPS" else "Http",
+                "port": int(port) if port.isdigit() else (443 if proto == "HTTPS" else 80)})
+            if port and port not in ports:
+                ports.append(port)
+        elif proto in ("TCP", "UDP", "ICMP", "ANY"):
+            p = "Any" if proto == "ANY" else proto
+            if p not in ip_protocols:
+                ip_protocols.append(p)
+            if port and port not in ports:
+                ports.append(port)
+        elif not proto:                       # bare port number or "*"
+            if port not in ports:
+                ports.append(port)
+            app_protocols.append({"protocol_type": "Https" if port in ("443", "*") else "Http",
+                                  "port": int(port) if port.isdigit() else 443})
+        else:
+            errors.append(f"Unknown protocol '{proto}' in '{part}' "
+                          f"(network: TCP/UDP/ICMP/Any; application: http/https)")
+    return (sources, dests, ip_protocols or ["Any"], ports or ["*"],
+            app_protocols or [{"protocol_type": "Https", "port": 443}], errors)
+
+
+def _fqdn_errors(dests: list) -> list:
+    """Application-rule targets must be FQDNs — IPs are rejected by Azure."""
+    bad = []
+    for d in dests:
+        try:
+            ipaddress.ip_network(str(d).strip(), strict=False)
+            bad.append(d)
+        except ValueError:
+            pass
+    return bad
+
+
 @app.route("/api/admin/azure-action/<int:req_id>", methods=["POST"])
 @require_admin
 def admin_azure_action(req_id):
@@ -1042,6 +1272,7 @@ def admin_azure_action(req_id):
             next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP, subscription_id=cfg.HUB_SUBSCRIPTION_ID,
         )
         _audit_azure(res)
+        _auto_advance(req)
         return jsonify(res), (200 if res.get("success") else 207)
 
     if action == "spoke_udr_zpa":
@@ -1063,6 +1294,159 @@ def admin_azure_action(req_id):
             subscription_id=details.get("spoke_subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID,
         )
         _audit_azure(res)
+        _auto_advance(req)
+        return jsonify(res), (200 if res.get("success") else 207)
+
+    # ── Firewall policy actions — driven by request details ──
+    if action in ("fw_check", "fw_ensure_policy", "fw_apply"):
+        body = request.get_json(force=True) or {}
+        rcg_sel = str(body.get("rcg", "")).strip()
+        col_sel = str(body.get("collection", "")).strip()
+        fw_action = (details.get("action") or "add").lower()
+        rule_kind = (details.get("rule_kind") or "network").lower()
+        rule_name = (details.get("rule_name") or "").strip() \
+                    or sanitize(f"req-{req.id}-{rule_kind}-rule")
+        sources, dests, ip_protocols, ports, app_protocols, perrors = _fw_params(details)
+
+        if action == "fw_check":
+            res = azure_tools.get_firewall_policy_status(rule_name=rule_name)
+            res["rule_name"] = rule_name
+            res["fw_action"] = fw_action
+            if perrors:
+                res["param_errors"] = perrors
+            _audit_azure(res)
+            return jsonify(res), (200 if res.get("success") else 207)
+
+        if action == "fw_ensure_policy":
+            fc = None
+            if rcg_sel and col_sel:
+                fc = FwCollection.query.filter_by(rcg=rcg_sel, collection=col_sel).first()
+            res = azure_tools.ensure_firewall_policy(
+                rcg_name=rcg_sel or None, collection_name=col_sel or None,
+                rcg_priority=fc.priority if fc else 200,
+                collection_priority=fc.priority if fc else 200,
+                action=fc.action if fc else "Allow")
+            _audit_azure(res)
+            return jsonify(res), (200 if res.get("success") else 207)
+
+        # fw_apply — perform the requested add / modify / delete
+        if perrors and fw_action in ("add", "modify"):
+            return jsonify({"error": "Fix the request's ports/protocol first: "
+                                     + "; ".join(perrors)}), 400
+        if fw_action in ("add", "modify") and not dests:
+            return jsonify({"error": "Request has no destination in its details."}), 400
+        if fw_action in ("add", "modify") and (not rcg_sel or not col_sel):
+            return jsonify({"error": "Select a rule collection group and rule collection "
+                                     "before applying."}), 400
+        if fw_action in ("add", "modify") and rule_kind == "application":
+            bad = _fqdn_errors(dests)
+            if bad:
+                return jsonify({"error": "Application rules only accept FQDN destinations "
+                                         "(e.g. *.example.com) — these are IPs: "
+                                         + ", ".join(bad) + ". Use a network rule instead."}), 400
+        if fw_action == "delete":
+            res = azure_tools.remove_firewall_rule(
+                rule_name, rcg_name=rcg_sel or None, collection_name=col_sel or None)
+        elif fw_action == "modify":
+            res = azure_tools.replace_firewall_rule(
+                rule_name, rule_kind, sources, dests,
+                ports=ports, ip_protocols=ip_protocols, app_protocols=app_protocols,
+                rcg_name=rcg_sel or None, collection_name=col_sel or None)
+        else:  # add
+            if rule_kind == "application":
+                res = azure_tools.add_firewall_application_rule(
+                    rule_name, dests, app_protocols, source_addresses=sources,
+                    rcg_name=rcg_sel, collection_name=col_sel)
+            else:
+                res = azure_tools.add_firewall_network_rule(
+                    rule_name, dests, ports, protocol=ip_protocols, source_addresses=sources,
+                    rcg_name=rcg_sel, collection_name=col_sel)
+        if res.get("success") and req.status in (RequestStatus.SUBMITTED, RequestStatus.IN_REVIEW):
+            req.status = RequestStatus.RULE_IMPLEMENTED
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
+            res["message"] = str(res.get("message", "")) + " Status set to Rule Implemented."
+        _audit_azure(res)
+        return jsonify(res), (200 if res.get("success") else 207)
+
+    # ── VNET decommission actions — driven by request details ──
+    if action in ("decom_check", "decom_execute", "decom_release"):
+        vnet_name = details.get("vnet_name", "")
+        rg        = details.get("resource_group", "")
+        sub       = (details.get("subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID
+                     or cfg.HUB_SUBSCRIPTION_ID)
+        cidr      = details.get("allocated_cidr") or req.allocated_subnet or ""
+        if action in ("decom_check", "decom_execute") and not sub:
+            return jsonify({"error": "No subscription ID — the request details don't include one and "
+                                     "no default spoke/hub subscription is configured in Settings."}), 400
+
+        if action == "decom_check":
+            if not vnet_name or not rg:
+                return jsonify({"error": "Request details are missing the VNET name/resource group."}), 400
+            res = azure_tools.decommission_check(sub, rg, vnet_name)
+            _audit_azure(res)
+            return jsonify(res), (200 if res.get("success") else 207)
+
+        if action == "decom_execute":
+            if not vnet_name or not rg:
+                return jsonify({"error": "Request details are missing the VNET name/resource group."}), 400
+            steps = []
+
+            def _step(label, res):
+                steps.append({"label": label, "success": bool(res.get("success")),
+                              "dry_run": bool(res.get("dry_run")),
+                              "message": str(res.get("message", ""))})
+                return bool(res.get("success"))
+
+            ok = _step("Delete hub ↔ spoke peerings",
+                       azure_tools.delete_hub_spoke_peerings(sub, rg, vnet_name))
+            if cidr:
+                for table in filter(None, [(cfg.UDR_GATEWAY_NAME or cfg.UDR_NAME_1),
+                                           (cfg.UDR_ZPA_NAME or cfg.UDR_NAME_2)]):
+                    ok = _step(f"Remove spoke routes from '{table}'",
+                               azure_tools.remove_routes_by_prefix(
+                                   table, cfg.UDR_RESOURCE_GROUP, cidr,
+                                   subscription_id=cfg.HUB_SUBSCRIPTION_ID)) and ok
+            if cfg.FIREWALL_POLICY_NAME:
+                rule_name = render_name("TPL_FW_RULE_NAME", vnet=vnet_name, request_id=req.id,
+                                        cidr_mask=cidr.split("/")[-1] if cidr else "", purpose=req.purpose)
+                ok = _step(f"Remove firewall rule '{rule_name}'",
+                           azure_tools.remove_firewall_rule(rule_name)) and ok
+            ok = _step(f"Delete VNET '{vnet_name}'",
+                       azure_tools.delete_spoke_vnet(sub, rg, vnet_name)) and ok
+
+            if ok and req.status in (RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS):
+                req.status = RequestStatus.RESOURCES_REMOVED
+                req.updated_at = datetime.utcnow()
+                db.session.commit()
+            res = {"success": ok, "steps": steps,
+                   "message": ("Azure resources removed — status set to Resources Removed."
+                               if ok else "Some decommission steps failed — see details below.")}
+            _audit_azure(res)
+            return jsonify(res), (200 if ok else 207)
+
+        # decom_release — app-side only: release the CIDR from the inventory
+        if not cidr:
+            return jsonify({"error": "No CIDR to release — the request has no allocated/declared CIDR."}), 400
+        from db_utils import deallocate_subnet_db
+        ok, msg = deallocate_subnet_db(cidr)
+        already_gone = not ok and "not found" in str(msg).lower()
+        if ok or already_gone:
+            req.allocated_subnet = None
+            if req.status in (RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
+                              RequestStatus.RESOURCES_REMOVED):
+                req.status = RequestStatus.CIDR_RELEASED
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
+            res = {"success": True,
+                   "message": (f"CIDR {cidr} released from the app inventory."
+                               if ok else f"CIDR {cidr} was not in the inventory — assignment cleared anyway.")}
+        else:
+            res = {"success": False, "message": msg}
+        audit.record("cidr_deallocated" if ok else "azure_action", actor=current_actor(),
+                     actor_role="admin", request_id=req.id,
+                     summary=f"Decommission release — {res['message'][:200]}",
+                     data={"action": action, "subnet": cidr, "success": res["success"]})
         return jsonify(res), (200 if res.get("success") else 207)
 
     addr = req.allocated_subnet
@@ -1077,7 +1461,8 @@ def admin_azure_action(req_id):
         res = azure_tools.create_spoke_vnet(vi.subscription_id, vi.resource_group,
                                             vi.vnet_name, vi.region, addr,
                                             subnet_name=vi.subnet_name or "default",
-                                            subnet_size=vi.subnet_size)
+                                            subnet_size=vi.subnet_size,
+                                            subnets=details.get("subnets") or None)
         if res.get("success") and req.status == RequestStatus.CIDR_ASSIGNED:
             req.status = RequestStatus.VNET_CREATED
             req.updated_at = datetime.utcnow()
@@ -1090,6 +1475,98 @@ def admin_azure_action(req_id):
         res = azure_tools.peer_hub_vnet(spoke_subscription_id=vi.subscription_id,
                                         spoke_resource_group=vi.resource_group,
                                         spoke_vnet_name=vi.vnet_name, spoke_address_space=addr)
+    elif action == "internet_rule":
+        # Requester asked for a specific network/application internet rule, not allow-all
+        ia = details.get("internet_access", "")
+        if ia not in ("network", "application"):
+            return jsonify({"error": "This request did not ask for a specific internet rule."}), 400
+        body = request.get_json(force=True) or {}
+        rcg_sel = str(body.get("rcg", "")).strip()
+        col_sel = str(body.get("collection", "")).strip()
+        if not rcg_sel or not col_sel:
+            return jsonify({"error": "Select a rule collection group and rule collection "
+                                     "before applying."}), 400
+        _s, dests, ip_protocols, ports, app_protocols, perrors = _fw_params(
+            {"source": addr, "destination": details.get("internet_dest", ""),
+             "ports_protocol": details.get("internet_ports", "")})
+        if perrors:
+            return jsonify({"error": "Fix the request's ports/protocol first: "
+                                     + "; ".join(perrors)}), 400
+        if not dests:
+            return jsonify({"error": "The request has no internet destinations in its details."}), 400
+        rule_name = sanitize(f"{vi.vnet_name}-inet-req{req.id}")
+        if ia == "application":
+            bad = _fqdn_errors(dests)
+            if bad:
+                return jsonify({"error": "Application rules only accept FQDN destinations — "
+                                         "these are IPs: " + ", ".join(bad)}), 400
+            res = azure_tools.add_firewall_application_rule(
+                rule_name, dests, app_protocols, source_addresses=[addr],
+                rcg_name=rcg_sel, collection_name=col_sel)
+        else:
+            res = azure_tools.add_firewall_network_rule(
+                rule_name, dests, ports, protocol=ip_protocols, source_addresses=[addr],
+                rcg_name=rcg_sel, collection_name=col_sel)
+    elif action == "spoke_route_table":
+        # Create the spoke route table (default + additional routes) and assign
+        # it to every workload subnet of the spoke VNET.
+        body = request.get_json(force=True) or {}
+        extra, bad = [], []
+        for r in (body.get("additional_routes") or []):
+            name = sanitize(str(r.get("name", "")).strip() or "route")
+            prefix = str(r.get("prefix", "")).strip()
+            try:
+                ipaddress.ip_network(prefix, strict=False)
+                extra.append({"name": name, "prefix": prefix})
+            except ValueError:
+                bad.append(prefix or "(empty)")
+        if bad:
+            return jsonify({"error": "Invalid additional route prefix(es): " + ", ".join(bad)}), 400
+
+        rt_name = render_name("TPL_ROUTE_TABLE_NAME", vnet=vi.vnet_name, request_id=req.id)
+        steps = []
+
+        def _step(label, r):
+            steps.append({"label": label, "success": bool(r.get("success")),
+                          "dry_run": bool(r.get("dry_run")),
+                          "message": str(r.get("message", ""))})
+            return bool(r.get("success"))
+
+        ok = _step(f"Create route table '{rt_name}'",
+                   azure_tools.create_route_table(rt_name, vi.resource_group,
+                                                  location=vi.region,
+                                                  subscription_id=vi.subscription_id))
+        for r in _spoke_default_routes() + extra:
+            ok = _step(f"Route {r['name']} → {r['prefix']} via {cfg.HUB_FIREWALL_PRIVATE_IP}",
+                       azure_tools.add_route_to_table(
+                           rt_name, vi.resource_group, r["name"], r["prefix"],
+                           "VirtualAppliance", next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
+                           subscription_id=vi.subscription_id)) and ok
+        rt_id = (f"/subscriptions/{vi.subscription_id}/resourceGroups/{vi.resource_group}"
+                 f"/providers/Microsoft.Network/routeTables/{rt_name}")
+        skip = ("GatewaySubnet", "AzureFirewallSubnet", "AzureFirewallManagementSubnet",
+                "AzureBastionSubnet")
+        listing = azure_tools.list_vnet_subnets(vi.subscription_id, vi.resource_group, vi.vnet_name)
+        if listing.get("success"):
+            targets = [s["name"] for s in listing["subnets"] if s["name"] not in skip]
+        else:
+            # VNET not reachable (e.g. dry-run before deploy) — use the declared subnets
+            targets = [s.get("name") for s in (details.get("subnets") or []) if s.get("name")] \
+                      or ([vi.subnet_name] if vi.subnet_name else [])
+            steps.append({"label": "List spoke subnets", "success": bool(targets), "dry_run": False,
+                          "message": (f"Could not list live subnets ({listing.get('message', '')[:120]}) — "
+                                      f"using the request's declared subnet(s).") if targets else
+                                     "Could not list subnets and none are declared on the request."})
+            ok = ok and bool(targets)
+        for name in targets:
+            ok = _step(f"Assign route table to subnet '{name}'",
+                       azure_tools.assign_route_table_to_subnet(
+                           vi.subscription_id, vi.resource_group, vi.vnet_name,
+                           name, rt_id)) and ok
+        res = {"success": ok, "steps": steps,
+               "message": (f"Route table '{rt_name}' created and assigned to "
+                           f"{len(targets)} subnet(s)." if ok else
+                           "Some route-table steps failed — see details.")}
     elif action == "internet":
         rule_name = render_name("TPL_FW_RULE_NAME", vnet=vi.vnet_name, request_id=req.id,
                                 region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
@@ -1116,7 +1593,292 @@ def admin_azure_action(req_id):
                          f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
                  data={"action": action, "dry_run": bool(res.get("dry_run")),
                        "success": bool(res.get("success")), "message": str(res.get("message", ""))[:400]})
+    _auto_advance(req)
     return jsonify(res), (200 if res.get("success") else 207)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Cancel / Reject with automatic revert of deployed Azure changes
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Deployed-change keys in revert order (most-dependent first; reverse of deploy)
+_REVERT_ORDER = ["spoke_route_table", "spoke_udr_zpa", "zpa_route_to_spoke", "zpa_route",
+                 "gateway_route", "internet", "internet_rule", "fw_apply", "peer", "vnet"]
+
+_REVERT_LABELS = {
+    "spoke_route_table": "Unassign & delete the spoke route table",
+    "spoke_udr_zpa":     "Remove ZPA connection route from the spoke UDR",
+    "zpa_route_to_spoke": "Remove spoke route from the ZPA connector routing table",
+    "zpa_route":         "Remove spoke route from the hub ZPA routing table",
+    "gateway_route":     "Remove spoke route from the hub gateway routing table",
+    "internet":          "Remove the internet-egress firewall rule",
+    "internet_rule":     "Remove the requested internet firewall rule",
+    "fw_apply":          "Remove the firewall rule added by this request",
+    "peer":              "Delete hub ↔ spoke VNET peerings (both directions)",
+    "vnet":              "Delete the spoke VNET deployed by admin",
+}
+
+
+def _spoke_default_routes() -> list:
+    """Parse the SPOKE_DEFAULT_ROUTES setting: 'name=prefix, name=prefix, …'."""
+    import re
+    from naming import sanitize
+    out = []
+    for part in re.split(r"[,;\n]", cfg.SPOKE_DEFAULT_ROUTES or ""):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, prefix = part.split("=", 1)
+        name, prefix = sanitize(name.strip()), prefix.strip()
+        try:
+            ipaddress.ip_network(prefix, strict=False)
+        except ValueError:
+            continue
+        out.append({"name": name, "prefix": prefix})
+    return out
+
+
+def _done_actions(req) -> set:
+    """Portal actions that have succeeded for this request (dry-run included),
+    minus any that were later reverted. Drives button state + auto-status."""
+    done = set()
+    for e in reversed(audit.list_entries(request_id=req.id, limit=500)):
+        d = e.get("data") or {}
+        key = d.get("action")
+        if not key or not d.get("success"):
+            continue
+        if e["action"] in ("azure_action", "cidr_deallocated"):
+            done.add(key)
+        elif e["action"] == "azure_revert":
+            done.discard(key)
+    return done
+
+
+def _required_actions(req) -> set:
+    """Portal actions that must succeed before the request auto-completes."""
+    t = req.request_type or RequestType.VNET_NEW
+    d = req.get_details()
+    if t == RequestType.VNET_NEW and req.hub_integration:
+        required = {"peer", "gateway_route", "zpa_route"}
+        ia = d.get("internet_access") or "full"     # legacy requests = full internet
+        if ia == "full":
+            required.add("internet")
+        elif ia in ("network", "application"):
+            required.add("internet_rule")
+        return required
+    if t == RequestType.HUB_INTEGRATION:
+        return {"peer", "gateway_route", "zpa_route"}
+    if t in (RequestType.ZPA_RND_ROUTING, RequestType.ZPA_OTHER_ROUTING):
+        return {"zpa_route_to_spoke", "spoke_udr_zpa"}
+    return set()
+
+
+def _auto_advance(req):
+    """
+    Move the status forward based on what has actually been done via the
+    portal — statuses are never switched manually anymore.
+    """
+    t = req.request_type or RequestType.VNET_NEW
+    done = _done_actions(req)
+    required = _required_actions(req)
+    wf = req.workflow()
+    new = None
+    if t == RequestType.VNET_NEW and req.hub_integration:
+        if required and required <= done:
+            new = RequestStatus.HUB_INTEGRATED
+        elif done & required and req.status == RequestStatus.VNET_CREATED:
+            new = RequestStatus.HUB_INTEGRATION_IN_PROGRESS
+    elif t == RequestType.HUB_INTEGRATION:
+        if required <= done:
+            new = RequestStatus.HUB_INTEGRATED
+        elif done & required and req.status == RequestStatus.SUBMITTED:
+            new = RequestStatus.HUB_INTEGRATION_IN_PROGRESS
+    elif t in (RequestType.ZPA_RND_ROUTING, RequestType.ZPA_OTHER_ROUTING):
+        if required <= done:
+            new = RequestStatus.COMPLETED
+        elif "spoke_udr_zpa" in done:
+            new = RequestStatus.SPOKE_UDR_UPDATED
+        elif "zpa_route_to_spoke" in done:
+            new = RequestStatus.ZPA_ROUTE_ADDED
+    # Only ever move forward within the workflow
+    if (not new or new == req.status or new not in wf
+            or (req.status in wf and wf.index(new) <= wf.index(req.status))):
+        return
+    old = req.status
+    req.status = new
+    req.updated_at = datetime.utcnow()
+    db.session.commit()
+    audit.record("status_changed", actor="portal (auto)", actor_role="system", request_id=req.id,
+                 summary=f"Status: {RequestStatus.label(old)} → {RequestStatus.label(new)} "
+                         f"(automatic — driven by completed portal actions)",
+                 data={"old": old, "new": new, "auto": True, "done": sorted(done)})
+    try:
+        if new == RequestStatus.HUB_INTEGRATION_IN_PROGRESS:
+            notifications.notify_hub_in_progress(req)
+        elif new == RequestStatus.HUB_INTEGRATED:
+            notifications.notify_hub_integrated(req)
+        else:
+            notifications.notify_status_changed(req)
+    except Exception:
+        pass
+
+
+def _deployed_changes(req):
+    """
+    What has actually been deployed for this request, derived from the audit
+    trail: successful azure_action entries minus any later successful reverts.
+    Returns a list (in revert order) plus a CIDR-release entry when applicable.
+    """
+    entries = audit.list_entries(request_id=req.id, limit=500)
+    done = {}
+    for e in reversed(entries):                      # chronological
+        d = e.get("data") or {}
+        key = d.get("action")
+        if key not in _REVERT_ORDER or not d.get("success"):
+            continue
+        if e["action"] == "azure_action":
+            done[key] = {"dry_run": bool(d.get("dry_run"))}
+        elif e["action"] == "azure_revert":
+            done.pop(key, None)
+    # A firewall 'add' can be reverted by removing the rule; an applied modify or
+    # delete has no recorded previous state, so it isn't offered for auto-revert.
+    if "fw_apply" in done and (req.get_details().get("action") or "add") != "add":
+        done.pop("fw_apply")
+    changes = [{"key": k, "label": _REVERT_LABELS[k], "dry_run": done[k]["dry_run"]}
+               for k in _REVERT_ORDER if k in done]
+    if req.allocated_subnet and (req.request_type or RequestType.VNET_NEW) == RequestType.VNET_NEW:
+        changes.append({"key": "cidr", "dry_run": False,
+                        "label": f"Release CIDR {req.allocated_subnet} back to the pool"})
+    return changes
+
+
+def _revert_change(req, key):
+    """Undo one deployed change. Returns the azure_tools-style result dict."""
+    import azure_tools
+    from naming import sanitize
+    vi = req.vnet_info
+    details = req.get_details()
+    addr = req.allocated_subnet or ""
+
+    if key == "cidr":
+        from db_utils import deallocate_subnet_db
+        ok, msg = deallocate_subnet_db(addr)
+        if ok or "not found" in str(msg).lower():
+            req.allocated_subnet = None
+            db.session.commit()
+            return {"success": True, "message": f"CIDR {addr} released back to the pool."}
+        return {"success": False, "message": msg}
+
+    if key in ("vnet", "peer", "internet", "internet_rule", "gateway_route",
+               "zpa_route", "spoke_route_table"):
+        if not vi or not all([vi.subscription_id, vi.resource_group, vi.vnet_name]):
+            return {"success": False, "message": "VNET info missing — cannot compute what to revert."}
+
+    if key == "vnet":
+        return azure_tools.delete_spoke_vnet(vi.subscription_id, vi.resource_group, vi.vnet_name)
+    if key == "peer":
+        return azure_tools.delete_hub_spoke_peerings(vi.subscription_id, vi.resource_group, vi.vnet_name)
+    if key == "internet":
+        rule_name = render_name("TPL_FW_RULE_NAME", vnet=vi.vnet_name, request_id=req.id,
+                                region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
+        return azure_tools.remove_firewall_rule(rule_name)
+    if key == "internet_rule":
+        return azure_tools.remove_firewall_rule(sanitize(f"{vi.vnet_name}-inet-req{req.id}"))
+    if key == "spoke_route_table":
+        return azure_tools.delete_spoke_route_table(
+            vi.subscription_id, vi.resource_group, vi.vnet_name,
+            render_name("TPL_ROUTE_TABLE_NAME", vnet=vi.vnet_name, request_id=req.id))
+    if key in ("gateway_route", "zpa_route"):
+        table = (cfg.UDR_GATEWAY_NAME or cfg.UDR_NAME_1) if key == "gateway_route" \
+                else (cfg.UDR_ZPA_NAME or cfg.UDR_NAME_2)
+        if not table:
+            return {"success": False, "message": f"No routing table configured for {key}."}
+        route_name = render_name("TPL_ROUTE_NAME", vnet=vi.vnet_name, request_id=req.id,
+                                 region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
+        return azure_tools.delete_route_from_table(table, cfg.UDR_RESOURCE_GROUP, route_name,
+                                                   subscription_id=cfg.HUB_SUBSCRIPTION_ID)
+    if key == "zpa_route_to_spoke":
+        table = details.get("connector_route_table") or cfg.UDR_ZPA_NAME
+        if not table:
+            return {"success": False, "message": "No ZPA routing table configured."}
+        route_name = render_name("TPL_ROUTE_NAME",
+                                 vnet=details.get("spoke_vnet_name", f"req{req.id}"), request_id=req.id)
+        return azure_tools.delete_route_from_table(table, cfg.UDR_RESOURCE_GROUP, route_name,
+                                                   subscription_id=cfg.HUB_SUBSCRIPTION_ID)
+    if key == "fw_apply":
+        rule_kind = (details.get("rule_kind") or "network").lower()
+        rule_name = (details.get("rule_name") or "").strip() \
+                    or sanitize(f"req-{req.id}-{rule_kind}-rule")
+        return azure_tools.remove_firewall_rule(rule_name)
+    if key == "spoke_udr_zpa":
+        udr_name, udr_rg = details.get("spoke_udr_name", ""), details.get("spoke_udr_rg", "")
+        if not udr_name or not udr_rg:
+            return {"success": False, "message": "Spoke UDR name/resource group missing from details."}
+        return azure_tools.delete_route_from_table(
+            udr_name, udr_rg, sanitize(f"to-zpa-{details.get('connector_name', 'rnd')}"),
+            subscription_id=details.get("spoke_subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID)
+    return {"success": False, "message": f"Unknown change '{key}'."}
+
+
+@app.route("/api/admin/requests/<int:req_id>/deployed-changes")
+@require_admin
+def request_deployed_changes(req_id):
+    req = SpokeRequest.query.get_or_404(req_id)
+    return jsonify({"changes": _deployed_changes(req), "dry_run_mode": cfg.AZURE_DRY_RUN})
+
+
+@app.route("/api/admin/requests/<int:req_id>/terminate", methods=["POST"])
+@require_admin
+def request_terminate(req_id):
+    """
+    Cancel or reject a request, reverting every deployed Azure change first
+    (unless revert=false). Each revert step is audited individually.
+    """
+    req = SpokeRequest.query.get_or_404(req_id)
+    data = request.get_json(force=True) or {}
+    target = str(data.get("status", "")).strip()
+    do_revert = bool(data.get("revert", True))
+    if target not in RequestType.TERMINALS:
+        return jsonify({"error": "Target status must be CANCELLED or REJECTED."}), 400
+    if req.status in RequestType.TERMINALS:
+        return jsonify({"error": f"Request is already {req.status_label()}."}), 400
+
+    steps, all_ok = [], True
+    if do_revert:
+        for ch in _deployed_changes(req):
+            res = _revert_change(req, ch["key"])
+            ok = bool(res.get("success"))
+            all_ok = all_ok and ok
+            steps.append({"key": ch["key"], "label": ch["label"], "success": ok,
+                          "dry_run": bool(res.get("dry_run")), "message": str(res.get("message", ""))})
+            audit.record("azure_revert", actor=current_actor(), actor_role="admin", request_id=req.id,
+                         summary=f"Revert '{ch['key']}' — "
+                                 f"{'dry-run' if res.get('dry_run') else ('ok' if ok else 'FAILED')}: "
+                                 f"{str(res.get('message', ''))[:200]}",
+                         data={"action": ch["key"], "success": ok,
+                               "dry_run": bool(res.get("dry_run")),
+                               "message": str(res.get("message", ""))[:400]})
+
+    old_status = req.status
+    req.status = target
+    req.updated_at = datetime.utcnow()
+    reverted = sum(1 for s in steps if s["success"])
+    if steps:
+        note = (f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] "
+                f"{RequestStatus.label(target)} with revert: {reverted}/{len(steps)} change(s) undone.")
+        req.notes = f"{req.notes}\n{note}" if req.notes else note
+    db.session.commit()
+    audit.record("status_changed", actor=current_actor(), actor_role="admin", request_id=req.id,
+                 summary=f"Status: {RequestStatus.label(old_status)} → {RequestStatus.label(target)}"
+                         + (f" (reverted {reverted}/{len(steps)} deployed change(s))" if steps else ""),
+                 data={"old": old_status, "new": target, "reverted": reverted, "revert_steps": len(steps)})
+    try:
+        notifications.notify_status_changed(req)
+    except Exception:
+        pass
+    return jsonify({"success": all_ok, "status": target, "steps": steps,
+                    "message": f"Request {RequestStatus.label(target).lower()}."
+                               + (f" {reverted}/{len(steps)} change(s) reverted." if steps else "")})
 
 
 # ═══════════════════════════════════════════════════════════════════════════

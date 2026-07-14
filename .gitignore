@@ -34,3 +34,4 @@ data/*.db-wal
 # OS
 .DS_Store
 Thumbs.db
+data/*.log

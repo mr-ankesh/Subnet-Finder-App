@@ -115,31 +115,13 @@
         </a>
         {% endif %}
 
-        {% if req.status == RequestStatus.VNET_CREATED and req.hub_integration %}
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">VNET is created. Run the Azure actions below, then mark hub integration in progress.</p>
-        <button class="btn btn-glow w-100 mb-2" onclick="updateStatus('{{ RequestStatus.HUB_INTEGRATION_IN_PROGRESS }}')">
-          <i class="bi bi-gear-wide-connected me-2"></i>Mark Hub Integration In Progress
-        </button>
-        {% endif %}
-
-        {# ── Generic workflow advance for non-VNET request types ── #}
         {% set wf = req.workflow() %}
         {% set terminals = [RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
-        {% if rtype != 'vnet_new' and req.status in wf and req.status != wf[-1] %}
-        {% set next_step = wf[wf.index(req.status) + 1] %}
-        <button class="btn btn-glow w-100 mb-2" onclick="updateStatus('{{ next_step }}')">
-          <i class="bi bi-arrow-right-circle me-2"></i>Advance to: {{ RequestStatus.label(next_step) }}
-        </button>
-        {% if wf.index(req.status) + 2 < wf|length + 1 and wf|length > 2 %}
-        <div style="display:flex;gap:8px;margin-bottom:8px;">
-          <select class="form-select" id="statusSelect" style="flex:1;font-size:12.5px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
-            {% for s in wf %}{% if s != req.status %}
-            <option value="{{ s }}">{{ RequestStatus.label(s) }}</option>
-            {% endif %}{% endfor %}
-          </select>
-          <button class="btn btn-glass btn-sm" onclick="updateStatus(document.getElementById('statusSelect').value)">Set</button>
-        </div>
-        {% endif %}
+        {% if req.status not in terminals and req.status != wf[-1] %}
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+          <i class="bi bi-magic me-1"></i>Status advances <strong>automatically</strong> as portal
+          actions complete — there is no manual status switch.
+        </p>
         {% endif %}
 
         {# ── ZPA routing actions ── #}
@@ -149,12 +131,24 @@
             <span><i class="bi bi-shield-lock"></i> ZPA Routing Actions</span>
             {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
           </div>
+          {% if 'zpa_route_to_spoke' in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Spoke Route in ZPA Table — Done
+          </button>
+          {% else %}
           <button class="btn btn-glass w-100 mb-2" onclick="runAction('zpa_route_to_spoke', this)">
             <i class="bi bi-signpost-split me-2"></i>Add Spoke Route — ZPA Routing Table
           </button>
+          {% endif %}
+          {% if 'spoke_udr_zpa' in done_actions %}
+          <button class="btn btn-glass w-100 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>ZPA Connection Route in Spoke UDR — Done
+          </button>
+          {% else %}
           <button class="btn btn-glass w-100" onclick="runAction('spoke_udr_zpa', this)">
             <i class="bi bi-signpost-2 me-2"></i>Add ZPA Connection Route — Spoke UDR
           </button>
+          {% endif %}
           <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
             Step 1 routes the spoke CIDR via the ZPA connector table; step 2 routes the ZPA connection
             subnet (from Settings) into the spoke's own route table.
@@ -163,11 +157,108 @@
         </div>
         {% endif %}
 
-        {% if req.status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS %}
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Hub integration is in progress. Run the Azure actions below, then mark it complete.</p>
-        <button class="btn btn-glow w-100" onclick="updateStatus('{{ RequestStatus.HUB_INTEGRATED }}')">
-          <i class="bi bi-check-all me-2"></i>Mark Hub Integrated (Complete)
-        </button>
+        {# ── Firewall Policy actions ── #}
+        {% if rtype == 'firewall_policy' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        {% set fwd = req.get_details() %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-bricks"></i> Firewall Policy Actions — {{ (fwd.get('action') or 'add') | upper }} {{ (fwd.get('rule_kind') or 'network') | title }} Rule</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <button class="btn btn-glass w-100 mb-2" onclick="runFwCheck(this)">
+            <i class="bi bi-clipboard-pulse me-2"></i>1 · Check Policy &amp; Rule Status
+          </button>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+            <div>
+              <label style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Rule Collection Group *</label>
+              <select class="form-select" id="fwRcgSel" onchange="fwRcgChanged()"
+                      style="font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+                <option value="">— select —</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Rule Collection *</label>
+              <select class="form-select" id="fwColSel"
+                      style="font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+                <option value="">— select —</option>
+              </select>
+            </div>
+          </div>
+          <div id="fwColHint" style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Loading collections…</div>
+          <button class="btn btn-glass w-100 mb-2" onclick="runFwEnsure(this)">
+            <i class="bi bi-plus-square me-2"></i>Create Policy / Selected Collection if Missing
+          </button>
+          {% if 'fw_apply' in done_actions %}
+          <button class="btn btn-glass w-100 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Request Applied — Done
+          </button>
+          {% else %}
+          <button class="btn btn-glow w-100" id="fwApplyBtn" onclick="runFwApply(this)">
+            <i class="bi bi-lightning-charge me-2"></i>2 · Apply Request —
+            {{ {'add': 'Add Rule', 'modify': 'Modify Rule', 'delete': 'Delete Rule'}.get(fwd.get('action') or 'add', 'Apply') }}
+          </button>
+          {% endif %}
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            1 is read-only: verifies the policy and shows the rule's current definition. Pick the target
+            rule collection group &amp; collection (defined in Settings → Firewall, merged with live Azure) —
+            there is no default. Modify/delete always fetch and display the current rule before you confirm.
+          </div>
+          <div id="fwResults" style="display:none;margin-top:10px;"></div>
+        </div>
+        {% endif %}
+
+        {# ── VNET Decommission actions ── #}
+        {% if rtype == 'vnet_decommission' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        {% set d = req.get_details() %}
+        {% if d.get('manual_changes') == 'yes' %}
+        <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#f59e0b;">
+          <i class="bi bi-exclamation-triangle-fill me-1"></i>
+          Requester reported <strong>manual changes outside the portal</strong>
+          {% if d.get('manual_changes_removed') %}(confirmed removed){% else %}(NOT confirmed removed){% endif %}
+          — verify with <em>Check VNET Status</em> before decommissioning.
+        </div>
+        {% endif %}
+        {% if d.get('created_by_admin') == 'no' %}
+        <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#f59e0b;">
+          <i class="bi bi-exclamation-triangle-fill me-1"></i>
+          This VNET was <strong>not created via this portal</strong> (or the requester isn't sure) —
+          review it manually before deleting anything.
+        </div>
+        {% endif %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-trash3"></i> Decommission Steps</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <button class="btn btn-glass w-100 mb-2" onclick="runDecomCheck(this)">
+            <i class="bi bi-clipboard-pulse me-2"></i>1 · Check VNET Status in Azure
+          </button>
+          {% if 'decom_execute' in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>2 · Azure Resources Removed — Done
+          </button>
+          {% else %}
+          <button class="btn w-100 mb-2" id="decomExecBtn"
+                  style="background:rgba(209,52,56,.12);border:1px solid rgba(209,52,56,.35);color:#f87171;"
+                  onclick="runDecomExecute(this)">
+            <i class="bi bi-trash3 me-2"></i>2 · Decommission VNET &amp; Subnets in Azure
+          </button>
+          {% endif %}
+          {% if 'decom_release' in done_actions %}
+          <button class="btn btn-glass w-100 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>3 · CIDR Released — Done
+          </button>
+          {% else %}
+          <button class="btn btn-glass w-100" onclick="runDecomRelease(this)">
+            <i class="bi bi-arrow-return-left me-2"></i>3 · Release CIDR — Remove from App Assignments
+          </button>
+          {% endif %}
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            1 verifies the VNET, its peerings and attached devices (read-only). 2 deletes peerings, hub routes,
+            the firewall rule and the VNET. 3 releases the CIDR back to the pool in this app.
+          </div>
+          <div id="decomResults" style="display:none;margin-top:10px;"></div>
+        </div>
         {% endif %}
 
         {% if req.allocated_subnet and rtype in ('vnet_new', 'hub_integration') and req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
@@ -176,12 +267,25 @@
             <span><i class="bi bi-cloud-arrow-up"></i> Azure Deployment Actions</span>
             {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
           </div>
+          {% set dd = req.get_details() %}
+          {% set ia = dd.get('internet_access') or 'full' %}
           {% if req.deployment_mode == 'admin' %}
+          {% if 'vnet' in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Deploy VNET — Done
+          </button>
+          {% else %}
           <button class="btn btn-glow w-100 mb-2" onclick="runAction('vnet', this)">
-            <i class="bi bi-hdd-network me-2"></i>Deploy VNET
+            <i class="bi bi-hdd-network me-2"></i>Deploy VNET{% if dd.get('subnets') %} ({{ dd.get('subnets')|length }} subnet{{ 's' if dd.get('subnets')|length != 1 }}){% endif %}
           </button>
           {% endif %}
+          {% endif %}
           {% if req.hub_integration %}
+          {% if 'peer' in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Peer Hub — Done
+          </button>
+          {% else %}
           <button class="btn btn-glass w-100 mb-2" onclick="togglePeerConfirm()">
             <i class="bi bi-diagram-3 me-2"></i>Peer Hub
           </button>
@@ -204,15 +308,110 @@
             <div style="font-size:12px;color:#f59e0b;">VNET details not provided yet — the requester must mark <strong>VNET Created</strong> with details (or use Edit VNET Info) before peering.</div>
             {% endif %}
           </div>
+          {% endif %}
+
+          {# ── Internet access — exactly what the requester asked for ── #}
+          {% if ia == 'full' %}
+          {% if 'internet' in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Allow Internet — Done
+          </button>
+          {% else %}
           <button class="btn btn-glass w-100 mb-2" onclick="runAction('internet', this)">
-            <i class="bi bi-globe me-2"></i>Allow Internet (firewall policy)
+            <i class="bi bi-globe me-2"></i>Allow Internet — fully allowed (firewall policy)
           </button>
+          {% endif %}
+          {% elif ia in ('network', 'application') %}
+          <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+              Requested internet access — <strong>{{ ia }} rule</strong>:
+              <span style="font-family:var(--mono);">{{ dd.get('internet_dest', '—') }}</span>
+              {% if dd.get('internet_ports') %}· {{ dd.get('internet_ports') }}{% endif %}
+            </div>
+            {% if 'internet_rule' in done_actions %}
+            <button class="btn btn-glass w-100 action-done" disabled>
+              <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Requested Internet Rule — Done
+            </button>
+            {% else %}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+              <div>
+                <label style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Rule Collection Group *</label>
+                <select class="form-select" id="fwRcgSel" onchange="fwRcgChanged()"
+                        style="font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+                  <option value="">— select —</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Rule Collection *</label>
+                <select class="form-select" id="fwColSel"
+                        style="font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+                  <option value="">— select —</option>
+                </select>
+              </div>
+            </div>
+            <div id="fwColHint" style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Loading collections…</div>
+            <button class="btn btn-glass w-100" onclick="runInternetRule(this)">
+              <i class="bi bi-globe me-2"></i>Apply Requested Internet Rule ({{ ia }})
+            </button>
+            {% endif %}
+          </div>
+          {% else %}
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+            <i class="bi bi-slash-circle me-1"></i>No internet access requested for this spoke.
+          </p>
+          {% endif %}
+
+          {% if 'gateway_route' in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Route in Gateway Table — Done
+          </button>
+          {% else %}
           <button class="btn btn-glass w-100 mb-2" onclick="runAction('gateway_route', this)">
-            <i class="bi bi-signpost-split me-2"></i>Add Route — Gateway Table
+            <i class="bi bi-signpost-split me-2"></i>Add Spoke Route — Gateway Table (→ {{ fw_private_ip }})
           </button>
-          <button class="btn btn-glass w-100" onclick="runAction('zpa_route', this)">
-            <i class="bi bi-signpost-split me-2"></i>Add Route — ZPA Table
+          {% endif %}
+          {% if 'zpa_route' in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Route in ZPA R&amp;D Table — Done
           </button>
+          {% else %}
+          <button class="btn btn-glass w-100 mb-2" onclick="runAction('zpa_route', this)">
+            <i class="bi bi-signpost-split me-2"></i>Add Spoke Route — ZPA R&amp;D Table (→ {{ fw_private_ip }})
+          </button>
+          {% endif %}
+
+          {# ── Spoke route table (create + assign to subnets) ── #}
+          {% if 'spoke_route_table' in done_actions %}
+          <button class="btn btn-glass w-100 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Spoke Route Table — Created &amp; Assigned
+          </button>
+          {% else %}
+          <button class="btn btn-glass w-100" onclick="toggleSpokeRt()">
+            <i class="bi bi-table me-2"></i>Create Route Table for Spoke Subnets
+          </button>
+          <div id="spokeRtPanel" style="display:none;border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-top:8px;">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+              Default routes (from Settings → Routing) — all via <strong>{{ fw_private_ip }}</strong>:
+            </div>
+            <div style="font-family:var(--mono);font-size:11.5px;line-height:1.8;margin-bottom:8px;">
+              {% for r in spoke_default_routes %}
+              • {{ r.name }} — {{ r.prefix }}<br>
+              {% endfor %}
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Additional routes needed? (optional)</div>
+            <div id="extraRoutes"></div>
+            <a href="#" onclick="addExtraRouteRow(); return false;" style="font-size:11.5px;color:#60a5fa;text-decoration:none;">
+              <i class="bi bi-plus-circle"></i> Add route
+            </a>
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button class="btn btn-glow btn-sm" style="flex:1;" onclick="runSpokeRt(this)">
+                <i class="bi bi-check2 me-1"></i>Create &amp; Assign to Subnets
+              </button>
+              <button class="btn btn-glass btn-sm" style="flex:1;" onclick="toggleSpokeRt()">Cancel</button>
+            </div>
+          </div>
+          {% endif %}
+
           <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
             Standard routing for outbound internet &amp; Azure VPN via firewall. For any other specific routing via the hub, contact <strong>Ankesh Singh</strong>.
           </div>
@@ -246,19 +445,26 @@
         </p>
         {% endif %}
 
+        {% if req.status not in [RequestStatus.HUB_INTEGRATED, RequestStatus.COMPLETED, RequestStatus.CANCELLED, RequestStatus.REJECTED] and req.status != wf[-1] %}
+        <button class="btn btn-glass w-100" style="margin-top:12px;font-size:12.5px;" onclick="completeManually()">
+          <i class="bi bi-check2-square me-2"></i>Mark Completed — done manually outside the portal
+        </button>
+        {% endif %}
         {% if req.status not in [RequestStatus.HUB_INTEGRATED, RequestStatus.COMPLETED, RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
         <div style="margin-top:12px;display:flex;gap:8px;">
           <button class="btn btn-sm" style="background:rgba(209,52,56,.1);border:1px solid rgba(209,52,56,.3);color:#f87171;flex:1;padding:6px;"
-            onclick="updateStatus('{{ RequestStatus.CANCELLED }}')">
+            onclick="confirmTerminate('{{ RequestStatus.CANCELLED }}')">
             <i class="bi bi-x-circle me-1"></i>Cancel
           </button>
           {% if rtype != 'vnet_new' %}
           <button class="btn btn-sm" style="background:rgba(209,52,56,.1);border:1px solid rgba(209,52,56,.3);color:#f87171;flex:1;padding:6px;"
-            onclick="updateStatus('{{ RequestStatus.REJECTED }}')">
+            onclick="confirmTerminate('{{ RequestStatus.REJECTED }}')">
             <i class="bi bi-hand-thumbs-down me-1"></i>Reject
           </button>
           {% endif %}
         </div>
+        <!-- Terminate confirmation: impact preview + revert of deployed changes -->
+        <div id="terminatePanel" style="display:none;margin-top:12px;border:1px solid rgba(209,52,56,.35);background:rgba(209,52,56,.06);border-radius:10px;padding:14px;"></div>
         {% endif %}
 
         <div id="statusMsg" style="display:none;margin-top:12px;font-size:13px;text-align:center;"></div>
@@ -362,6 +568,7 @@
 .timeline-step.done .timeline-label, .timeline-step.current .timeline-label { color:var(--text-dim); }
 .timeline-line { flex:1;min-width:8px;height:2px;background:var(--border);margin:0 2px;margin-bottom:18px;transition:background .2s; }
 .timeline-line.done { background:var(--accent); }
+.action-done { opacity:.7; cursor:default !important; }
 </style>
 <script>
 const REQ_ID   = {{ req.id }};
@@ -404,6 +611,105 @@ function togglePeerConfirm() {
   el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
 }
 
+// ── Spoke route table (default + additional routes → assign to subnets) ────
+function toggleSpokeRt() {
+  const el = document.getElementById('spokeRtPanel');
+  el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+}
+
+function addExtraRouteRow() {
+  document.getElementById('extraRoutes').insertAdjacentHTML('beforeend', `
+    <div style="display:flex;gap:6px;margin-bottom:6px;" class="extra-route-row">
+      <input type="text" class="form-control er-name" placeholder="route name (e.g. udr-to-dc)"
+             style="flex:1;font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+      <input type="text" class="form-control er-prefix" placeholder="prefix (e.g. 10.20.0.0/16)"
+             style="flex:1;font-family:var(--mono);font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+      <button class="btn btn-glass btn-sm" onclick="this.closest('.extra-route-row').remove()"><i class="bi bi-x"></i></button>
+    </div>`);
+}
+
+async function runSpokeRt(btn) {
+  const routes = [...document.querySelectorAll('#extraRoutes .extra-route-row')].map(row => ({
+    name: row.querySelector('.er-name').value.trim(),
+    prefix: row.querySelector('.er-prefix').value.trim(),
+  })).filter(r => r.name || r.prefix);
+  const box = document.getElementById('actionResults');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Creating…';
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Creating route table…</span>';
+  try {
+    const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'spoke_route_table', additional_routes: routes })
+    });
+    const d = await resp.json();
+    if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; }
+    else {
+      let html = '';
+      (d.steps || []).forEach(s => {
+        const icon = s.success ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i>'
+                               : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i>';
+        html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:3px;">${icon} ${s.label}
+                 ${s.dry_run ? '<span style="color:#f59e0b;">(dry-run)</span>' : ''}</div>`;
+      });
+      html += `<div style="font-size:12.5px;color:${d.success ? '#7edb56' : '#f59e0b'};margin-top:6px;">${d.message}${d.success ? ' Reloading…' : ''}</div>`;
+      box.innerHTML = html;
+      if (d.success) setTimeout(() => location.reload(), 2500);
+    }
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+// ── Requested internet rule (network/application, not allow-all) ───────────
+async function runInternetRule(btn) {
+  const sel = fwSelection();
+  const box = document.getElementById('actionResults');
+  if (!sel.rcg || !sel.collection) {
+    box.style.display = 'block';
+    box.innerHTML = '<span style="color:#f59e0b;font-size:12px;">Select a rule collection group and rule collection first — there is no default.</span>';
+    return;
+  }
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Applying…';
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Applying requested internet rule…</span>';
+  try {
+    const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'internet_rule', ...sel })
+    });
+    const d = await resp.json();
+    const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
+    box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}${d.success ? ' Reloading…' : ''}</span>`;
+    if (d.success) setTimeout(() => location.reload(), 2000);
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+// ── Manual completion (work done outside the portal) ───────────────────────
+async function completeManually() {
+  const note = prompt('Mark this request completed.\n\nDescribe what was done manually outside the portal (required — recorded in the audit trail):');
+  if (note === null) return;
+  if (!note.trim()) { alert('A note is required.'); return; }
+  const msgEl = document.getElementById('statusMsg');
+  try {
+    const resp = await fetch(`/requests/${REQ_ID}/complete-manual`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: note.trim() })
+    });
+    const d = await resp.json();
+    msgEl.style.display = 'block';
+    if (d.error) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = d.error; }
+    else {
+      msgEl.style.color = '#7edb56'; msgEl.textContent = '✓ ' + d.message + ' — reloading…';
+      setTimeout(() => location.reload(), 1200);
+    }
+  } catch (e) {
+    msgEl.style.display = 'block'; msgEl.style.color = 'var(--danger)'; msgEl.textContent = 'Network error.';
+  }
+}
+
 async function runAction(action, btn) {
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Running…';
@@ -423,6 +729,331 @@ async function runAction(action, btn) {
     box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
   }
   btn.disabled = false; btn.innerHTML = orig;
+}
+
+// ── Cancel / Reject with impact preview + auto-revert ──────────────────────
+async function confirmTerminate(status) {
+  const panel = document.getElementById('terminatePanel');
+  panel.style.display = 'block';
+  panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Checking deployed changes…</span>';
+  let d;
+  try {
+    d = await (await fetch(`/api/admin/requests/${REQ_ID}/deployed-changes`)).json();
+  } catch (e) {
+    panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Could not load deployed changes.</span>';
+    return;
+  }
+  const verb = status === 'REJECTED' ? 'Reject' : 'Cancel';
+  const changes = d.changes || [];
+  let body = `<div style="font-size:13px;font-weight:700;color:#f87171;margin-bottom:8px;">
+                <i class="bi bi-exclamation-triangle-fill me-1"></i>${verb} request #${REQ_ID}?</div>`;
+  if (changes.length) {
+    body += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">
+               The following <strong>${changes.length} deployed change(s)</strong> will be automatically reverted in Azure:</div>
+             <ul style="font-size:12px;color:var(--text-dim);margin:0 0 10px;padding-left:18px;line-height:1.7;">` +
+      changes.map(c => `<li>${c.label}${c.dry_run ? ' <span style="color:#f59e0b;">(was dry-run)</span>' : ''}</li>`).join('') +
+      `</ul>
+       <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);margin-bottom:10px;cursor:pointer;">
+         <input type="checkbox" id="revertChk" checked style="accent-color:#f87171;">
+         Revert these changes (untick to only mark the request ${verb.toLowerCase()}led — changes stay in Azure)
+       </label>`;
+  } else {
+    body += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">
+               No deployed changes found — the request will simply be marked <strong>${verb}ed</strong>.</div>`;
+  }
+  body += `<div style="display:flex;gap:8px;">
+             <button class="btn btn-sm" style="flex:1;background:rgba(209,52,56,.2);border:1px solid rgba(209,52,56,.45);color:#f87171;font-weight:700;"
+               onclick="doTerminate('${status}')"><i class="bi bi-check2 me-1"></i>Yes, ${verb.toLowerCase()} request</button>
+             <button class="btn btn-glass btn-sm" style="flex:1;" onclick="document.getElementById('terminatePanel').style.display='none'">Keep request</button>
+           </div>`;
+  panel.innerHTML = body;
+}
+
+async function doTerminate(status) {
+  const panel = document.getElementById('terminatePanel');
+  const chk = document.getElementById('revertChk');
+  const revert = chk ? chk.checked : true;
+  panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Reverting changes and updating status…</span>';
+  try {
+    const resp = await fetch(`/api/admin/requests/${REQ_ID}/terminate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, revert })
+    });
+    const d = await resp.json();
+    if (d.error) { panel.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; return; }
+    let html = '';
+    (d.steps || []).forEach(s => {
+      const icon = s.success ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i>'
+                             : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i>';
+      html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">${icon} ${s.label}
+                 ${s.dry_run ? '<span style="color:#f59e0b;">(dry-run)</span>' : ''}
+                 <div style="font-size:11px;color:var(--text-muted);margin-left:20px;">${s.message}</div></div>`;
+    });
+    html += `<div style="font-size:12.5px;color:${d.success ? '#7edb56' : '#f59e0b'};margin-top:8px;">${d.message} Reloading…</div>`;
+    panel.innerHTML = html;
+    setTimeout(() => location.reload(), (d.steps || []).length ? 3000 : 1200);
+  } catch (e) {
+    panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+  }
+}
+
+// ── VNET decommission steps ────────────────────────────────────────────────
+async function decomAction(action, btn, runningLabel) {
+  const box = document.getElementById('decomResults');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>${runningLabel}`;
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running…</span>';
+  let d = null;
+  try {
+    const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    d = await resp.json();
+  } catch (e) {
+    box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+  }
+  btn.disabled = false; btn.innerHTML = orig;
+  return d;
+}
+
+async function runDecomCheck(btn) {
+  const d = await decomAction('decom_check', btn, 'Checking…');
+  if (!d) return;
+  const box = document.getElementById('decomResults');
+  if (d.error || !d.success) {
+    box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error || d.message}</span>`;
+    return;
+  }
+  if (d.exists === false) {
+    box.innerHTML = `<div style="font-size:12px;color:#f59e0b;"><i class="bi bi-info-circle me-1"></i>${d.message}</div>`;
+    return;
+  }
+  let html = `<div style="font-size:12px;color:var(--text-dim);line-height:1.7;">
+    <div><strong>Address space:</strong> <span style="font-family:var(--mono);">${d.address_space || '—'}</span></div>
+    <div><strong>Peerings (${(d.peerings||[]).length}):</strong> ${(d.peerings||[]).map(p => `${p.name} → ${p.remote} (${p.state})`).join('; ') || 'none'}</div>
+    <div><strong>Subnets:</strong></div>`;
+  (d.subnets || []).forEach(s => {
+    const devColor = s.devices > 0 ? '#f87171' : '#7edb56';
+    html += `<div style="margin-left:14px;font-family:var(--mono);font-size:11.5px;">${s.name} · ${s.prefix} ·
+             <span style="color:${devColor};">${s.devices} device(s)</span>${s.has_udr ? ' · UDR' : ''}</div>`;
+  });
+  html += `</div><div style="font-size:12.5px;font-weight:700;margin-top:8px;color:${d.clear ? '#7edb56' : '#f87171'};">
+    <i class="bi bi-${d.clear ? 'check-circle-fill' : 'x-circle-fill'} me-1"></i>
+    ${d.clear ? 'Clear to decommission — no attached devices.' : 'NOT clear — devices still attached. Ask the requester to remove them first.'}</div>`;
+  box.innerHTML = html;
+}
+
+async function runDecomExecute(btn) {
+  if (!confirm('Decommission this VNET in Azure?\n\nThis will DELETE:\n• hub ↔ spoke peerings\n• spoke routes in the hub routing tables\n• the internet-egress firewall rule\n• the VNET and all its subnets\n\nRun "Check VNET Status" first if you haven\'t. Continue?')) return;
+  const d = await decomAction('decom_execute', btn, 'Decommissioning…');
+  if (!d) return;
+  const box = document.getElementById('decomResults');
+  if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; return; }
+  let html = '';
+  (d.steps || []).forEach(s => {
+    const icon = s.success ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i>'
+                           : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i>';
+    html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">${icon} ${s.label}
+             ${s.dry_run ? '<span style="color:#f59e0b;">(dry-run)</span>' : ''}
+             <div style="font-size:11px;color:var(--text-muted);margin-left:20px;">${s.message}</div></div>`;
+  });
+  html += `<div style="font-size:12.5px;color:${d.success ? '#7edb56' : '#f59e0b'};margin-top:8px;">${d.message}${d.success ? ' Reloading…' : ''}</div>`;
+  box.innerHTML = html;
+  if (d.success) setTimeout(() => location.reload(), 3000);
+}
+
+async function runDecomRelease(btn) {
+  if (!confirm('Release the CIDR from the app inventory?\n\nThe subnet assignment will be removed and the CIDR returned to the free pool. Do this only after the Azure resources are gone.')) return;
+  const d = await decomAction('decom_release', btn, 'Releasing…');
+  if (!d) return;
+  const box = document.getElementById('decomResults');
+  const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
+  box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}${d.success ? ' Reloading…' : ''}</span>`;
+  if (d.success) setTimeout(() => location.reload(), 1500);
+}
+
+// ── Firewall policy steps ──────────────────────────────────────────────────
+let fwCollections = [];   // merged defined + azure: {rcg, collection, ...}
+{% set _ia = req.get_details().get('internet_access') %}
+const FW_KIND = '{{ req.get_details().get("rule_kind") or (_ia if _ia in ("network", "application") else "") or "network" }}';
+
+async function fwLoadCollections() {
+  const hint = document.getElementById('fwColHint');
+  if (!hint) return;
+  try {
+    const d = await (await fetch('/api/admin/firewall/collections?azure=1')).json();
+    const azureTypes = {};
+    (d.azure || []).forEach(x => { azureTypes[`${x.rcg}|${x.collection}`] = x.rule_type || ''; });
+    const seen = new Set();
+    fwCollections = [];
+    // Azure forbids mixing rule types in a collection — drop collections that
+    // already hold the other type (empty/unknown collections stay eligible).
+    const compatible = x => {
+      const t = azureTypes[`${x.rcg}|${x.collection}`];
+      return !t || t === FW_KIND;
+    };
+    (d.defined || []).filter(compatible).forEach(x => {
+      const k = `${x.rcg}|${x.collection}`;
+      if (!seen.has(k)) { seen.add(k); fwCollections.push({...x, rule_type: azureTypes[k] || '', src: 'defined'}); }
+    });
+    (d.azure || []).filter(x => x.filter !== false && compatible(x)).forEach(x => {
+      const k = `${x.rcg}|${x.collection}`;
+      if (!seen.has(k)) { seen.add(k); fwCollections.push({...x, src: 'azure'}); }
+    });
+    const rcgs = [...new Set(fwCollections.map(x => x.rcg))];
+    const rcgSel = document.getElementById('fwRcgSel');
+    rcgSel.innerHTML = '<option value="">— select —</option>' +
+      rcgs.map(r => `<option value="${r}">${r}</option>`).join('');
+    hint.textContent = fwCollections.length
+      ? `${fwCollections.length} collection(s) eligible for ${FW_KIND} rules (Settings definitions + live Azure; collections holding the other rule type are hidden — Azure can't mix types).`
+      : `No collections eligible for ${FW_KIND} rules — define one in Settings → Firewall, then use Create below.`;
+    if (d.azure_error) hint.textContent += ` Azure: ${d.azure_error}`;
+  } catch (e) {
+    hint.textContent = 'Could not load collections — define them in Settings → Firewall.';
+  }
+}
+
+function fwRcgChanged() {
+  const rcg = document.getElementById('fwRcgSel').value;
+  const colSel = document.getElementById('fwColSel');
+  const cols = fwCollections.filter(x => x.rcg === rcg);
+  colSel.innerHTML = '<option value="">— select —</option>' +
+    cols.map(c => `<option value="${c.collection}">${c.collection}` +
+      `${c.action ? ' (' + c.action + (c.priority ? ', ' + c.priority : '') + ')' : ''}` +
+      `${c.description ? ' — ' + c.description : ''}</option>`).join('');
+}
+
+function fwSelection() {
+  return {
+    rcg: (document.getElementById('fwRcgSel') || {}).value || '',
+    collection: (document.getElementById('fwColSel') || {}).value || '',
+  };
+}
+
+async function fwAction(action, btn, runningLabel) {
+  const box = document.getElementById('fwResults');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>${runningLabel}`;
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running…</span>';
+  let d = null;
+  try {
+    const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...fwSelection() })
+    });
+    d = await resp.json();
+  } catch (e) {
+    box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+  }
+  btn.disabled = false; btn.innerHTML = orig;
+  return d;
+}
+
+if (document.getElementById('fwRcgSel')) fwLoadCollections();
+
+function fwRenderRule(rule) {
+  if (!rule) return '';
+  let html = `<div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.7;">
+    <div style="font-weight:700;color:#60a5fa;margin-bottom:4px;"><i class="bi bi-file-earmark-text me-1"></i>Current rule definition — ${rule.name}</div>
+    <div><span style="color:var(--text-muted);">Kind:</span> ${rule.kind} · <span style="color:var(--text-muted);">Collection:</span> ${rule.collection}</div>
+    <div><span style="color:var(--text-muted);">Sources:</span> <span style="font-family:var(--mono);">${(rule.sources||[]).join(', ') || '*'}</span></div>`;
+  if (rule.kind === 'application') {
+    html += `<div><span style="color:var(--text-muted);">FQDNs:</span> <span style="font-family:var(--mono);">${(rule.fqdns||[]).join(', ')}</span></div>
+             <div><span style="color:var(--text-muted);">Protocols:</span> ${(rule.protocols||[]).join(', ')}</div>`;
+  } else {
+    html += `<div><span style="color:var(--text-muted);">Destinations:</span> <span style="font-family:var(--mono);">${(rule.destinations||[]).join(', ')}</span></div>
+             <div><span style="color:var(--text-muted);">Ports:</span> ${(rule.ports||[]).join(', ')} · <span style="color:var(--text-muted);">Protocols:</span> ${(rule.protocols||[]).join(', ')}</div>`;
+  }
+  return html + '</div>';
+}
+
+function fwRenderStatus(d) {
+  let html = `<div style="font-size:12px;color:var(--text-dim);line-height:1.7;">
+    <div>${d.policy_exists ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i>' : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i>'}
+      Policy <strong>${d.policy}</strong> ${d.policy_exists ? 'exists' : 'does NOT exist'}</div>`;
+  if (d.policy_exists) {
+    html += `<div>${d.rcg_exists ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i>' : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i>'}
+      Rule collection group <strong>${d.rcg}</strong> ${d.rcg_exists ? 'exists' : 'does NOT exist'}</div>`;
+  }
+  (d.collections || []).forEach(c => {
+    html += `<div style="margin-left:14px;font-size:11.5px;">· ${c.rcg ? c.rcg + ' / ' : ''}${c.name} (${c.action || c.priority}${c.filter ? ', filter' : ''}) —
+             ${c.rules.length} rule(s)${c.rules.length ? ': <span style="font-family:var(--mono);">' + c.rules.join(', ') + '</span>' : ''}</div>`;
+  });
+  html += `</div>`;
+  if (d.rule) html += fwRenderRule(d.rule);
+  else if (d.rule_name && d.rcg_exists) {
+    html += `<div style="font-size:12px;color:#f59e0b;margin-top:6px;"><i class="bi bi-info-circle me-1"></i>Rule '<span style="font-family:var(--mono);">${d.rule_name}</span>' not found in the policy.</div>`;
+  }
+  return html;
+}
+
+async function runFwCheck(btn) {
+  const d = await fwAction('fw_check', btn, 'Checking…');
+  if (!d) return;
+  const box = document.getElementById('fwResults');
+  if (d.error || !d.success) {
+    box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error || d.message}</span>`;
+    return;
+  }
+  box.innerHTML = fwRenderStatus(d) +
+    `<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">${d.message || ''}</div>`;
+}
+
+async function runFwEnsure(btn) {
+  const sel = fwSelection();
+  if (!sel.rcg || !sel.collection) {
+    document.getElementById('fwResults').style.display = 'block';
+    document.getElementById('fwResults').innerHTML =
+      '<span style="color:#f59e0b;font-size:12px;">Select the rule collection group and rule collection to create first (define them in Settings → Firewall if the lists are empty).</span>';
+    return;
+  }
+  if (!confirm(`Create the firewall policy and '${sel.rcg} / ${sel.collection}' if missing?\n\nExisting pieces are left untouched.`)) return;
+  const d = await fwAction('fw_ensure_policy', btn, 'Creating…');
+  if (!d) return;
+  const box = document.getElementById('fwResults');
+  const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
+  box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}</span>`;
+  if (d.success) fwLoadCollections();
+}
+
+async function runFwApply(btn) {
+  const fwAct = '{{ (req.get_details().get("action") or "add") }}';
+  const box = document.getElementById('fwResults');
+  const sel = fwSelection();
+  if ((fwAct === 'add' || fwAct === 'modify') && (!sel.rcg || !sel.collection)) {
+    box.style.display = 'block';
+    box.innerHTML = '<span style="color:#f59e0b;font-size:12px;">Select a rule collection group and rule collection first — there is no default.</span>';
+    return;
+  }
+  // Modify/delete: always fetch and show the current rule first, then confirm.
+  if (fwAct === 'modify' || fwAct === 'delete') {
+    const chk = await fwAction('fw_check', btn, 'Fetching current rule…');
+    if (!chk) return;
+    if (chk.error || !chk.success) {
+      box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${chk.error || chk.message}</span>`;
+      return;
+    }
+    if (!chk.rule) {
+      box.innerHTML = fwRenderStatus(chk) +
+        `<div style="font-size:12px;color:var(--danger);margin-top:8px;"><i class="bi bi-x-circle me-1"></i>
+         Cannot ${fwAct}: rule '<span style="font-family:var(--mono);">${chk.rule_name}</span>' does not exist in the policy.</div>`;
+      return;
+    }
+    box.innerHTML = fwRenderStatus(chk);
+    const verb = fwAct === 'delete' ? 'DELETE this rule' : 'MODIFY this rule to the requested definition';
+    if (!confirm(`Current rule definition is shown below the buttons.\n\n${verb}?\n\nRule: ${chk.rule_name}`)) return;
+  } else {
+    if (!confirm('Add the requested firewall rule to the policy?')) return;
+  }
+  const d = await fwAction('fw_apply', btn, 'Applying…');
+  if (!d) return;
+  if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; return; }
+  const color = d.success ? '#7edb56' : '#f59e0b';
+  box.innerHTML = `<span style="font-size:12px;color:${color};">${d.message}${d.success ? ' Reloading…' : ''}</span>`;
+  if (d.success) setTimeout(() => location.reload(), 2000);
 }
 
 async function updateStatus(newStatus) {
