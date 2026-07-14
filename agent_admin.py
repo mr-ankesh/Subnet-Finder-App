@@ -8,10 +8,20 @@ import os
 from datetime import datetime
 
 from config import cfg
+import audit
 import azure_tools
 import notifications
 
 log = logging.getLogger(__name__)
+
+
+def _actor() -> str:
+    """Admin display name from the Flask session (tools run inside a request)."""
+    try:
+        from flask import session
+        return session.get("admin_name") or "Admin"
+    except Exception:
+        return "Admin"
 
 _SYSTEM_PROMPT_TEMPLATE = """You are the Presight R&D Azure Network Admin Agent.
 
@@ -590,6 +600,9 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
         update_spoke_request(request_id, allocated_subnet=subnet, status=RequestStatus.CIDR_ASSIGNED)
         req = get_spoke_request(request_id)
         log.info("[admin] Request #%s → CIDR_ASSIGNED (%s)", request_id, subnet)
+        audit.record("cidr_assigned", actor=_actor(), actor_role="admin", request_id=request_id,
+                     summary=f"Assigned {subnet} (pool {pool})",
+                     data={"subnet": subnet, "pool": pool, "allocated_by": allocated_by})
     except Exception as exc:
         log.exception("[admin] DB error assigning CIDR to request #%s", request_id)
         return json.dumps({"error": f"Database error: {exc}"})
@@ -638,6 +651,9 @@ def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
         new_notes = f"{old_notes}\n[DEALLOCATED {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] {reason}".strip()
         update_spoke_request(request_id, notes=new_notes, allocated_subnet=None, status=RequestStatus.CIDR_REQUESTED)
         log.info("[admin] Request #%s deallocated subnet %s — reason: %s", request_id, subnet, reason)
+        audit.record("cidr_deallocated", actor=_actor(), actor_role="admin", request_id=request_id,
+                     summary=f"Released {subnet} — {reason[:120]}",
+                     data={"subnet": subnet, "reason": reason})
     except Exception as exc:
         log.exception("[admin] DB error deallocating request #%s", request_id)
         return json.dumps({"error": f"Database error: {exc}"})
@@ -670,9 +686,13 @@ def _tool_update_status(request_id: int, status: str, notes: str = None) -> str:
         fields = {"status": status}
         if notes:
             fields["notes"] = notes
+        old_status = req.status
         update_spoke_request(request_id, **fields)
         req = get_spoke_request(request_id)
         log.info("[admin] Request #%s → %s", request_id, status)
+        audit.record("status_changed", actor=_actor(), actor_role="admin", request_id=request_id,
+                     summary=f"Status: {RequestStatus.label(old_status)} → {RequestStatus.label(status)}",
+                     data={"old": old_status, "new": status, "notes": notes})
     except Exception as exc:
         log.exception("[admin] DB error updating status for request #%s", request_id)
         return json.dumps({"error": f"Database error: {exc}"})

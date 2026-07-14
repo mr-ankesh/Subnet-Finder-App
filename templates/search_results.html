@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Presight R&D | Search{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <h1 class="alloc-page-title">Search</h1>
+    <p class="alloc-page-sub">Requests, VNETs, subnets and audit entries</p>
+  </div>
+</div>
+
+<div style="max-width:1100px;margin:0 auto;padding:28px 40px 48px;">
+
+  <form method="GET" action="{{ url_for('admin_search') }}" style="display:flex;gap:10px;margin-bottom:24px;">
+    <input type="text" name="q" value="{{ q }}" autofocus class="form-control"
+           style="font-size:14px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);"
+           placeholder="Search anything — requester, VNET name, CIDR, purpose, #id, action…">
+    <button type="submit" class="btn btn-glow" style="font-size:13px;white-space:nowrap;"><i class="bi bi-search me-1"></i>Search</button>
+  </form>
+
+  {% if q %}
+  <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">
+    {{ total }} result{{ '' if total == 1 else 's' }} for “<strong style="color:var(--text);">{{ q }}</strong>”
+  </p>
+
+  {% if results.requests %}
+  <div class="glass-card" style="margin-bottom:20px;">
+    <div class="card-header-bar"><i class="bi bi-list-task"></i> Requests ({{ results.requests|length }})</div>
+    <div style="overflow-x:auto;">
+      <table class="gls-table">
+        <thead><tr><th>#</th><th>Type</th><th>Requester</th><th>Purpose</th><th>Status</th><th>CIDR</th><th></th></tr></thead>
+        <tbody>
+          {% for r in results.requests %}
+          <tr>
+            <td style="color:var(--text-muted);">#{{ r.id }}</td>
+            <td style="font-size:12px;color:#00BCF2;white-space:nowrap;">{{ RequestType.label(r.request_type or 'vnet_new') }}</td>
+            <td style="font-weight:600;">{{ r.requester_name }}</td>
+            <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim);">{{ r.purpose }}</td>
+            <td><span class="status-badge status-{{ RequestStatus.color(r.status) }}">{{ RequestStatus.label(r.status) }}</span></td>
+            <td style="font-family:var(--mono);font-size:12px;">{{ r.allocated_subnet or '—' }}</td>
+            <td><a href="{{ url_for('request_detail', req_id=r.id) }}" class="btn btn-glass btn-sm"><i class="bi bi-eye"></i></a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if results.vnets %}
+  <div class="glass-card" style="margin-bottom:20px;">
+    <div class="card-header-bar"><i class="bi bi-diagram-3-fill"></i> VNETs ({{ results.vnets|length }})</div>
+    <div style="overflow-x:auto;">
+      <table class="gls-table">
+        <thead><tr><th>VNET</th><th>Resource Group</th><th>Region</th><th>Address Space</th><th>Request</th></tr></thead>
+        <tbody>
+          {% for v in results.vnets %}
+          <tr>
+            <td style="font-weight:600;">{{ v.vnet_name or '—' }}</td>
+            <td style="font-size:12.5px;">{{ v.resource_group or '—' }}</td>
+            <td style="font-size:12.5px;">{{ v.region or '—' }}</td>
+            <td style="font-family:var(--mono);font-size:12px;">{{ v.address_space or '—' }}</td>
+            <td><a href="{{ url_for('request_detail', req_id=v.request_id) }}" style="color:#60a5fa;font-weight:600;text-decoration:none;">#{{ v.request_id }}</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if results.subnets %}
+  <div class="glass-card" style="margin-bottom:20px;">
+    <div class="card-header-bar"><i class="bi bi-grid-1x2-fill"></i> Subnet Inventory ({{ results.subnets|length }})</div>
+    <div style="overflow-x:auto;">
+      <table class="gls-table">
+        <thead><tr><th>Subnet</th><th>Pool</th><th>Status</th><th>Purpose</th><th>Requested By</th><th>Allocated</th></tr></thead>
+        <tbody>
+          {% for s in results.subnets %}
+          <tr>
+            <td style="font-family:var(--mono);font-size:12.5px;font-weight:600;">{{ s.subnet }}</td>
+            <td style="font-size:12px;">{{ s.pool }}</td>
+            <td><span class="status-badge status-{{ 'success' if s.status == 'used' else 'warning' }}">{{ s.status }}</span></td>
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim);">{{ s.purpose or '—' }}</td>
+            <td style="font-size:12.5px;">{{ s.requested_by or '—' }}</td>
+            <td style="font-size:11.5px;color:var(--text-muted);white-space:nowrap;">{{ s.allocated_at or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if results.audit %}
+  <div class="glass-card" style="margin-bottom:20px;">
+    <div class="card-header-bar"><i class="bi bi-journal-text"></i> Audit Trail ({{ results.audit|length }})</div>
+    <div style="overflow-x:auto;">
+      <table class="gls-table">
+        <thead><tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Request</th><th>Summary</th></tr></thead>
+        <tbody>
+          {% for e in results.audit %}
+          <tr>
+            <td style="font-family:var(--mono);font-size:11.5px;white-space:nowrap;color:var(--text-muted);">{{ e.ts }}</td>
+            <td style="font-weight:600;font-size:12.5px;">{{ e.actor }}</td>
+            <td style="font-size:11.5px;font-family:var(--mono);">{{ e.action }}</td>
+            <td>{% if e.request_id %}<a href="{{ url_for('request_detail', req_id=e.request_id) }}" style="color:#60a5fa;text-decoration:none;">#{{ e.request_id }}</a>{% else %}—{% endif %}</td>
+            <td style="font-size:12px;color:var(--text-dim);max-width:380px;">{{ e.summary }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div style="padding:8px 16px;border-top:1px solid var(--border);">
+      <a href="{{ url_for('admin_audit') }}?q={{ q }}" style="font-size:12px;color:#60a5fa;text-decoration:none;">Open in Audit Trail →</a>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if total == 0 %}
+  <div class="glass-card">
+    <div class="empty-state" style="padding:60px 24px;">
+      <i class="bi bi-search empty-icon"></i>
+      <p style="font-size:15px;">No matches for “{{ q }}”.</p>
+      <p style="font-size:13px;color:var(--text-muted);">Try a requester name, VNET name, CIDR (e.g. 10.110.51), request #id, or an action keyword.</p>
+    </div>
+  </div>
+  {% endif %}
+  {% endif %}
+
+</div>
+{% endblock %}

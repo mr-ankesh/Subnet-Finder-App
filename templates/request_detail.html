@@ -9,8 +9,11 @@
       <li class="breadcrumb-item"><a href="{{ url_for('requests_list') }}"><i class="bi bi-list-ul me-1"></i>Requests</a></li>
       <li class="breadcrumb-item active">Request #{{ req.id }}</li>
     </ol></nav>
-    <h1 class="alloc-page-title" style="display:flex;align-items:center;gap:14px;">
+    <h1 class="alloc-page-title" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
       Request <span style="color:#60a5fa;">#{{ req.id }}</span>
+      <span style="font-size:13px;color:#00BCF2;font-weight:600;border:1px solid rgba(0,188,242,.35);border-radius:20px;padding:3px 12px;">
+        <i class="bi bi-{{ req.type_icon() }}"></i> {{ req.type_label() }}
+      </span>
       <span class="status-badge status-{{ req.status_color() }}" style="font-size:13px;">{{ req.status_label() }}</span>
     </h1>
     <p class="alloc-page-sub">{{ req.requester_name }} · {{ req.created_at.strftime('%Y-%m-%d %H:%M') if req.created_at else '' }}</p>
@@ -25,12 +28,19 @@
     <div class="glass-card">
       <div class="card-header-bar"><i class="bi bi-file-text-fill"></i> Request Details</div>
       <div class="card-body-pad">
+        {% set rtype = req.request_type or 'vnet_new' %}
         <dl class="detail-list">
+          <div class="detail-row"><dt>Type</dt>
+            <dd style="color:#00BCF2;font-weight:600;"><i class="bi bi-{{ req.type_icon() }}"></i> {{ req.type_label() }}</dd>
+          </div>
+          {% if rtype == 'vnet_new' %}
           <div class="detail-row"><dt>CIDR Needed</dt><dd><span class="cidr-chip">/{{ req.cidr_needed }}</span></dd></div>
           <div class="detail-row"><dt>IP Pool</dt><dd style="font-family:var(--mono);font-size:13px;">{{ req.ip_range }}</dd></div>
+          {% endif %}
           <div class="detail-row"><dt>Purpose</dt><dd>{{ req.purpose }}</dd></div>
           <div class="detail-row"><dt>Requester</dt><dd style="font-weight:600;">{{ req.requester_name }}</dd></div>
           {% if req.requester_email %}<div class="detail-row"><dt>Email</dt><dd style="font-size:13px;">{{ req.requester_email }}</dd></div>{% endif %}
+          {% if rtype == 'vnet_new' %}
           <div class="detail-row"><dt>Hub Integration</dt>
             <dd>{% if req.hub_integration %}<span style="color:#7edb56;font-weight:700;">Yes</span>{% else %}<span style="color:var(--text-muted);">No</span>{% endif %}</dd>
           </div>
@@ -40,6 +50,17 @@
           <div class="detail-row"><dt>Assigned CIDR</dt>
             <dd>{% if req.allocated_subnet %}<span class="cidr-chip">{{ req.allocated_subnet }}</span>{% else %}<span style="color:var(--text-muted);">Pending assignment</span>{% endif %}</dd>
           </div>
+          {% endif %}
+          {# Type-specific details (non-VNET requests) #}
+          {% for key, val in req.get_details().items() %}
+          {% if val not in (None, '', False) %}
+          <div class="detail-row"><dt>{{ key.replace('_', ' ') | title }}</dt>
+            <dd style="font-size:13px;{% if 'id' in key or 'cidr' in key or 'subnet' in key %}font-family:var(--mono);{% endif %}">
+              {{ 'Yes' if val is sameas true else val }}
+            </dd>
+          </div>
+          {% endif %}
+          {% endfor %}
           {% if req.notes %}
           <div class="detail-row"><dt>Notes</dt><dd style="font-size:13px;">{{ req.notes }}</dd></div>
           {% endif %}
@@ -52,22 +73,27 @@
       <div class="card-header-bar"><i class="bi bi-activity"></i> Status &amp; Admin Actions</div>
       <div class="card-body-pad">
 
-        <!-- Status timeline -->
+        <!-- Status timeline (driven by this request type's workflow) -->
         <div class="status-timeline">
-          {% set steps = [
-            (RequestStatus.CIDR_REQUESTED,            'bi-send',          'CIDR Requested'),
-            (RequestStatus.CIDR_ASSIGNED,             'bi-check-circle',  'CIDR Assigned'),
-            (RequestStatus.VNET_CREATED,              'bi-cloud-upload',  'VNET Created'),
-            (RequestStatus.HUB_INTEGRATION_IN_PROGRESS,'bi-gear-wide-connected','In Progress'),
-            (RequestStatus.HUB_INTEGRATED,            'bi-check-all',     'Hub Integrated'),
-          ] %}
-          {% set ordered = RequestStatus.ORDERED %}
+          {% set step_icons = {
+            RequestStatus.CIDR_REQUESTED: 'bi-send', RequestStatus.CIDR_ASSIGNED: 'bi-check-circle',
+            RequestStatus.VNET_CREATED: 'bi-cloud-upload',
+            RequestStatus.HUB_INTEGRATION_IN_PROGRESS: 'bi-gear-wide-connected',
+            RequestStatus.HUB_INTEGRATED: 'bi-check-all',
+            RequestStatus.SUBMITTED: 'bi-send', RequestStatus.IN_REVIEW: 'bi-eye',
+            RequestStatus.IN_PROGRESS: 'bi-gear-wide-connected',
+            RequestStatus.RULE_IMPLEMENTED: 'bi-bricks', RequestStatus.ZPA_ROUTE_ADDED: 'bi-signpost-split',
+            RequestStatus.SPOKE_UDR_UPDATED: 'bi-signpost-2', RequestStatus.SUBNET_ALLOCATED: 'bi-grid-1x2',
+            RequestStatus.RESOURCES_REMOVED: 'bi-trash3', RequestStatus.CIDR_RELEASED: 'bi-arrow-return-left',
+            RequestStatus.COMPLETED: 'bi-check-all',
+          } %}
+          {% set ordered = req.workflow() %}
           {% set current_idx = ordered.index(req.status) if req.status in ordered else 0 %}
-          {% for status_key, icon, label in steps %}
+          {% for status_key in ordered %}
           {% set step_idx = loop.index0 %}
           <div class="timeline-step {% if step_idx <= current_idx %}done{% endif %} {% if step_idx == current_idx %}current{% endif %}">
-            <div class="timeline-dot"><i class="bi {{ icon }}"></i></div>
-            <span class="timeline-label" style="font-size:9px;">{{ label }}</span>
+            <div class="timeline-dot"><i class="bi {{ step_icons.get(status_key, 'bi-circle') }}"></i></div>
+            <span class="timeline-label" style="font-size:9px;">{{ RequestStatus.label(status_key) }}</span>
           </div>
           {% if not loop.last %}<div class="timeline-line {% if step_idx < current_idx %}done{% endif %}"></div>{% endif %}
           {% endfor %}
@@ -96,6 +122,47 @@
         </button>
         {% endif %}
 
+        {# ── Generic workflow advance for non-VNET request types ── #}
+        {% set wf = req.workflow() %}
+        {% set terminals = [RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
+        {% if rtype != 'vnet_new' and req.status in wf and req.status != wf[-1] %}
+        {% set next_step = wf[wf.index(req.status) + 1] %}
+        <button class="btn btn-glow w-100 mb-2" onclick="updateStatus('{{ next_step }}')">
+          <i class="bi bi-arrow-right-circle me-2"></i>Advance to: {{ RequestStatus.label(next_step) }}
+        </button>
+        {% if wf.index(req.status) + 2 < wf|length + 1 and wf|length > 2 %}
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <select class="form-select" id="statusSelect" style="flex:1;font-size:12.5px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+            {% for s in wf %}{% if s != req.status %}
+            <option value="{{ s }}">{{ RequestStatus.label(s) }}</option>
+            {% endif %}{% endfor %}
+          </select>
+          <button class="btn btn-glass btn-sm" onclick="updateStatus(document.getElementById('statusSelect').value)">Set</button>
+        </div>
+        {% endif %}
+        {% endif %}
+
+        {# ── ZPA routing actions ── #}
+        {% if rtype in ('zpa_rnd_routing', 'zpa_other_routing') and req.status not in terminals %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-shield-lock"></i> ZPA Routing Actions</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <button class="btn btn-glass w-100 mb-2" onclick="runAction('zpa_route_to_spoke', this)">
+            <i class="bi bi-signpost-split me-2"></i>Add Spoke Route — ZPA Routing Table
+          </button>
+          <button class="btn btn-glass w-100" onclick="runAction('spoke_udr_zpa', this)">
+            <i class="bi bi-signpost-2 me-2"></i>Add ZPA Connection Route — Spoke UDR
+          </button>
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            Step 1 routes the spoke CIDR via the ZPA connector table; step 2 routes the ZPA connection
+            subnet (from Settings) into the spoke's own route table.
+          </div>
+          <div id="actionResultsZpa" style="display:none;margin-top:10px;"></div>
+        </div>
+        {% endif %}
+
         {% if req.status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS %}
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Hub integration is in progress. Run the Azure actions below, then mark it complete.</p>
         <button class="btn btn-glow w-100" onclick="updateStatus('{{ RequestStatus.HUB_INTEGRATED }}')">
@@ -103,7 +170,7 @@
         </button>
         {% endif %}
 
-        {% if req.allocated_subnet and req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.CANCELLED] %}
+        {% if req.allocated_subnet and rtype in ('vnet_new', 'hub_integration') and req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
             <span><i class="bi bi-cloud-arrow-up"></i> Azure Deployment Actions</span>
@@ -157,13 +224,17 @@
         </div>
         {% endif %}
 
-        {% if req.status == RequestStatus.HUB_INTEGRATED %}
+        {% if req.status in (RequestStatus.HUB_INTEGRATED, RequestStatus.COMPLETED) %}
         <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
           <i class="bi bi-check-circle-fill" style="color:#7edb56;"></i> Fully completed.
         </p>
         {% elif req.status == RequestStatus.CANCELLED %}
         <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
           <i class="bi bi-x-circle-fill" style="color:#f87171;"></i> Cancelled.
+        </p>
+        {% elif req.status == RequestStatus.REJECTED %}
+        <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
+          <i class="bi bi-x-circle-fill" style="color:#f87171;"></i> Rejected.
         </p>
         {% elif req.status == RequestStatus.CIDR_ASSIGNED %}
         <p style="font-size:13px;color:var(--text-muted);text-align:center;padding:8px 0;">
@@ -175,12 +246,18 @@
         </p>
         {% endif %}
 
-        {% if req.status not in [RequestStatus.HUB_INTEGRATED, RequestStatus.CANCELLED] %}
-        <div style="margin-top:12px;">
-          <button class="btn btn-sm" style="background:rgba(209,52,56,.1);border:1px solid rgba(209,52,56,.3);color:#f87171;width:100%;padding:6px;"
+        {% if req.status not in [RequestStatus.HUB_INTEGRATED, RequestStatus.COMPLETED, RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
+        <div style="margin-top:12px;display:flex;gap:8px;">
+          <button class="btn btn-sm" style="background:rgba(209,52,56,.1);border:1px solid rgba(209,52,56,.3);color:#f87171;flex:1;padding:6px;"
             onclick="updateStatus('{{ RequestStatus.CANCELLED }}')">
-            <i class="bi bi-x-circle me-1"></i>Cancel Request
+            <i class="bi bi-x-circle me-1"></i>Cancel
           </button>
+          {% if rtype != 'vnet_new' %}
+          <button class="btn btn-sm" style="background:rgba(209,52,56,.1);border:1px solid rgba(209,52,56,.3);color:#f87171;flex:1;padding:6px;"
+            onclick="updateStatus('{{ RequestStatus.REJECTED }}')">
+            <i class="bi bi-hand-thumbs-down me-1"></i>Reject
+          </button>
+          {% endif %}
         </div>
         {% endif %}
 
@@ -188,6 +265,32 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- History (audit trail for this request) -->
+  <div class="glass-card" style="margin-bottom:20px;">
+    <div class="card-header-bar"><i class="bi bi-journal-text"></i> History</div>
+    <div class="card-body-pad">
+      {% if history %}
+      <div style="display:flex;flex-direction:column;gap:0;">
+        {% for e in history %}
+        <div style="display:flex;gap:14px;padding:9px 0;{% if not loop.last %}border-bottom:1px solid var(--border);{% endif %}">
+          <div style="font-family:var(--mono);font-size:11.5px;color:var(--text-muted);white-space:nowrap;padding-top:2px;">{{ e.ts }}</div>
+          <div style="flex:1;">
+            <span style="font-size:13px;color:var(--text);font-weight:600;">{{ e.actor }}</span>
+            <span style="font-size:11px;font-family:var(--mono);background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:6px;padding:1px 7px;margin-left:6px;color:var(--text-dim);">{{ e.action.replace('_', ' ') }}</span>
+            <div style="font-size:12.5px;color:var(--text-dim);margin-top:2px;">{{ e.summary }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <div style="margin-top:12px;">
+        <a href="{{ url_for('admin_audit') }}?request_id={{ req.id }}" style="font-size:12px;color:#60a5fa;text-decoration:none;">Full audit trail for this request →</a>
+      </div>
+      {% else %}
+      <p style="font-size:13px;color:var(--text-muted);margin:0;">No recorded history yet — events are tracked from now on.</p>
+      {% endif %}
+    </div>
   </div>
 
   <!-- VNET Info -->
@@ -304,7 +407,7 @@ function togglePeerConfirm() {
 async function runAction(action, btn) {
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Running…';
-  const box = document.getElementById('actionResults');
+  const box = document.getElementById('actionResults') || document.getElementById('actionResultsZpa');
   box.style.display = 'block';
   box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running…</span>';
   try {

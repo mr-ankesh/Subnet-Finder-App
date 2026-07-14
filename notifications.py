@@ -101,6 +101,55 @@ def _email_requester(req, subject: str, body_text: str) -> bool:
     return _send_email(to_addr, subject, body_text + footer)
 
 
+# ── Generic: any request type submitted (non-VNET types) ─────────────────
+def notify_request_submitted(req) -> bool:
+    """Teams card + requester ack for non-VNET request types (firewall, ZPA, DNS…)."""
+    type_label = req.type_label() if hasattr(req, "type_label") else "Request"
+    facts = [
+        {"title": "Request ID", "value": f"#{req.id}"},
+        {"title": "Type",       "value": type_label},
+        {"title": "Requester",  "value": req.requester_name},
+        {"title": "Summary",    "value": req.purpose},
+    ]
+    details = req.get_details() if hasattr(req, "get_details") else {}
+    for k, v in list(details.items())[:6]:      # keep the card compact
+        if v not in (None, "", False):
+            facts.append({"title": k.replace("_", " ").title(), "value": str(v)})
+    _email_requester(req, f"[Subnet Manager] {type_label} request received — #{req.id}",
+                     f"Hi {req.requester_name},\n\nYour {type_label} request #{req.id} has been "
+                     f"submitted and is awaiting admin review.\n\nSummary: {req.purpose}")
+    return _post(_adaptive_card(
+        title=f"New {type_label} Request #{req.id}",
+        subtitle="Presight R&D Azure Subnet Manager",
+        body_text=f"**{req.requester_name}** has submitted a **{type_label}** request.",
+        facts=facts, color="info",
+        action_url=_url(f"/requests/{req.id}"), action_label="View Request",
+    ))
+
+
+# ── Generic: status changed (non-VNET types) ──────────────────────────────
+def notify_status_changed(req) -> bool:
+    type_label = req.type_label() if hasattr(req, "type_label") else "Request"
+    status_label = req.status_label()
+    facts = [
+        {"title": "Request ID", "value": f"#{req.id}"},
+        {"title": "Type",       "value": type_label},
+        {"title": "New Status", "value": status_label},
+        {"title": "Requester",  "value": req.requester_name},
+    ]
+    _email_requester(req, f"[Subnet Manager] Request #{req.id} → {status_label}",
+                     f"Hi {req.requester_name},\n\nYour {type_label} request #{req.id} "
+                     f"is now: {status_label}.")
+    return _post(_adaptive_card(
+        title=f"Request #{req.id} ({type_label}) → {status_label}",
+        subtitle="Presight R&D Azure Subnet Manager",
+        body_text=f"Status updated to **{status_label}**.",
+        facts=facts,
+        color="success" if req.status in ("COMPLETED", "HUB_INTEGRATED") else "info",
+        action_url=_url(f"/requests/{req.id}"), action_label="View Request",
+    ))
+
+
 # ── Step 1: CIDR Requested ────────────────────────────────────────────────
 def notify_cidr_requested(req) -> bool:
     facts = [

@@ -6,26 +6,40 @@ import json
 import logging
 
 from config import cfg
+import audit
 import notifications
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the Presight R&D Spoke Request Assistant.
+SYSTEM_PROMPT = """You are the Presight R&D Network Request Assistant.
 
-You help internal teams submit and track Azure spoke VNET CIDR requests.
+You help internal teams submit and track network requests: spoke VNETs, firewall
+policy changes, hub integration, ZPA routing, subnets, decommissions and DNS.
 
 YOUR CAPABILITIES:
-1. Create a new CIDR request — collect all required details conversationally, then submit.
-2. Update status to "VNET Created" — when the requester has deployed their spoke VNET.
-3. Request Hub Integration — collect outbound access rules and VNET details, then notify admin.
-4. Check request status — by Request ID. Ask for the ID if not provided.
-5. Send a reminder to admin — if a request is waiting too long.
+1. Create a new spoke VNET / CIDR request — collect details conversationally, then submit.
+2. Create OTHER request types with create_service_request. Types and the details each needs:
+   - firewall_policy: action (add/modify/delete), rule_kind (network/application), source,
+     destination, ports_protocol, rule_name (for modify/delete), justification
+   - hub_integration: subscription_id, resource_group, vnet_name, region, address_space (CIDR),
+     internet_egress (bool) — for VNETs that already exist and only need hub peering
+   - zpa_rnd_routing: spoke_vnet_name, spoke_cidr, spoke_udr_name, spoke_udr_rg,
+     spoke_subscription_id, justification — to be routable via the ZPA R&D connector
+   - zpa_other_routing: same as zpa_rnd_routing plus connector_name (required)
+   - subnet_additional: vnet_name, subnet_size, subnet_purpose, existing_request_id (optional)
+   - vnet_decommission: vnet_name, resource_group, subscription_id, allocated_cidr,
+     confirm (must be true — always ask the user to explicitly confirm)
+   - dns: dns_kind (record/private_zone_link), zone, record_type, record_name, record_value
+   - other: description, priority (low/normal/high)
+3. Update status to "VNET Created" — when the requester has deployed their spoke VNET.
+4. Request Hub Integration for an existing VNET request — collect outbound rules + VNET details.
+5. Check request status — by Request ID. Ask for the ID if not provided.
+6. Send a reminder to admin — if a request is waiting too long.
 
 WORKFLOW GUIDANCE:
-- After creating a request, always give the Request ID and remind them to note it.
+- First figure out WHICH request type the user needs, then collect that type's details.
+- After creating any request, always give the Request ID and remind them to note it.
 - When they say their VNET is created, update to VNET_CREATED and ask if they need hub integration.
-- If they want hub integration, collect: outbound access rules, VPN/ZPA requirement, and VNET details.
-- For outbound access, ask: destination (IP/FQDN), port, protocol — or confirm if they want "All open", "HTTP/HTTPS only".
 - Always confirm details before submitting.
 - Be friendly, concise, and guide them step by step.
 
@@ -53,6 +67,30 @@ TOOLS_OPENAI = [
                     "hub_integration":  {"type": "boolean", "description": "Does this spoke need hub integration?"},
                 },
                 "required": ["cidr_needed", "purpose", "requester_name", "ip_range", "hub_integration"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_service_request",
+            "description": ("Create a non-VNET network request: firewall_policy, hub_integration, "
+                            "zpa_rnd_routing, zpa_other_routing, subnet_additional, vnet_decommission, "
+                            "dns, or other. Collect the type-specific details first (see system prompt)."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_type":    {"type": "string",
+                                        "enum": ["firewall_policy", "hub_integration", "zpa_rnd_routing",
+                                                 "zpa_other_routing", "subnet_additional",
+                                                 "vnet_decommission", "dns", "other"]},
+                    "purpose":         {"type": "string", "description": "One-line summary of the request"},
+                    "requester_name":  {"type": "string"},
+                    "requester_email": {"type": "string"},
+                    "details":         {"type": "object",
+                                        "description": "Type-specific fields as key/value pairs"},
+                },
+                "required": ["request_type", "purpose", "requester_name", "details"],
             },
         },
     },
@@ -153,6 +191,8 @@ def _execute_tool(name: str, inputs: dict) -> str:
     try:
         if name == "create_spoke_request":
             return _tool_create_request(**inputs)
+        elif name == "create_service_request":
+            return _tool_create_service_request(**inputs)
         elif name == "update_status_vnet_created":
             return _tool_update_vnet_created(**inputs)
         elif name == "request_hub_integration":
@@ -178,6 +218,10 @@ def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_int
         req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration)
         log.info("[requester] Request #%s committed to DB (purpose=%s, requester=%s)", req_id, purpose, requester_name)
         req = get_spoke_request(req_id)
+        audit.record("request_created", actor=f"{requester_name} (via agent)", actor_role="agent",
+                     request_id=req_id,
+                     summary=f"New VNET request: /{cidr_needed} in {ip_range} — {str(purpose)[:100]}",
+                     data={"request_type": "vnet_new", "cidr_needed": cidr_needed, "ip_range": ip_range})
     except Exception as exc:
         log.exception("[requester] DB error creating request")
         return json.dumps({"error": f"Database error: {exc}"})
@@ -193,6 +237,24 @@ def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_int
     })
 
 
+def _tool_create_service_request(request_type, purpose, requester_name,
+                                 details, requester_email=None) -> str:
+    """Create a non-VNET request via the same validated path as the form API."""
+    try:
+        from app import _create_service_request
+        result, code = _create_service_request(
+            request_type=request_type, purpose=purpose, requester_name=requester_name,
+            requester_email=requester_email, details=details or {},
+        )
+        if code != 200:
+            return json.dumps(result)
+        return json.dumps({**result,
+                           "message": f"Request #{result['request_id']} ({request_type}) created successfully."})
+    except Exception as exc:
+        log.exception("[requester] error creating service request")
+        return json.dumps({"error": str(exc)})
+
+
 def _tool_update_vnet_created(request_id: int) -> str:
     try:
         from db_utils import get_spoke_request, update_spoke_request
@@ -205,6 +267,9 @@ def _tool_update_vnet_created(request_id: int) -> str:
         update_spoke_request(request_id, status=RequestStatus.VNET_CREATED)
         req = get_spoke_request(request_id)
         log.info("[requester] Request #%s → VNET_CREATED", request_id)
+        audit.record("status_changed", actor=f"{req.requester_name} (via agent)", actor_role="agent",
+                     request_id=request_id, summary="Status: CIDR Assigned → VNET Created",
+                     data={"old": RequestStatus.CIDR_ASSIGNED, "new": RequestStatus.VNET_CREATED})
     except Exception as exc:
         log.exception("[requester] DB error updating request #%s to VNET_CREATED", request_id)
         return json.dumps({"error": f"Database error: {exc}"})
@@ -249,6 +314,11 @@ def _tool_request_hub_integration(
         update_spoke_request(request_id, status=RequestStatus.VNET_CREATED)
         req = get_spoke_request(request_id)
         log.info("[requester] Request #%s → VNET_CREATED (VNET details + hub request saved)", request_id)
+        audit.record("vnet_info_updated", actor=f"{req.requester_name} (via agent)", actor_role="agent",
+                     request_id=request_id,
+                     summary=f"Hub integration requested — VNET details saved ({vnet_name or '—'})",
+                     data={"vnet_name": vnet_name, "resource_group": resource_group,
+                           "address_space": address_space, "vpn_zpa_access": bool(vpn_zpa_access)})
     except Exception as exc:
         log.exception("[requester] DB error on hub integration request #%s", request_id)
         return json.dumps({"error": f"Database error: {exc}"})
@@ -277,6 +347,9 @@ def _tool_send_reminder(request_id: int, message: str) -> str:
         if not req:
             return json.dumps({"error": f"Request #{request_id} not found."})
         ok = notifications.notify_reminder(req, message)
+        if ok:
+            audit.record("reminder_sent", actor=f"{req.requester_name} (via agent)", actor_role="agent",
+                         request_id=request_id, summary=f"Reminder to admin: {str(message)[:150]}")
         return json.dumps({"success": ok, "message": "Reminder sent to admin via Teams." if ok else "Notification failed — check TEAMS_WEBHOOK_URL."})
     except Exception as exc:
         return json.dumps({"error": str(exc)})

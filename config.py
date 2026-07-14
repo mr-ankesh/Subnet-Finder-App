@@ -28,6 +28,7 @@ CATEGORIES = {
     "peering":       {"title": "Peering Defaults",    "desc": "Defaults applied to hub↔spoke peerings (overridable per action)."},
     "naming":        {"title": "Naming Conventions",  "desc": "Templates for generated resource names. Placeholders: {vnet} {request_id} {region} {cidr_mask} {purpose} {date}. Global prefix/suffix are joined with '-'."},
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
+    "auth":          {"title": "Authentication",      "desc": "Keycloak-ready SSO configuration. Values are stored now; enforcement ships with the integration (see docs/KEYCLOAK.md for the step-by-step guide) — login stays password-based until then."},
     "safety":        {"title": "Safety",              "desc": "Guard rails for Azure execution."},
 }
 
@@ -70,6 +71,8 @@ SETTINGS_SPEC = {
     "UDR_RESOURCE_GROUP": _f("routing", "UDR resource group", help="Resource group holding the hub route tables below."),
     "UDR_GATEWAY_NAME":   _f("routing", "Gateway route table", help="Gets a route to each new spoke."),
     "UDR_ZPA_NAME":       _f("routing", "ZPA route table", help="Gets a route to each new spoke."),
+    "ZPA_CONNECTION_SUBNET": _f("routing", "ZPA connection subnet (CIDR)",
+                                help="ZPA R&D connector subnet — routed into a spoke's UDR when ZPA routing is requested."),
     "UDR_NAME_1":         _f("routing", "Hub UDR #1", help="Legacy pair updated by 'add routes to both hub UDRs'."),
     "UDR_NAME_2":         _f("routing", "Hub UDR #2"),
 
@@ -100,6 +103,19 @@ SETTINGS_SPEC = {
     "SMTP_USE_TLS":           _f("notifications", "Use STARTTLS", "true", type="bool"),
     "SUBNET_FINDER_BASE_URL": _f("notifications", "App base URL", "http://localhost:8080",
                                  help="Used for deep-links in Teams/email notifications."),
+
+    # ── Authentication (Keycloak-ready; not enforced yet) ──
+    "AUTH_PROVIDER":          _f("auth", "Auth provider", "local", options=["local", "keycloak"],
+                                 help="'keycloak' only stores configuration for now — password login remains active until the OIDC flow is implemented."),
+    "KEYCLOAK_SERVER_URL":    _f("auth", "Keycloak server URL", help="e.g. https://keycloak.example.com (base URL, no /auth suffix on modern Keycloak)."),
+    "KEYCLOAK_REALM":         _f("auth", "Realm", help="e.g. presight-rnd"),
+    "KEYCLOAK_CLIENT_ID":     _f("auth", "Client ID", help="Confidential client for this app, e.g. subnet-manager"),
+    "KEYCLOAK_CLIENT_SECRET": _f("auth", "Client secret", secret=True,
+                                 help="Stored encrypted. Leave blank on save to keep the current value."),
+    "KEYCLOAK_ADMIN_ROLE":    _f("auth", "Admin role", "subnet-admin",
+                                 help="Realm/client role that maps to admin access."),
+    "KEYCLOAK_REQUESTER_ROLE": _f("auth", "Requester role", "subnet-requester",
+                                  help="Role for the requester portal (or leave open to all authenticated users)."),
 
     # ── Safety ──
     "AZURE_DRY_RUN": _f("safety", "Dry-run mode (simulate Azure changes)", "true", type="bool",

@@ -7,9 +7,11 @@ from datetime import datetime
 
 log = logging.getLogger(__name__)
 
+import audit
+import search
 import settings_store
 from config import cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view
-from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus
+from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus, RequestType
 from naming import render_name
 import notifications
 
@@ -147,6 +149,16 @@ with app.app_context():
             db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN deployment_mode VARCHAR(10) NOT NULL DEFAULT 'self'"))
             db.session.commit()
             log.info("[migration] added spoke_requests.deployment_mode column")
+        # Multi-type requests: request_type + details JSON
+        if "request_type" not in cols:
+            db.session.execute(db.text(
+                "ALTER TABLE spoke_requests ADD COLUMN request_type VARCHAR(30) NOT NULL DEFAULT 'vnet_new'"))
+            db.session.commit()
+            log.info("[migration] added spoke_requests.request_type column")
+        if "details" not in cols:
+            db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN details TEXT"))
+            db.session.commit()
+            log.info("[migration] added spoke_requests.details column")
         # vnet_info: subnet detail columns
         vcols = [r[1] for r in db.session.execute(db.text("PRAGMA table_info(vnet_info)"))]
         for col, ddl in (("subnet_name", "VARCHAR(120)"), ("subnet_size", "VARCHAR(10)"),
@@ -162,6 +174,9 @@ with app.app_context():
 
     # Settings overrides table (admin settings UI)
     settings_store.ensure_table()
+
+    # Audit trail table
+    audit.ensure_table()
 
 
 # ── Admin auth ──────────────────────────────────────────────────────────────
@@ -181,17 +196,28 @@ def require_admin(f):
 @app.context_processor
 def inject_globals():
     return {"is_admin": session.get("is_admin", False), "RequestStatus": RequestStatus,
-            "AZURE_DRY_RUN": cfg.AZURE_DRY_RUN}
+            "RequestType": RequestType, "AZURE_DRY_RUN": cfg.AZURE_DRY_RUN}
+
+
+def current_actor() -> str:
+    """Display name for the audit trail: admin's login name, or 'Admin'."""
+    return session.get("admin_name") or "Admin"
 
 
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
     error = None
     if request.method == "POST":
+        name = (request.form.get("admin_name") or "").strip()[:100]
         if request.form.get("password") == cfg.ADMIN_PASSWORD:
             session["is_admin"] = True
+            session["admin_name"] = name or "Admin"
+            audit.record("admin_login", actor=session["admin_name"], actor_role="admin",
+                         summary=f"Admin login from {request.remote_addr}")
             return redirect(request.form.get("next") or url_for("requests_list"))
         error = "Incorrect password."
+        audit.record("admin_login_failed", actor=name or "unknown", actor_role="system",
+                     summary=f"Failed admin login from {request.remote_addr}")
     return render_template("admin_login.html", error=error)
 
 
@@ -262,6 +288,9 @@ def admin_settings_save():
             saved.append(key)
     if saved:
         log.info("[settings] admin updated: %s", ", ".join(saved))
+        # Keys only — secret values must never reach the audit trail
+        audit.record("settings_changed", actor=current_actor(), actor_role="admin",
+                     summary=f"Settings updated: {', '.join(saved)}", data={"keys": saved})
     return jsonify({"success": not errors, "saved": saved, "errors": errors}), (200 if not errors else 400)
 
 
@@ -273,6 +302,8 @@ def admin_settings_reset():
         return jsonify({"success": False, "error": "Unknown setting."}), 400
     settings_store.delete_override(key)
     log.info("[settings] admin reset override: %s", key)
+    audit.record("settings_reset", actor=current_actor(), actor_role="admin",
+                 summary=f"Setting reverted to env/default: {key}", data={"key": key})
     raw, source = resolve(key)
     spec = SETTINGS_SPEC[key]
     value = "" if spec["secret"] else raw
@@ -464,6 +495,10 @@ def allocate():
     if not all([selected, purpose, requested_by, allocated_by]):
         return jsonify({"error": "All fields are required"}), 400
     success, msg = allocate_subnet(selected, base_net, pool, purpose, requested_by, allocated_by)
+    if success:
+        audit.record("subnet_allocated", actor=current_actor(), actor_role="admin",
+                     summary=f"Allocated {selected} ({purpose}) for {requested_by}",
+                     data={"subnet": selected, "pool": pool, "allocated_by": allocated_by})
     return jsonify({"error": msg} if not success else {"message": msg}), (400 if not success else 200)
 
 
@@ -475,6 +510,9 @@ def deallocate():
     if not selected:
         return jsonify({"error": "No subnet selected"}), 400
     success, msg = deallocate_subnet(selected, base_net)
+    if success:
+        audit.record("subnet_deallocated", actor=current_actor(), actor_role="admin",
+                     summary=f"Deallocated {selected}", data={"subnet": selected, "pool": pool})
     return jsonify({"error": msg} if not success else {"message": msg}), (400 if not success else 200)
 
 
@@ -552,7 +590,33 @@ def requests_list():
 @require_admin
 def request_detail(req_id):
     req = SpokeRequest.query.get_or_404(req_id)
-    return render_template("request_detail.html", req=req, RequestStatus=RequestStatus)
+    history = audit.list_entries(request_id=req_id, limit=50)
+    return render_template("request_detail.html", req=req, RequestStatus=RequestStatus,
+                           history=history)
+
+
+@app.route("/admin/audit")
+@require_admin
+def admin_audit():
+    f_actor  = request.args.get("actor", "").strip()
+    f_action = request.args.get("action", "").strip()
+    f_req    = request.args.get("request_id", "").strip()
+    f_q      = request.args.get("q", "").strip()
+    entries = audit.list_entries(
+        request_id=int(f_req) if f_req.isdigit() else None,
+        actor=f_actor or None, action=f_action or None, q=f_q or None, limit=200,
+    )
+    return render_template("audit.html", entries=entries, actions=audit.distinct_actions(),
+                           f_actor=f_actor, f_action=f_action, f_req=f_req, f_q=f_q)
+
+
+@app.route("/admin/search")
+@require_admin
+def admin_search():
+    q = request.args.get("q", "").strip()
+    results = search.global_search(q) if q else {}
+    total = sum(len(v) for v in results.values())
+    return render_template("search_results.html", q=q, results=results, total=total)
 
 
 @app.route("/requests/<int:req_id>/update-status", methods=["POST"])
@@ -560,25 +624,30 @@ def request_detail(req_id):
 def request_update_status(req_id):
     req = SpokeRequest.query.get_or_404(req_id)
     new_status = request.form.get("status", "").strip()
-    # Admin can set these statuses from the page
-    valid = [
-        RequestStatus.CIDR_ASSIGNED,
-        RequestStatus.HUB_INTEGRATION_IN_PROGRESS,
-        RequestStatus.HUB_INTEGRATED,
-        RequestStatus.CANCELLED,
-    ]
+    # Valid targets = the request type's own workflow steps + terminal states
+    valid = list(req.workflow()) + RequestType.TERMINALS
     if new_status not in valid:
-        return jsonify({"error": "Invalid status"}), 400
+        return jsonify({"error": "Invalid status for this request type"}), 400
 
+    old_status = req.status
     req.status = new_status
     req.updated_at = datetime.utcnow()
     db.session.commit()
+    audit.record("status_changed", actor=current_actor(), actor_role="admin", request_id=req.id,
+                 summary=f"Status: {RequestStatus.label(old_status)} → {RequestStatus.label(new_status)}",
+                 data={"old": old_status, "new": new_status})
 
     try:
-        if new_status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS:
-            notifications.notify_hub_in_progress(req)
-        elif new_status == RequestStatus.HUB_INTEGRATED:
-            notifications.notify_hub_integrated(req)
+        if req.request_type in (None, RequestType.VNET_NEW, RequestType.HUB_INTEGRATION):
+            # Keep the richer VNET-workflow notifications where they apply
+            if new_status == RequestStatus.HUB_INTEGRATION_IN_PROGRESS:
+                notifications.notify_hub_in_progress(req)
+            elif new_status == RequestStatus.HUB_INTEGRATED:
+                notifications.notify_hub_integrated(req)
+            elif req.request_type == RequestType.HUB_INTEGRATION:
+                notifications.notify_status_changed(req)
+        else:
+            notifications.notify_status_changed(req)
     except Exception:
         pass
 
@@ -608,6 +677,10 @@ def request_vnet_info(req_id):
         if not req.vnet_info:
             db.session.add(vi)
         db.session.commit()
+        audit.record("vnet_info_updated", actor=current_actor(), actor_role="admin", request_id=req.id,
+                     summary=f"VNET info edited: {vi.vnet_name or '—'} ({vi.resource_group or '—'})",
+                     data={"vnet_name": vi.vnet_name, "resource_group": vi.resource_group,
+                           "subscription_id": vi.subscription_id, "region": vi.region})
         return redirect(url_for("request_detail", req_id=req.id))
     return render_template("vnet_form.html", req=req, errors=[], form={})
 
@@ -642,10 +715,88 @@ def requester_clear():
 
 # ── Form API endpoints (no agent — direct DB writes) ────────────────────────
 
+# Required keys inside `details` for each non-VNET request type
+TYPE_REQUIRED_DETAILS = {
+    RequestType.FIREWALL_POLICY:   ["action", "rule_kind", "destination"],
+    RequestType.HUB_INTEGRATION:   ["subscription_id", "resource_group", "vnet_name",
+                                    "region", "address_space"],
+    RequestType.ZPA_RND_ROUTING:   ["spoke_vnet_name", "spoke_cidr"],
+    RequestType.ZPA_OTHER_ROUTING: ["spoke_vnet_name", "spoke_cidr", "connector_name"],
+    RequestType.SUBNET_ADDITIONAL: ["vnet_name", "subnet_size"],
+    RequestType.VNET_DECOMMISSION: ["vnet_name", "resource_group", "confirm"],
+    RequestType.DNS:               ["dns_kind", "zone"],
+    RequestType.OTHER:             ["description"],
+}
+
+
+def _create_service_request(request_type, purpose, requester_name, requester_email, details):
+    """
+    Shared creation path for non-VNET request types (used by the form API and the
+    requester agent). Returns (result_dict, http_status).
+    """
+    from db_utils import create_spoke_request, get_spoke_request, upsert_vnet_info
+    if request_type not in RequestType.ALL or request_type == RequestType.VNET_NEW:
+        return {"error": f"Unknown request type '{request_type}'."}, 400
+    if not purpose or not requester_name:
+        return {"error": "Name and a short summary/purpose are required."}, 400
+
+    details = {k: v for k, v in (details or {}).items() if v not in (None, "")}
+    missing = [k for k in TYPE_REQUIRED_DETAILS.get(request_type, []) if not details.get(k)]
+    if missing:
+        return {"error": "Missing required fields: " + ", ".join(missing)}, 400
+
+    req_id = create_spoke_request(
+        cidr_needed="", purpose=purpose, requester_name=requester_name, ip_range="",
+        hub_integration=(request_type == RequestType.HUB_INTEGRATION),
+        requester_email=requester_email or None,
+        request_type=request_type, details=details,
+    )
+
+    # Hub-integration requests carry full VNET details — mirror them into vnet_info
+    # and allocated_subnet so the admin's existing Azure buttons (peer/internet/
+    # routes) work without special-casing.
+    if request_type == RequestType.HUB_INTEGRATION:
+        from db_utils import update_spoke_request
+        upsert_vnet_info(req_id,
+                         subscription_id=details.get("subscription_id"),
+                         resource_group=details.get("resource_group"),
+                         vnet_name=details.get("vnet_name"),
+                         region=details.get("region"),
+                         address_space=details.get("address_space"))
+        update_spoke_request(req_id, allocated_subnet=details.get("address_space"))
+
+    req = get_spoke_request(req_id)
+    audit.record("request_created", actor=requester_name, actor_role="requester", request_id=req_id,
+                 summary=f"{RequestType.label(request_type)} request submitted: {purpose[:120]}",
+                 data={"request_type": request_type, "details": details})
+    try:
+        notifications.notify_request_submitted(req)
+    except Exception:
+        pass
+    return {"success": True, "request_id": req_id}, 200
+
+
 @app.route("/api/requester/new-request", methods=["POST"])
 def requester_new_request():
     from db_utils import create_spoke_request, get_spoke_request
     data = request.get_json(force=True)
+
+    # Non-VNET request types go through the shared service-request path
+    request_type = str(data.get("request_type", RequestType.VNET_NEW)).strip() or RequestType.VNET_NEW
+    if request_type != RequestType.VNET_NEW:
+        try:
+            result, code = _create_service_request(
+                request_type=request_type,
+                purpose=str(data.get("purpose", "")).strip(),
+                requester_name=str(data.get("requester_name", "")).strip(),
+                requester_email=str(data.get("requester_email", "")).strip(),
+                details=data.get("details") or {},
+            )
+            return jsonify(result), code
+        except Exception as exc:
+            log.exception("Form: error creating %s request", request_type)
+            return jsonify({"error": str(exc)}), 500
+
     cidr_needed   = str(data.get("cidr_needed", "")).strip()
     purpose       = str(data.get("purpose", "")).strip()
     requester_name = str(data.get("requester_name", "")).strip()
@@ -683,6 +834,10 @@ def requester_new_request():
                              region=azure["region"], subnet_name=azure["subnet_name"],
                              subnet_size=azure["subnet_size"], subnet_purpose=azure["subnet_purpose"] or None)
         req = get_spoke_request(req_id)
+        audit.record("request_created", actor=requester_name, actor_role="requester", request_id=req_id,
+                     summary=f"New VNET request: /{cidr_needed} in {ip_range} — {purpose[:100]}",
+                     data={"request_type": "vnet_new", "cidr_needed": cidr_needed,
+                           "ip_range": ip_range, "deployment_mode": deployment_mode})
         try:
             notifications.notify_cidr_requested(req)
         except Exception:
@@ -726,6 +881,10 @@ def requester_vnet_created():
                      region=vnet["region"], address_space=vnet["address_space"])
     update_spoke_request(int(request_id), status=RequestStatus.VNET_CREATED)
     req = get_spoke_request(int(request_id))
+    audit.record("status_changed", actor=req.requester_name, actor_role="requester",
+                 request_id=req.id,
+                 summary=f"Status: CIDR Assigned → VNET Created ({vnet['vnet_name']})",
+                 data={"old": RequestStatus.CIDR_ASSIGNED, "new": RequestStatus.VNET_CREATED, **vnet})
     try:
         notifications.notify_vnet_created(req)
     except Exception:
@@ -745,6 +904,9 @@ def requester_send_reminder():
     if not req:
         return jsonify({"error": f"Request #{request_id} not found."}), 404
     ok = notifications.notify_reminder(req, message)
+    if ok:
+        audit.record("reminder_sent", actor=req.requester_name, actor_role="requester",
+                     request_id=req.id, summary=f"Reminder to admin: {message[:150]}")
     return jsonify({"success": ok})
 
 
@@ -850,8 +1012,59 @@ def admin_azure_action(req_id):
       zpa_route     -> add a route to the spoke in the ZPA routing table
     """
     import azure_tools
+    from naming import sanitize
     req = SpokeRequest.query.get_or_404(req_id)
     action = (request.get_json(force=True) or {}).get("action", "")
+    details = req.get_details()
+
+    def _audit_azure(res):
+        audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
+                     summary=f"Azure action '{action}' — "
+                             f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
+                     data={"action": action, "dry_run": bool(res.get("dry_run")),
+                           "success": bool(res.get("success")), "message": str(res.get("message", ""))[:400]})
+
+    # ── ZPA routing actions — driven by request details, not vnet_info ──
+    if action == "zpa_route_to_spoke":
+        # Route to the spoke CIDR in the ZPA connector's routing table
+        spoke_cidr = details.get("spoke_cidr", "")
+        if not spoke_cidr:
+            return jsonify({"error": "Request has no spoke CIDR in its details."}), 400
+        table = details.get("connector_route_table") or cfg.UDR_ZPA_NAME
+        if not table:
+            return jsonify({"error": "No ZPA routing table configured "
+                                     "(set 'ZPA route table' in Settings)."}), 400
+        res = azure_tools.add_route_to_table(
+            route_table_name=table, resource_group=cfg.UDR_RESOURCE_GROUP,
+            route_name=render_name("TPL_ROUTE_NAME", vnet=details.get("spoke_vnet_name", f"req{req.id}"),
+                                   request_id=req.id),
+            address_prefix=spoke_cidr, next_hop_type="VirtualAppliance",
+            next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP, subscription_id=cfg.HUB_SUBSCRIPTION_ID,
+        )
+        _audit_azure(res)
+        return jsonify(res), (200 if res.get("success") else 207)
+
+    if action == "spoke_udr_zpa":
+        # Route to the ZPA connection subnet in the spoke's own UDR
+        zpa_subnet = cfg.ZPA_CONNECTION_SUBNET
+        if not zpa_subnet:
+            return jsonify({"error": "ZPA connection subnet not configured "
+                                     "(set it in Settings → Routing / UDRs)."}), 400
+        udr_name = details.get("spoke_udr_name", "")
+        udr_rg   = details.get("spoke_udr_rg", "")
+        if not udr_name or not udr_rg:
+            return jsonify({"error": "Request details are missing the spoke UDR name/resource group."}), 400
+        connector = details.get("connector_name", "rnd")
+        res = azure_tools.add_route_to_table(
+            route_table_name=udr_name, resource_group=udr_rg,
+            route_name=sanitize(f"to-zpa-{connector}"),
+            address_prefix=zpa_subnet, next_hop_type="VirtualAppliance",
+            next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
+            subscription_id=details.get("spoke_subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID,
+        )
+        _audit_azure(res)
+        return jsonify(res), (200 if res.get("success") else 207)
+
     addr = req.allocated_subnet
     if not addr:
         return jsonify({"error": "No CIDR has been assigned yet."}), 400
@@ -898,6 +1111,11 @@ def admin_azure_action(req_id):
     else:
         return jsonify({"error": f"Unknown action '{action}'."}), 400
 
+    audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
+                 summary=f"Azure action '{action}' — "
+                         f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
+                 data={"action": action, "dry_run": bool(res.get("dry_run")),
+                       "success": bool(res.get("success")), "message": str(res.get("message", ""))[:400]})
     return jsonify(res), (200 if res.get("success") else 207)
 
 

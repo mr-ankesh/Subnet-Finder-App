@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Presight R&D | Audit Trail{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <h1 class="alloc-page-title">Audit Trail</h1>
+    <p class="alloc-page-sub">Who did what, when — every operation is recorded</p>
+  </div>
+</div>
+
+<div style="max-width:1400px;margin:0 auto;padding:28px 40px;">
+
+  <!-- Filters -->
+  <form method="GET" action="{{ url_for('admin_audit') }}" class="glass-card"
+        style="padding:14px 16px;margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+    <div>
+      <label class="audit-filter-label">Actor</label>
+      <input type="text" name="actor" value="{{ f_actor }}" class="form-control audit-filter" placeholder="name…">
+    </div>
+    <div>
+      <label class="audit-filter-label">Action</label>
+      <select name="action" class="form-select audit-filter">
+        <option value="">All actions</option>
+        {% for a in actions %}
+        <option value="{{ a }}" {% if a == f_action %}selected{% endif %}>{{ a.replace('_', ' ') | title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="audit-filter-label">Request ID</label>
+      <input type="number" name="request_id" value="{{ f_req }}" class="form-control audit-filter" placeholder="e.g. 8" min="1" style="width:110px;">
+    </div>
+    <div>
+      <label class="audit-filter-label">Keyword</label>
+      <input type="text" name="q" value="{{ f_q }}" class="form-control audit-filter" placeholder="search summary…">
+    </div>
+    <button type="submit" class="btn btn-glow" style="font-size:13px;"><i class="bi bi-funnel me-1"></i>Filter</button>
+    {% if f_actor or f_action or f_req or f_q %}
+    <a href="{{ url_for('admin_audit') }}" class="btn btn-glass" style="font-size:13px;">Clear</a>
+    {% endif %}
+  </form>
+
+  {% if not entries %}
+  <div class="glass-card">
+    <div class="empty-state" style="padding:60px 24px;">
+      <i class="bi bi-journal-text empty-icon"></i>
+      <p style="font-size:15px;">No audit entries{% if f_actor or f_action or f_req or f_q %} match these filters{% endif %}.</p>
+    </div>
+  </div>
+  {% else %}
+  <div class="glass-card">
+    <div style="overflow-x:auto;">
+      <table class="gls-table">
+        <thead>
+          <tr><th>Time (UTC)</th><th>Actor</th><th>Role</th><th>Action</th><th>Request</th><th>Summary</th></tr>
+        </thead>
+        <tbody>
+          {% for e in entries %}
+          <tr>
+            <td style="font-family:var(--mono);font-size:12px;white-space:nowrap;color:var(--text-muted);">{{ e.ts }}</td>
+            <td style="font-weight:600;color:var(--text);white-space:nowrap;">{{ e.actor }}</td>
+            <td>
+              <span class="role-badge role-{{ e.actor_role }}">{{ e.actor_role }}</span>
+            </td>
+            <td><span class="action-badge">{{ e.action.replace('_', ' ') }}</span></td>
+            <td>
+              {% if e.request_id %}
+              <a href="{{ url_for('request_detail', req_id=e.request_id) }}" style="color:#60a5fa;font-weight:600;text-decoration:none;">#{{ e.request_id }}</a>
+              {% else %}<span style="color:var(--text-muted);">—</span>{% endif %}
+            </td>
+            <td style="font-size:12.5px;color:var(--text-dim);max-width:480px;">{{ e.summary }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div style="padding:10px 16px;font-size:11.5px;color:var(--text-muted);border-top:1px solid var(--border);">
+      Showing latest {{ entries|length }} entries.
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+<style>
+  .audit-filter-label { display:block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:4px; }
+  .audit-filter { font-size:13px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);min-width:150px; }
+  .role-badge { font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:2px 8px;border-radius:12px;font-weight:700; }
+  .role-admin     { background:rgba(0,120,212,.18);  color:#60a5fa; }
+  .role-requester { background:rgba(74,222,128,.14); color:#4ade80; }
+  .role-agent     { background:rgba(139,92,246,.16); color:#c4b5fd; }
+  .role-system    { background:rgba(255,255,255,.08);color:var(--text-muted); }
+  .action-badge { font-size:11px;font-family:var(--mono);background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:6px;padding:2px 8px;color:var(--text-dim);white-space:nowrap; }
+</style>
+{% endblock %}

@@ -22,9 +22,15 @@
 
       <form method="POST" action="{{ url_for('admin_login') }}">
         <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+        <div style="margin-bottom:16px;">
+          <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:8px;">Your Name <span style="font-weight:400;text-transform:none;">(for the audit trail)</span></label>
+          <input type="text" name="admin_name" autofocus
+            style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-family:var(--font-body);font-size:14px;padding:10px 14px;outline:none;box-sizing:border-box;"
+            placeholder="e.g. Ankesh Singh">
+        </div>
         <div style="margin-bottom:20px;">
           <label style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:8px;">Password</label>
-          <input type="password" name="password" autofocus
+          <input type="password" name="password"
             style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-family:var(--font-body);font-size:14px;padding:10px 14px;outline:none;box-sizing:border-box;"
             placeholder="Enter admin password">
         </div>

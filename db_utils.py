@@ -11,7 +11,7 @@ import os
 import sqlite3
 from datetime import datetime
 
-from models import RequestStatus
+from models import RequestStatus, RequestType
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +48,18 @@ class RequestProxy:
     def status_color(self):
         return RequestStatus.color(self.status)
 
+    def type_label(self):
+        return RequestType.label(getattr(self, "request_type", None) or RequestType.VNET_NEW)
+
+    def get_details(self) -> dict:
+        raw = getattr(self, "details", None)
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+
     def to_dict(self):
         d = {}
         for k, v in self.__dict__.items():
@@ -58,6 +70,9 @@ class RequestProxy:
             else:
                 d[k] = v
         d["status_label"] = self.status_label()
+        d["request_type"] = getattr(self, "request_type", None) or RequestType.VNET_NEW
+        d["type_label"]   = self.type_label()
+        d["details"]      = self.get_details()
         if self.vnet_info:
             d["vnet_info"] = self.vnet_info
         return d
@@ -66,20 +81,23 @@ class RequestProxy:
 # ── CRUD helpers ─────────────────────────────────────────────────────────────
 
 def create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration,
-                         requester_email=None, deployment_mode="self") -> int:
+                         requester_email=None, deployment_mode="self",
+                         request_type=RequestType.VNET_NEW, details=None) -> int:
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")
+    status = RequestType.initial_status(request_type)
     with _conn() as conn:
         cur = conn.execute(
             """INSERT INTO spoke_requests
-               (cidr_needed, purpose, requester_name, requester_email, ip_range,
-                hub_integration, deployment_mode, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (str(cidr_needed), purpose, requester_name, requester_email or None, ip_range,
-             1 if hub_integration else 0, deployment_mode, RequestStatus.CIDR_REQUESTED, now, now),
+               (request_type, details, cidr_needed, purpose, requester_name, requester_email,
+                ip_range, hub_integration, deployment_mode, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (request_type, json.dumps(details) if details else None,
+             str(cidr_needed or ""), purpose, requester_name, requester_email or None,
+             ip_range or "", 1 if hub_integration else 0, deployment_mode, status, now, now),
         )
         conn.commit()
         req_id = cur.lastrowid
-    log.info("[db_utils] INSERT spoke_request #%s → %s", req_id, DB_PATH)
+    log.info("[db_utils] INSERT spoke_request #%s (%s) → %s", req_id, request_type, DB_PATH)
     return req_id
 
 

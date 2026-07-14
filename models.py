@@ -17,6 +17,19 @@ class RequestStatus:
     HUB_INTEGRATED            = "HUB_INTEGRATED"
     CANCELLED                 = "CANCELLED"
 
+    # Generic / per-type workflow statuses (non-VNET request types)
+    SUBMITTED         = "SUBMITTED"
+    IN_REVIEW         = "IN_REVIEW"
+    IN_PROGRESS       = "IN_PROGRESS"
+    RULE_IMPLEMENTED  = "RULE_IMPLEMENTED"
+    ZPA_ROUTE_ADDED   = "ZPA_ROUTE_ADDED"
+    SPOKE_UDR_UPDATED = "SPOKE_UDR_UPDATED"
+    SUBNET_ALLOCATED  = "SUBNET_ALLOCATED"
+    RESOURCES_REMOVED = "RESOURCES_REMOVED"
+    CIDR_RELEASED     = "CIDR_RELEASED"
+    COMPLETED         = "COMPLETED"
+    REJECTED          = "REJECTED"
+
     # Ordered workflow steps (not including CANCELLED)
     # Active workflow order. HUB_INTEGRATION_NEEDED is retired (kept as a constant
     # only for backward compatibility with any legacy rows) — VNET_CREATED is the
@@ -37,6 +50,17 @@ class RequestStatus:
         HUB_INTEGRATION_IN_PROGRESS: "Hub Integration In Progress",
         HUB_INTEGRATED:              "Hub Integrated",
         CANCELLED:                   "Cancelled",
+        SUBMITTED:                   "Submitted",
+        IN_REVIEW:                   "In Review",
+        IN_PROGRESS:                 "In Progress",
+        RULE_IMPLEMENTED:            "Rule Implemented",
+        ZPA_ROUTE_ADDED:             "ZPA Route Added",
+        SPOKE_UDR_UPDATED:           "Spoke UDR Updated",
+        SUBNET_ALLOCATED:            "Subnet Allocated",
+        RESOURCES_REMOVED:           "Resources Removed",
+        CIDR_RELEASED:               "CIDR Released",
+        COMPLETED:                   "Completed",
+        REJECTED:                    "Rejected",
     }
 
     _COLORS = {
@@ -47,6 +71,17 @@ class RequestStatus:
         HUB_INTEGRATION_IN_PROGRESS: "info",
         HUB_INTEGRATED:              "success",
         CANCELLED:                   "danger",
+        SUBMITTED:                   "warning",
+        IN_REVIEW:                   "info",
+        IN_PROGRESS:                 "info",
+        RULE_IMPLEMENTED:            "primary",
+        ZPA_ROUTE_ADDED:             "primary",
+        SPOKE_UDR_UPDATED:           "primary",
+        SUBNET_ALLOCATED:            "primary",
+        RESOURCES_REMOVED:           "primary",
+        CIDR_RELEASED:               "primary",
+        COMPLETED:                   "success",
+        REJECTED:                    "danger",
     }
 
     @classmethod
@@ -58,10 +93,109 @@ class RequestStatus:
         return cls._COLORS.get(status, "secondary")
 
 
+class RequestType:
+    """Request kinds available in the requester portal, each with its own workflow."""
+    VNET_NEW          = "vnet_new"
+    FIREWALL_POLICY   = "firewall_policy"
+    HUB_INTEGRATION   = "hub_integration"
+    ZPA_RND_ROUTING   = "zpa_rnd_routing"
+    ZPA_OTHER_ROUTING = "zpa_other_routing"
+    SUBNET_ADDITIONAL = "subnet_additional"
+    VNET_DECOMMISSION = "vnet_decommission"
+    DNS               = "dns"
+    OTHER             = "other"
+
+    ALL = [VNET_NEW, FIREWALL_POLICY, HUB_INTEGRATION, ZPA_RND_ROUTING,
+           ZPA_OTHER_ROUTING, SUBNET_ADDITIONAL, VNET_DECOMMISSION, DNS, OTHER]
+
+    _LABELS = {
+        VNET_NEW:          "New VNET",
+        FIREWALL_POLICY:   "Firewall Policy",
+        HUB_INTEGRATION:   "Hub Integration",
+        ZPA_RND_ROUTING:   "Routing from ZPA R&D",
+        ZPA_OTHER_ROUTING: "Routing from Other ZPA",
+        SUBNET_ADDITIONAL: "New Subnet in Existing VNET",
+        VNET_DECOMMISSION: "VNET Decommission",
+        DNS:               "DNS / Private DNS Link",
+        OTHER:             "Other Request",
+    }
+
+    _DESCRIPTIONS = {
+        VNET_NEW:          "Request a CIDR and onboard a new spoke VNET.",
+        FIREWALL_POLICY:   "Add, modify or delete a firewall policy rule.",
+        HUB_INTEGRATION:   "VNET already exists — request hub peering/integration only.",
+        ZPA_RND_ROUTING:   "Make your spoke routable via the ZPA R&D connector.",
+        ZPA_OTHER_ROUTING: "Make your spoke routable via another ZPA connector.",
+        SUBNET_ADDITIONAL: "Carve an additional subnet inside an onboarded VNET.",
+        VNET_DECOMMISSION: "Retire a spoke: remove peering/routes and release the CIDR.",
+        DNS:               "DNS record or Private DNS zone link for your spoke.",
+        OTHER:             "Anything that doesn't fit the categories above.",
+    }
+
+    _ICONS = {   # bootstrap-icons names for the picker cards
+        VNET_NEW:          "diagram-3",
+        FIREWALL_POLICY:   "bricks",
+        HUB_INTEGRATION:   "sign-turn-right",
+        ZPA_RND_ROUTING:   "shield-lock",
+        ZPA_OTHER_ROUTING: "shield-plus",
+        SUBNET_ADDITIONAL: "grid-1x2",
+        VNET_DECOMMISSION: "trash3",
+        DNS:               "globe2",
+        OTHER:             "chat-square-text",
+    }
+
+    # Per-type ordered workflow steps. CANCELLED / REJECTED are terminals for all.
+    WORKFLOWS = {
+        VNET_NEW:          RequestStatus.ORDERED,
+        FIREWALL_POLICY:   [RequestStatus.SUBMITTED, RequestStatus.IN_REVIEW,
+                            RequestStatus.RULE_IMPLEMENTED, RequestStatus.COMPLETED],
+        HUB_INTEGRATION:   [RequestStatus.SUBMITTED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS,
+                            RequestStatus.HUB_INTEGRATED],
+        ZPA_RND_ROUTING:   [RequestStatus.SUBMITTED, RequestStatus.ZPA_ROUTE_ADDED,
+                            RequestStatus.SPOKE_UDR_UPDATED, RequestStatus.COMPLETED],
+        ZPA_OTHER_ROUTING: [RequestStatus.SUBMITTED, RequestStatus.ZPA_ROUTE_ADDED,
+                            RequestStatus.SPOKE_UDR_UPDATED, RequestStatus.COMPLETED],
+        SUBNET_ADDITIONAL: [RequestStatus.SUBMITTED, RequestStatus.SUBNET_ALLOCATED,
+                            RequestStatus.COMPLETED],
+        VNET_DECOMMISSION: [RequestStatus.SUBMITTED, RequestStatus.RESOURCES_REMOVED,
+                            RequestStatus.CIDR_RELEASED, RequestStatus.COMPLETED],
+        DNS:               [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
+                            RequestStatus.COMPLETED],
+        OTHER:             [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
+                            RequestStatus.COMPLETED],
+    }
+
+    TERMINALS = [RequestStatus.CANCELLED, RequestStatus.REJECTED]
+
+    @classmethod
+    def label(cls, t: str) -> str:
+        return cls._LABELS.get(t, t or "New VNET")
+
+    @classmethod
+    def description(cls, t: str) -> str:
+        return cls._DESCRIPTIONS.get(t, "")
+
+    @classmethod
+    def icon(cls, t: str) -> str:
+        return cls._ICONS.get(t, "card-list")
+
+    @classmethod
+    def workflow(cls, t: str) -> list:
+        return cls.WORKFLOWS.get(t, RequestStatus.ORDERED)
+
+    @classmethod
+    def initial_status(cls, t: str) -> str:
+        return cls.workflow(t)[0]
+
+
 class SpokeRequest(db.Model):
     __tablename__ = "spoke_requests"
 
     id               = db.Column(db.Integer, primary_key=True)
+    # Request kind (RequestType.*). Legacy rows default to vnet_new.
+    request_type     = db.Column(db.String(30),  nullable=False, default=RequestType.VNET_NEW)
+    # Type-specific fields as a JSON dict (non-VNET types)
+    details          = db.Column(db.Text,        nullable=True)
     cidr_needed      = db.Column(db.String(20),  nullable=False)
     purpose          = db.Column(db.String(500), nullable=False)
     requester_name   = db.Column(db.String(200), nullable=False)
@@ -84,12 +218,35 @@ class SpokeRequest(db.Model):
     def status_color(self):
         return RequestStatus.color(self.status)
 
+    def type_label(self):
+        return RequestType.label(self.request_type)
+
+    def type_icon(self):
+        return RequestType.icon(self.request_type)
+
+    def workflow(self):
+        return RequestType.workflow(self.request_type)
+
+    def get_details(self) -> dict:
+        if not self.details:
+            return {}
+        try:
+            return json.loads(self.details)
+        except Exception:
+            return {}
+
+    def set_details(self, d: dict):
+        self.details = json.dumps(d or {})
+
     def pool_key(self):
         return self.ip_range.rsplit(".", 1)[0].rsplit(".", 1)[0] if self.ip_range else ""
 
     def to_dict(self):
         return {
             "id":               self.id,
+            "request_type":     self.request_type or RequestType.VNET_NEW,
+            "type_label":       self.type_label(),
+            "details":          self.get_details(),
             "cidr_needed":      self.cidr_needed,
             "purpose":          self.purpose,
             "requester_name":   self.requester_name,
@@ -168,6 +325,24 @@ class AppSetting(db.Model):
     value      = db.Column(db.Text,    nullable=True)
     is_secret  = db.Column(db.Integer, nullable=False, default=0)
     updated_at = db.Column(db.Text,    nullable=True)
+
+
+class AuditLog(db.Model):
+    """
+    Immutable operation trail — who did what, when, on which request.
+    Written via audit.py (raw sqlite3) so agents and routes can log without
+    Flask-SQLAlchemy session scoping; this model mirrors the table for ORM reads.
+    """
+    __tablename__ = "audit_log"
+
+    id         = db.Column(db.Integer, primary_key=True)
+    ts         = db.Column(db.Text,    nullable=False)
+    actor      = db.Column(db.Text,    nullable=False)
+    actor_role = db.Column(db.Text,    nullable=False, default="system")
+    action     = db.Column(db.Text,    nullable=False)
+    request_id = db.Column(db.Integer, nullable=True, index=True)
+    summary    = db.Column(db.Text,    nullable=True)
+    data       = db.Column(db.Text,    nullable=True)
 
 
 class SubnetRecord(db.Model):

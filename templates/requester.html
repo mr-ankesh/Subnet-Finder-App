@@ -15,8 +15,8 @@
   <div class="hero-overlay"></div>
   <div class="hero-content">
     <div class="hero-badge"><i class="bi bi-person-fill"></i> Requester Portal</div>
-    <h1 class="hero-title">Spoke VNET Request</h1>
-    <p class="hero-sub">Submit requests, track status, and manage your spoke VNET — via form or AI assistant.</p>
+    <h1 class="hero-title">Network Request Portal</h1>
+    <p class="hero-sub">VNETs, firewall rules, hub integration, ZPA routing, DNS and more — via form or AI assistant.</p>
   </div>
 </div>
 
@@ -75,10 +75,36 @@
 
         <!-- New Request Form -->
         <div class="glass-card action-panel" id="panel-new-request">
-          <div class="card-header-custom"><i class="bi bi-plus-circle text-info"></i> New CIDR Request</div>
+          <div class="card-header-custom"><i class="bi bi-plus-circle text-info"></i> New Request</div>
           <div class="card-body-custom">
             <div id="newReqResult"></div>
-            <div class="row g-3">
+
+            <!-- Step 1: choose a request type -->
+            <div id="typePicker">
+              <div style="font-size:.85rem;color:rgba(255,255,255,.6);margin-bottom:.9rem;">
+                What do you need? Pick a request type:
+              </div>
+              <div class="type-grid">
+                {% for t in RequestType.ALL %}
+                <button type="button" class="type-card" data-type="{{ t }}" onclick="selectType('{{ t }}')">
+                  <i class="bi bi-{{ RequestType.icon(t) }}"></i>
+                  <div>
+                    <div class="type-card-title">{{ RequestType.label(t) }}</div>
+                    <div class="type-card-desc">{{ RequestType.description(t) }}</div>
+                  </div>
+                </button>
+                {% endfor %}
+              </div>
+            </div>
+
+            <!-- Step 2: the chosen type's form -->
+            <div id="typeFormWrap" style="display:none;">
+              <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:1rem;">
+                <button type="button" class="action-tab" onclick="backToPicker()"><i class="bi bi-arrow-left"></i> Change type</button>
+                <span id="chosenTypeLabel" style="font-size:.9rem;font-weight:600;color:#00BCF2;"></span>
+              </div>
+
+            <div class="row g-3" id="typeform-vnet_new" style="display:none;">
               <div class="col-md-6">
                 <label class="form-label-custom">Your Name *</label>
                 <input type="text" class="form-input-custom" id="f_name" placeholder="e.g. John Smith">
@@ -215,7 +241,271 @@
                   <i class="bi bi-send"></i> Submit Request
                 </button>
               </div>
-            </div>
+            </div><!-- /typeform-vnet_new -->
+
+            <!-- Generic form for all other request types -->
+            <div id="typeform-generic" style="display:none;">
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label-custom">Your Name *</label>
+                  <input type="text" class="form-input-custom" id="g_name" placeholder="e.g. John Smith">
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label-custom">Your Email <span style="color:rgba(255,255,255,.4);font-weight:400;">(for status updates)</span></label>
+                  <input type="email" class="form-input-custom" id="g_email" placeholder="e.g. john@presight.ai">
+                </div>
+
+                <!-- ── Firewall Policy ── -->
+                <div class="col-12 type-section" id="section-firewall_policy" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Action *</label>
+                      <select class="form-input-custom" data-detail="action">
+                        <option value="add">Add new rule</option>
+                        <option value="modify">Modify existing rule</option>
+                        <option value="delete">Delete rule</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Rule Kind *</label>
+                      <select class="form-input-custom" data-detail="rule_kind">
+                        <option value="network">Network rule (any protocol/IP)</option>
+                        <option value="application">Application rule (HTTP/HTTPS FQDN)</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Existing Rule Name <span style="color:rgba(255,255,255,.4);font-weight:400;">(modify/delete)</span></label>
+                      <input type="text" class="form-input-custom" data-detail="rule_name" placeholder="e.g. myvnet-allow-internet">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Source *</label>
+                      <input type="text" class="form-input-custom" data-detail="source" placeholder="e.g. 10.110.51.0/24">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Destination *</label>
+                      <input type="text" class="form-input-custom" data-detail="destination" placeholder="IP/CIDR or FQDN, e.g. 10.110.2.0/24 or api.example.com">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Ports / Protocol</label>
+                      <input type="text" class="form-input-custom" data-detail="ports_protocol" placeholder="e.g. TCP/443, UDP/53">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Business Justification</label>
+                      <input type="text" class="form-input-custom" data-detail="justification" placeholder="Why is this rule needed?">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ── Hub Integration ── -->
+                <div class="col-12 type-section" id="section-hub_integration" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subscription ID *</label>
+                      <input type="text" class="form-input-custom" data-detail="subscription_id" placeholder="00000000-0000-0000-0000-000000000000">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Resource Group *</label>
+                      <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Region *</label>
+                      <select class="form-input-custom" data-detail="region">
+                        <option value="uaenorth">UAE North</option>
+                        <option value="uaecentral">UAE Central</option>
+                        <option value="westeurope">West Europe</option>
+                        <option value="northeurope">North Europe</option>
+                        <option value="eastus">East US</option>
+                      </select>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Address Space (CIDR) *</label>
+                      <input type="text" class="form-input-custom" data-detail="address_space" placeholder="e.g. 10.110.51.0/24">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Internet Egress Needed?</label>
+                      <div style="display:flex;align-items:center;gap:10px;margin-top:8px;">
+                        <label class="toggle-switch">
+                          <input type="checkbox" data-detail="internet_egress">
+                          <span class="toggle-slider"></span>
+                        </label>
+                        <span style="font-size:.85rem;color:rgba(255,255,255,.6);">Allow outbound internet via hub firewall</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ── ZPA Routing (R&D + Other share fields; Other adds connector) ── -->
+                <div class="col-12 type-section" id="section-zpa_rnd_routing" style="display:none;">
+                  <div class="row g-3 zpa-common"></div>
+                </div>
+                <div class="col-12 type-section" id="section-zpa_other_routing" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">ZPA Connector Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="connector_name" placeholder="e.g. zpa-connector-prod">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Connector Route Table <span style="color:rgba(255,255,255,.4);font-weight:400;">(if known)</span></label>
+                      <input type="text" class="form-input-custom" data-detail="connector_route_table" placeholder="leave blank if unsure">
+                    </div>
+                    <div class="col-12 zpa-common-2"></div>
+                  </div>
+                </div>
+                <!-- shared ZPA fields template (cloned into whichever ZPA section is active) -->
+                <template id="zpaFieldsTemplate">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Spoke VNET Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="spoke_vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Spoke CIDR *</label>
+                      <input type="text" class="form-input-custom" data-detail="spoke_cidr" placeholder="e.g. 10.110.51.0/24">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Spoke Route Table (UDR) Name</label>
+                      <input type="text" class="form-input-custom" data-detail="spoke_udr_name" placeholder="e.g. rt-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Spoke UDR Resource Group</label>
+                      <input type="text" class="form-input-custom" data-detail="spoke_udr_rg" placeholder="rg-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Spoke Subscription ID</label>
+                      <input type="text" class="form-input-custom" data-detail="spoke_subscription_id" placeholder="00000000-0000-0000-0000-000000000000">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Justification</label>
+                      <input type="text" class="form-input-custom" data-detail="justification" placeholder="Why does this spoke need ZPA routing?">
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ── New Subnet in Existing VNET ── -->
+                <div class="col-12 type-section" id="section-subnet_additional" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Original Request ID <span style="color:rgba(255,255,255,.4);font-weight:400;">(if known)</span></label>
+                      <input type="number" class="form-input-custom" data-detail="existing_request_id" placeholder="e.g. 5" min="1">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subnet Size *</label>
+                      <select class="form-input-custom" data-detail="subnet_size">
+                        <option value="25">/25 — 126 hosts</option>
+                        <option value="26" selected>/26 — 62 hosts</option>
+                        <option value="27">/27 — 30 hosts</option>
+                        <option value="28">/28 — 14 hosts</option>
+                        <option value="29">/29 — 6 hosts</option>
+                      </select>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subnet Purpose</label>
+                      <input type="text" class="form-input-custom" data-detail="subnet_purpose" placeholder="e.g. Private Endpoints">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ── VNET Decommission ── -->
+                <div class="col-12 type-section" id="section-vnet_decommission" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Resource Group *</label>
+                      <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subscription ID</label>
+                      <input type="text" class="form-input-custom" data-detail="subscription_id" placeholder="00000000-0000-0000-0000-000000000000">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Allocated CIDR</label>
+                      <input type="text" class="form-input-custom" data-detail="allocated_cidr" placeholder="e.g. 10.110.51.0/24">
+                    </div>
+                    <div class="col-12">
+                      <label style="display:flex;align-items:center;gap:.6rem;font-size:.85rem;color:#f87171;cursor:pointer;">
+                        <input type="checkbox" data-detail="confirm" style="accent-color:#f87171;">
+                        I confirm this VNET is no longer needed — peering/routes/firewall rules will be removed and the CIDR released. *
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ── DNS ── -->
+                <div class="col-12 type-section" id="section-dns" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Request Kind *</label>
+                      <select class="form-input-custom" data-detail="dns_kind">
+                        <option value="record">DNS record</option>
+                        <option value="private_zone_link">Private DNS zone link (to my VNET)</option>
+                      </select>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Zone *</label>
+                      <input type="text" class="form-input-custom" data-detail="zone" placeholder="e.g. privatelink.blob.core.windows.net">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Record Type</label>
+                      <select class="form-input-custom" data-detail="record_type">
+                        <option value="A">A</option>
+                        <option value="CNAME">CNAME</option>
+                        <option value="TXT">TXT</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Record Name</label>
+                      <input type="text" class="form-input-custom" data-detail="record_name" placeholder="e.g. mystorage">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Record Value</label>
+                      <input type="text" class="form-input-custom" data-detail="record_value" placeholder="e.g. 10.110.51.10">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ── Other ── -->
+                <div class="col-12 type-section" id="section-other" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <label class="form-label-custom">Describe your request *</label>
+                      <textarea class="form-input-custom" data-detail="description" rows="4" placeholder="Describe what you need in as much detail as possible..."></textarea>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Priority</label>
+                      <select class="form-input-custom" data-detail="priority">
+                        <option value="low">Low</option>
+                        <option value="normal" selected>Normal</option>
+                        <option value="high">High</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="col-12">
+                  <label class="form-label-custom">Summary / Purpose *</label>
+                  <textarea class="form-input-custom" id="g_purpose" rows="2" placeholder="One-line summary of this request"></textarea>
+                </div>
+                <div class="col-12">
+                  <button class="btn-primary-custom" onclick="submitServiceRequest()">
+                    <i class="bi bi-send"></i> Submit Request
+                  </button>
+                </div>
+              </div>
+            </div><!-- /typeform-generic -->
+
+            </div><!-- /typeFormWrap -->
           </div>
         </div>
 
@@ -392,20 +682,37 @@ function resultBox(type, msg) {
 
 function statusCard(d) {
   const statusColor = { CIDR_REQUESTED:'#60a5fa', CIDR_ASSIGNED:'#f59e0b', VNET_CREATED:'#a78bfa',
-    HUB_INTEGRATION_NEEDED:'#fb923c', HUB_INTEGRATION_IN_PROGRESS:'#facc15', HUB_INTEGRATED:'#4ade80', CANCELLED:'#f87171' };
+    HUB_INTEGRATION_NEEDED:'#fb923c', HUB_INTEGRATION_IN_PROGRESS:'#facc15', HUB_INTEGRATED:'#4ade80',
+    CANCELLED:'#f87171', REJECTED:'#f87171', SUBMITTED:'#60a5fa', IN_REVIEW:'#facc15',
+    IN_PROGRESS:'#facc15', COMPLETED:'#4ade80' };
   const col = statusColor[d.status] || '#9ca3af';
-  return `<div style="padding:1rem;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;">
-      <span style="font-weight:600;color:#fff;">Request #${d.id}</span>
-      <span style="background:rgba(255,255,255,.08);border-radius:20px;padding:.2rem .75rem;font-size:.78rem;color:${col};font-weight:600;">${d.status_label}</span>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;font-size:.82rem;color:rgba(255,255,255,.7);">
+  const isVnet = !d.request_type || d.request_type === 'vnet_new';
+  let fields;
+  if (isVnet) {
+    fields = `
       <div><span style="color:rgba(255,255,255,.4);">Requester</span><br>${d.requester_name}</div>
       <div><span style="color:rgba(255,255,255,.4);">CIDR Needed</span><br>/${d.cidr_needed}</div>
       <div><span style="color:rgba(255,255,255,.4);">IP Pool</span><br>${d.ip_range}</div>
       <div><span style="color:rgba(255,255,255,.4);">Hub Integration</span><br>${d.hub_integration ? 'Yes' : 'No'}</div>
       ${d.allocated_subnet ? `<div><span style="color:rgba(255,255,255,.4);">Assigned Subnet</span><br><strong style="color:#4ade80;">${d.allocated_subnet}</strong></div>` : ''}
-      <div><span style="color:rgba(255,255,255,.4);">Purpose</span><br>${d.purpose}</div>
+      <div><span style="color:rgba(255,255,255,.4);">Purpose</span><br>${d.purpose}</div>`;
+  } else {
+    const detailRows = Object.entries(d.details || {}).slice(0, 8).map(([k, v]) =>
+      `<div><span style="color:rgba(255,255,255,.4);">${k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())}</span><br>${v === true ? 'Yes' : v}</div>`).join('');
+    fields = `
+      <div><span style="color:rgba(255,255,255,.4);">Requester</span><br>${d.requester_name}</div>
+      <div><span style="color:rgba(255,255,255,.4);">Summary</span><br>${d.purpose}</div>
+      ${detailRows}`;
+  }
+  return `<div style="padding:1rem;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;gap:.5rem;flex-wrap:wrap;">
+      <span style="font-weight:600;color:#fff;">Request #${d.id}
+        <span style="font-size:.75rem;color:#00BCF2;font-weight:600;margin-left:.4rem;">${d.type_label || 'New VNET'}</span>
+      </span>
+      <span style="background:rgba(255,255,255,.08);border-radius:20px;padding:.2rem .75rem;font-size:.78rem;color:${col};font-weight:600;">${d.status_label}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;font-size:.82rem;color:rgba(255,255,255,.7);">
+      ${fields}
     </div>
   </div>`;
 }
@@ -413,6 +720,75 @@ function statusCard(d) {
 async function apiPost(url, body) {
   const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
   return r.json();
+}
+
+// ── Request type picker ────────────────────────────────────────────────────
+const TYPE_LABELS = {
+  {% for t in RequestType.ALL %}'{{ t }}': '{{ RequestType.label(t) }}',{% endfor %}
+};
+let currentType = null;
+
+function selectType(t) {
+  currentType = t;
+  document.getElementById('typePicker').style.display = 'none';
+  document.getElementById('typeFormWrap').style.display = '';
+  document.getElementById('chosenTypeLabel').innerHTML = `<i class="bi bi-arrow-right-short"></i> ${TYPE_LABELS[t]}`;
+  document.getElementById('typeform-vnet_new').style.display = (t === 'vnet_new') ? '' : 'none';
+  document.getElementById('typeform-generic').style.display  = (t === 'vnet_new') ? 'none' : '';
+  document.querySelectorAll('.type-section').forEach(s => s.style.display = 'none');
+  const section = document.getElementById('section-' + t);
+  if (section) {
+    section.style.display = '';
+    // ZPA types share a block of fields — clone them into the active section once
+    if (t === 'zpa_rnd_routing' || t === 'zpa_other_routing') {
+      const holder = section.querySelector('.zpa-common, .zpa-common-2');
+      if (holder && !holder.hasChildNodes()) {
+        holder.appendChild(document.getElementById('zpaFieldsTemplate').content.cloneNode(true));
+      }
+    }
+  }
+  showResult('newReqResult', '');
+}
+
+function backToPicker() {
+  currentType = null;
+  document.getElementById('typePicker').style.display = '';
+  document.getElementById('typeFormWrap').style.display = 'none';
+  showResult('newReqResult', '');
+}
+
+async function submitServiceRequest() {
+  const name    = document.getElementById('g_name').value.trim();
+  const email   = document.getElementById('g_email').value.trim();
+  const purpose = document.getElementById('g_purpose').value.trim();
+  if (!name || !purpose) return showResult('newReqResult', resultBox('error', 'Name and Summary are required.'));
+
+  const details = {};
+  const section = document.getElementById('section-' + currentType);
+  if (section) {
+    section.querySelectorAll('[data-detail]').forEach(el => {
+      const key = el.dataset.detail;
+      if (el.type === 'checkbox') { if (el.checked) details[key] = true; }
+      else if (el.value.trim() !== '') details[key] = el.value.trim();
+    });
+  }
+  if (currentType === 'vnet_decommission' && !details.confirm) {
+    return showResult('newReqResult', resultBox('error', 'Please tick the decommission confirmation checkbox.'));
+  }
+
+  showResult('newReqResult', resultBox('info', 'Submitting...'));
+  const d = await apiPost('/api/requester/new-request', {
+    request_type: currentType, requester_name: name, requester_email: email,
+    purpose, details,
+  });
+  if (d.success) {
+    showResult('newReqResult', resultBox('success',
+      `✅ ${TYPE_LABELS[currentType]} request <strong>#${d.request_id}</strong> submitted! Save this ID to track your request.`));
+    document.getElementById('g_purpose').value = '';
+    if (section) section.querySelectorAll('input[type=text],input[type=number],textarea').forEach(el => el.value = '');
+  } else {
+    showResult('newReqResult', resultBox('error', d.error || 'Submission failed.'));
+  }
 }
 
 // ── Form actions ───────────────────────────────────────────────────────────
@@ -581,6 +957,16 @@ async function clearChat() {
 .mode-btn:hover { background:rgba(255,255,255,.08); color:#fff; }
 .mode-btn.active { background:rgba(99,102,241,.2); border-color:rgba(99,102,241,.4); color:#fff; }
 .mode-badge { font-size:.68rem; padding:.1rem .45rem; border-radius:20px; background:rgba(0,188,242,.15); color:#00BCF2; font-weight:600; }
+
+/* Request type picker */
+.type-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:.6rem; }
+.type-card { display:flex; align-items:flex-start; gap:.7rem; text-align:left; padding:.8rem .9rem;
+  border-radius:10px; border:1px solid rgba(255,255,255,.1); background:rgba(255,255,255,.03);
+  color:rgba(255,255,255,.75); cursor:pointer; transition:all .15s; font-family:'Plus Jakarta Sans',sans-serif; }
+.type-card:hover { border-color:rgba(0,188,242,.5); background:rgba(0,120,212,.08); transform:translateY(-1px); }
+.type-card i { font-size:1.15rem; color:#00BCF2; flex-shrink:0; margin-top:.1rem; }
+.type-card-title { font-size:.83rem; font-weight:600; color:#fff; }
+.type-card-desc { font-size:.72rem; color:rgba(255,255,255,.45); line-height:1.4; margin-top:.15rem; }
 
 /* Action tabs */
 .action-tabs { display:flex; gap:.4rem; flex-wrap:wrap; }
