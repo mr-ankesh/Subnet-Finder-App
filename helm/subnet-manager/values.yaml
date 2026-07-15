@@ -1,0 +1,153 @@
+# Default values for subnet-manager.
+#
+# IMPORTANT: replicaCount must stay 1 — the app uses SQLite (single writer).
+# The chart fails to render if you raise it. Migrate to PostgreSQL first if
+# you ever need HA.
+replicaCount: 1
+
+image:
+  repository: <YOUR_ACR>.azurecr.io/subnet-manager
+  tag: latest
+  pullPolicy: Always
+
+# e.g. [{name: acr-secret}] — not needed when the ACR is attached to AKS
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Bootstrap configuration (ConfigMap → env vars) ──────────────────────────
+# Nearly everything here is also editable live in /admin/settings; DB
+# overrides win over these env values, no pod restart needed.
+config:
+  # AI agent (also in Settings → AI Agent / LLM)
+  AGENT_PROVIDER: "openai"                       # openai | anthropic
+  OPENAI_BASE_URL: ""                            # blank = api.openai.com; supports Azure OpenAI / Ollama / LM Studio
+  OPENAI_MODEL: "gpt-4o"
+  OPENAI_API_VERSION: "2024-02-15-preview"
+
+  # Azure hub topology
+  HUB_SUBSCRIPTION_ID: ""
+  HUB_RESOURCE_GROUP: ""
+  HUB_VNET_NAME: ""
+  SPOKE_SUBSCRIPTION_ID: ""
+
+  # Hub routing
+  UDR_RESOURCE_GROUP: ""
+  UDR_NAME_1: ""
+  UDR_NAME_2: ""
+
+  # Firewall policy
+  FIREWALL_POLICY_NAME: ""
+  FIREWALL_POLICY_RG: ""
+  FIREWALL_RULE_COLLECTION_GROUP: ""
+
+  # Peering defaults
+  PEERING_ALLOW_VNET_ACCESS: "true"
+  PEERING_ALLOW_FORWARDED_TRAFFIC: "true"
+  PEERING_ALLOW_GATEWAY_TRANSIT: "false"
+  PEERING_USE_REMOTE_GATEWAYS: "false"
+
+  DEFAULT_AZURE_REGION: "uaenorth"
+
+  # Public URL used in Teams/email deep-links
+  SUBNET_FINDER_BASE_URL: "https://azsubnetmanager.presight.ai"
+
+  # Keep "true" when serving over TLS (ingress)
+  SESSION_COOKIE_SECURE: "true"
+
+  # Safety: every Azure mutation is simulated until switched off in Settings
+  AZURE_DRY_RUN: "true"
+
+# Extra ConfigMap entries merged over `config` (same precedence rules)
+extraConfig: {}
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+secrets:
+  # Recommended for production: reference a secret you manage outside Helm
+  # (kubectl create secret / Sealed Secrets / Azure Key Vault CSI). It must
+  # contain the same keys as `values` below. When set, `values` is ignored.
+  existingSecret: ""
+  values:
+    # REQUIRED — strong & stable; encrypts stored settings secrets and signs
+    # sessions. Rotating it invalidates both. Generate: openssl rand -hex 32
+    FLASK_SECRET_KEY: ""
+    ADMIN_PASSWORD: "changeme"
+    TEAMS_WEBHOOK_URL: ""
+    # AI provider credentials (whichever applies)
+    OPENAI_API_KEY: ""
+    ANTHROPIC_API_KEY: ""
+    # Azure Service Principal (or configure Managed Identity in Settings)
+    AZURE_TENANT_ID: ""
+    AZURE_CLIENT_ID: ""
+    AZURE_CLIENT_SECRET: ""
+
+# ── Storage (SQLite lives here) ──────────────────────────────────────────────
+persistence:
+  enabled: true
+  # Reuse a PVC you created yourself (leave empty to let the chart create one)
+  existingClaim: ""
+  # Azure Disk. Do NOT use azurefile-csi — SMB breaks SQLite file locking.
+  storageClass: managed-csi
+  accessModes:
+    - ReadWriteOnce
+  size: 5Gi
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  host: azsubnetmanager.presight.ai
+  tls:
+    enabled: true
+    # Cert secret must exist in the release namespace
+    secretName: presight-tls
+
+resources:
+  requests:
+    memory: 256Mi
+    cpu: 250m
+  limits:
+    memory: 768Mi
+    cpu: 500m
+
+# Matches the non-root user baked into the image
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}

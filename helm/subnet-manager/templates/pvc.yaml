@@ -1,0 +1,19 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+# Azure Disk PVC — stores requests.db (SQLite). Azure Files (SMB) does NOT
+# support SQLite file locking; keep a block-storage class (managed-csi).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "subnet-manager.fullname" . }}-data
+  labels:
+    {{- include "subnet-manager.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

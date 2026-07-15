@@ -1,0 +1,27 @@
+Subnet Manager deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+1. Check the rollout:
+     kubectl rollout status deployment/{{ include "subnet-manager.fullname" . }} -n {{ .Release.Namespace }}
+
+2. Reach the app:
+{{- if .Values.ingress.enabled }}
+     https://{{ .Values.ingress.host }}
+   (the TLS secret "{{ .Values.ingress.tls.secretName }}" must exist in this namespace)
+{{- else }}
+     kubectl port-forward svc/{{ include "subnet-manager.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+     → http://localhost:8080
+{{- end }}
+
+3. First-time setup — log in at /admin/login and open Settings:
+     • Azure Credentials  → service principal / managed identity + Test Connection
+     • Hub, Firewall, Routing → your hub topology
+     • AI Agent / LLM     → provider, model, API key (stored encrypted)
+     • Safety             → keep DRY-RUN ON until everything is verified
+
+   Settings changes apply live (DB override → env → default). The values in
+   this chart's ConfigMap/Secret are only bootstrap defaults.
+
+4. Reminders:
+     • replicas is fixed at 1 (SQLite single writer) — don't scale out.
+     • Back up the PVC ({{ .Values.persistence.existingClaim | default (printf "%s-data" (include "subnet-manager.fullname" .)) }}) — it holds all state.
+     • FLASK_SECRET_KEY must stay stable across upgrades.

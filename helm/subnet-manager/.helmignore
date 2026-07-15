@@ -1,0 +1,7 @@
+# Patterns to ignore when building packages.
+*.tgz
+.DS_Store
+.git/
+*.swp
+*.bak
+*.orig

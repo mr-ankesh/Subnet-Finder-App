@@ -2,7 +2,11 @@
 
 The app ships as a single container (gunicorn, non-root user `10001`) with a
 SQLite database on a persistent volume. **Run exactly one replica** — SQLite
-has a single writer. All manifests live in `k8s/`.
+has a single writer.
+
+Two deployment options:
+- **Helm chart** (preferred): `helm/subnet-manager/` — see §3a.
+- **Raw manifests**: `k8s/` — see §3b.
 
 ## 1 — Image
 
@@ -38,7 +42,39 @@ curl http://localhost:8080/health
 Secrets hygiene: prefer Azure Key Vault CSI driver or Sealed Secrets over
 committing values into `02-secret.yaml`.
 
-## 3 — Deploy
+## 3a — Deploy with Helm (preferred)
+
+```bash
+# Values you don't want in git go in an override file or --set flags
+cat > my-values.yaml <<EOF
+image:
+  repository: <acr>.azurecr.io/subnet-manager
+  tag: <tag>
+ingress:
+  host: azsubnetmanager.presight.ai
+secrets:
+  values:
+    FLASK_SECRET_KEY: "$(openssl rand -hex 32)"   # keep this stable forever
+    ADMIN_PASSWORD: "<strong-password>"
+    AZURE_TENANT_ID: "..."
+    AZURE_CLIENT_ID: "..."
+    AZURE_CLIENT_SECRET: "..."
+EOF
+
+helm upgrade --install subnet-manager helm/subnet-manager \
+  -n network-deployments --create-namespace \
+  -f my-values.yaml
+```
+
+Notes:
+- For production secret hygiene, create the secret out-of-band and set
+  `secrets.existingSecret: <name>` instead of putting values in a file.
+- The chart refuses `replicaCount > 1` (SQLite) and a missing
+  `FLASK_SECRET_KEY`; config/secret changes roll the pod automatically
+  via checksum annotations.
+- Reuse an existing disk with `persistence.existingClaim`.
+
+## 3b — Deploy with raw manifests
 
 ```bash
 kubectl apply -f k8s/00-namespace.yaml
