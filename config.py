@@ -28,6 +28,7 @@ CATEGORIES = {
     "peering":       {"title": "Peering Defaults",    "desc": "Defaults applied to hub↔spoke peerings (overridable per action)."},
     "naming":        {"title": "Naming Conventions",  "desc": "Templates for generated resource names. Placeholders: {vnet} {request_id} {region} {cidr_mask} {purpose} {date}. Global prefix/suffix are joined with '-'."},
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
+    "agent":         {"title": "AI Agent / LLM",      "desc": "Provider and model used by the requester & admin chat agents. Changes apply to the next conversation turn — no restart needed."},
     "auth":          {"title": "Authentication",      "desc": "Keycloak-ready SSO configuration. Values are stored now; enforcement ships with the integration (see docs/KEYCLOAK.md for the step-by-step guide) — login stays password-based until then."},
     "safety":        {"title": "Safety",              "desc": "Guard rails for Azure execution."},
 }
@@ -109,6 +110,22 @@ SETTINGS_SPEC = {
     "SUBNET_FINDER_BASE_URL": _f("notifications", "App base URL", "http://localhost:8080",
                                  help="Used for deep-links in Teams/email notifications."),
 
+    # ── AI Agent / LLM ──
+    "AGENT_PROVIDER":     _f("agent", "Provider", "anthropic", options=["anthropic", "openai"],
+                             help="'openai' also covers Azure OpenAI and OpenAI-compatible endpoints (LM Studio, Ollama, vLLM…)."),
+    "ANTHROPIC_API_KEY":  _f("agent", "Anthropic API key", secret=True,
+                             help="Stored encrypted. Leave blank on save to keep the current value."),
+    "ANTHROPIC_MODEL":    _f("agent", "Anthropic model", "claude-sonnet-4-6",
+                             help="e.g. claude-sonnet-4-6, claude-opus-4-8, claude-haiku-4-5-20251001."),
+    "OPENAI_API_KEY":     _f("agent", "OpenAI API key", secret=True,
+                             help="Stored encrypted. For local OpenAI-compatible servers it can stay empty."),
+    "OPENAI_BASE_URL":    _f("agent", "OpenAI base URL",
+                             help="Blank = api.openai.com. An *.azure.com URL switches to the Azure OpenAI client."),
+    "OPENAI_API_VERSION": _f("agent", "Azure OpenAI API version", "2024-02-15-preview",
+                             help="Only used with Azure OpenAI endpoints."),
+    "OPENAI_MODEL":       _f("agent", "OpenAI model / deployment", "gpt-4o",
+                             help="Model name, or the deployment name on Azure OpenAI."),
+
     # ── Authentication (Keycloak-ready; not enforced yet) ──
     "AUTH_PROVIDER":          _f("auth", "Auth provider", "local", options=["local", "keycloak"],
                                  help="'keycloak' only stores configuration for now — password login remains active until the OIDC flow is implemented."),
@@ -129,13 +146,6 @@ SETTINGS_SPEC = {
 
 # Env-only values — never DB-overridable, never shown in the settings UI.
 _ENV_ONLY = {
-    "AGENT_PROVIDER":     ("AGENT_PROVIDER", "anthropic"),
-    "ANTHROPIC_API_KEY":  ("ANTHROPIC_API_KEY", ""),
-    "ANTHROPIC_MODEL":    ("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-    "OPENAI_API_KEY":     ("OPENAI_API_KEY", ""),
-    "OPENAI_BASE_URL":    ("OPENAI_BASE_URL", ""),
-    "OPENAI_API_VERSION": ("OPENAI_API_VERSION", "2024-02-15-preview"),
-    "OPENAI_MODEL":       ("OPENAI_MODEL", "gpt-4o"),
     "ADMIN_PASSWORD":     ("ADMIN_PASSWORD", "changeme"),
     "SECRET_KEY":         ("FLASK_SECRET_KEY", "change-me-in-production"),
     "DEBUG":              ("FLASK_DEBUG", "false"),

@@ -709,11 +709,17 @@ def _tool_update_status(request_id: int, status: str, notes: str = None) -> str:
 # ── Client + chat (same pattern as requester agent) ───────────────────────
 
 _client = None
+_client_fingerprint = None
 
 def _get_client():
-    global _client
-    if _client is not None:
+    # Rebuild the client whenever provider/key/endpoint settings change —
+    # the admin can switch LLM config live in /admin/settings.
+    global _client, _client_fingerprint
+    fingerprint = (cfg.AGENT_PROVIDER, cfg.ANTHROPIC_API_KEY, cfg.OPENAI_API_KEY,
+                   cfg.OPENAI_BASE_URL, cfg.OPENAI_API_VERSION)
+    if _client is not None and _client_fingerprint == fingerprint:
         return _client
+    _client_fingerprint = fingerprint
     provider = cfg.AGENT_PROVIDER.lower()
     if provider == "anthropic":
         import anthropic

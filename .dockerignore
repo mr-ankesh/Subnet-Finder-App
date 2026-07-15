@@ -22,3 +22,13 @@ data/*.xls
 
 # Docs
 README.md
+
+# Runtime state — never bake into the image
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.log
+
+# Deployment & docs
+k8s/
+docs/

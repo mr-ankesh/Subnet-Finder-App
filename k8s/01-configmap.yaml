@@ -2,13 +2,20 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: subnet-manager-config
-  namespace: Network-Deployments
+  namespace: network-deployments
 data:
-  # ── AI Agent ───────────────────────────────────────────────────────────────
+  # NOTE: everything below is a BOOTSTRAP default. Nearly all of it (including
+  # the AI provider/model) is editable live in /admin/settings — DB overrides
+  # win over these env values, no pod restart needed.
+
+  # ── AI Agent (also configurable in Settings → AI Agent / LLM) ─────────────
   AGENT_PROVIDER: "openai"                        # openai | anthropic
   OPENAI_BASE_URL: "https://your-llm-endpoint"   # Azure OpenAI / LM Studio / Ollama
   OPENAI_MODEL: "gpt-4o"
   OPENAI_API_VERSION: "2024-02-15-preview"
+
+  # ── Cookies: keep 'true' when serving over TLS (ingress) ──────────────────
+  SESSION_COOKIE_SECURE: "true"
 
   # ── Azure Hub Topology ─────────────────────────────────────────────────────
   HUB_SUBSCRIPTION_ID: ""

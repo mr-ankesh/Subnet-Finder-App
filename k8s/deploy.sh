@@ -20,10 +20,10 @@ echo "==> Updating deployment image"
 # Patch the deployment image in-place (avoids needing to edit the YAML)
 kubectl set image deployment/subnet-manager \
   subnet-manager="${IMAGE}" \
-  -n subnet-manager
+  -n network-deployments
 
 echo "==> Waiting for rollout"
-kubectl rollout status deployment/subnet-manager -n subnet-manager
+kubectl rollout status deployment/subnet-manager -n network-deployments
 
 echo "==> Done. Pod status:"
-kubectl get pods -n subnet-manager
+kubectl get pods -n network-deployments

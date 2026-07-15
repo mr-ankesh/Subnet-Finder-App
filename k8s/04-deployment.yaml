@@ -4,7 +4,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: subnet-manager
-  namespace: Network-Deployments
+  namespace: network-deployments
   labels:
     app: subnet-manager
 spec:
@@ -19,11 +19,20 @@ spec:
       labels:
         app: subnet-manager
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001          # matches the 'app' user baked into the image
+        runAsGroup: 10001
+        fsGroup: 10001            # makes the PVC writable for the non-root user
       containers:
         - name: subnet-manager
           # Replace with your ACR image: <acr-name>.azurecr.io/subnet-manager:<tag>
           image: <YOUR_ACR>.azurecr.io/subnet-manager:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
           envFrom:

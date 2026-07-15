@@ -18,6 +18,17 @@ import notifications
 app = Flask(__name__)
 app.secret_key = cfg.SECRET_KEY
 
+# Behind the K8s ingress / reverse proxy: honour X-Forwarded-* so client IPs
+# in the audit trail and https redirect URIs are correct.
+from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Set SESSION_COOKIE_SECURE=true in production (TLS via ingress)
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get(
+    "SESSION_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
+
 # ── Database ────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -1418,11 +1429,21 @@ def admin_azure_action(req_id):
                 res = azure_tools.add_firewall_network_rule(
                     rule_name, dests, ports, protocol=ip_protocols, source_addresses=sources,
                     rcg_name=rcg_sel, collection_name=col_sel)
-        if res.get("success") and req.status in (RequestStatus.SUBMITTED, RequestStatus.IN_REVIEW):
-            req.status = RequestStatus.RULE_IMPLEMENTED
+        if res.get("success") and req.status in (RequestStatus.SUBMITTED, RequestStatus.IN_REVIEW,
+                                                 RequestStatus.RULE_IMPLEMENTED):
+            # The requested policy change is applied — close the request and
+            # notify the requester right away.
+            req.status = RequestStatus.COMPLETED
             req.updated_at = datetime.utcnow()
             db.session.commit()
-            res["message"] = str(res.get("message", "")) + " Status set to Rule Implemented."
+            notified = False
+            try:
+                notified = bool(notifications.notify_status_changed(req))
+            except Exception:
+                pass
+            res["message"] = (str(res.get("message", ""))
+                              + " Request completed"
+                              + (" — requester notified." if notified else "."))
         _audit_azure(res)
         return jsonify(res), (200 if res.get("success") else 207)
 
