@@ -1,7 +1,7 @@
 apiVersion: v2
 name: subnet-manager
 description: >-
-  Presight R&D Azure Subnet Manager — network request portal with CIDR
+  Presight R&D Network Copilot — AI-assisted network request portal with CIDR
   allocation, hub integration, firewall policy lifecycle and audit trail.
 type: application
 version: 0.1.0

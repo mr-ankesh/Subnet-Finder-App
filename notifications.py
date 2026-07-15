@@ -115,12 +115,12 @@ def notify_request_submitted(req) -> bool:
     for k, v in list(details.items())[:6]:      # keep the card compact
         if v not in (None, "", False):
             facts.append({"title": k.replace("_", " ").title(), "value": str(v)})
-    _email_requester(req, f"[Subnet Manager] {type_label} request received — #{req.id}",
+    _email_requester(req, f"[Network Copilot] {type_label} request received — #{req.id}",
                      f"Hi {req.requester_name},\n\nYour {type_label} request #{req.id} has been "
                      f"submitted and is awaiting admin review.\n\nSummary: {req.purpose}")
     return _post(_adaptive_card(
         title=f"New {type_label} Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text=f"**{req.requester_name}** has submitted a **{type_label}** request.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -137,12 +137,12 @@ def notify_status_changed(req) -> bool:
         {"title": "New Status", "value": status_label},
         {"title": "Requester",  "value": req.requester_name},
     ]
-    _email_requester(req, f"[Subnet Manager] Request #{req.id} → {status_label}",
+    _email_requester(req, f"[Network Copilot] Request #{req.id} → {status_label}",
                      f"Hi {req.requester_name},\n\nYour {type_label} request #{req.id} "
                      f"is now: {status_label}.")
     return _post(_adaptive_card(
         title=f"Request #{req.id} ({type_label}) → {status_label}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text=f"Status updated to **{status_label}**.",
         facts=facts,
         color="success" if req.status in ("COMPLETED", "HUB_INTEGRATED") else "info",
@@ -162,7 +162,7 @@ def notify_cidr_requested(req) -> bool:
     ]
     return _post(_adaptive_card(
         title=f"New CIDR Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text=f"**{req.requester_name}** has submitted a new spoke CIDR request and is awaiting admin assignment.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -178,12 +178,12 @@ def notify_cidr_assigned(req, subnet: str) -> bool:
         {"title": "Pool",         "value": req.ip_range},
     ]
     body = f"Subnet **{subnet}** has been assigned to request #{req.id}. Requester can now deploy the spoke VNET."
-    _email_requester(req, f"[Subnet Manager] CIDR {subnet} assigned — Request #{req.id}",
+    _email_requester(req, f"[Network Copilot] CIDR {subnet} assigned — Request #{req.id}",
                      f"Hi {req.requester_name},\n\nYour spoke CIDR request #{req.id} has been "
                      f"assigned the subnet {subnet}. You can now deploy your spoke VNET.")
     return _post(_adaptive_card(
         title=f"CIDR Assigned — Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text=body, facts=facts, color="success",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
     ))
@@ -197,12 +197,12 @@ def notify_vnet_created(req) -> bool:
         {"title": "Subnet",        "value": req.allocated_subnet or "—"},
         {"title": "Hub Required",  "value": "Yes" if req.hub_integration else "No"},
     ]
-    _email_requester(req, f"[Subnet Manager] VNET created — Request #{req.id}",
+    _email_requester(req, f"[Network Copilot] VNET created — Request #{req.id}",
                      f"Hi {req.requester_name},\n\nYour spoke VNET for request #{req.id} "
                      f"(subnet {req.allocated_subnet or '—'}) has been created.")
     return _post(_adaptive_card(
         title=f"VNET Created — Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text="The requester has confirmed their spoke VNET is created.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -226,7 +226,7 @@ def notify_hub_integration_needed(req) -> bool:
         ]
     return _post(_adaptive_card(
         title=f"Hub Integration Needed — Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text="The requester has provided VNET details and is requesting hub integration. Admin action required.",
         facts=facts, color="warning",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -240,12 +240,12 @@ def notify_hub_in_progress(req) -> bool:
         {"title": "Requester",  "value": req.requester_name},
         {"title": "Subnet",     "value": req.allocated_subnet or "—"},
     ]
-    _email_requester(req, f"[Subnet Manager] Hub integration started — Request #{req.id}",
+    _email_requester(req, f"[Network Copilot] Hub integration started — Request #{req.id}",
                      f"Hi {req.requester_name},\n\nHub integration for your spoke VNET "
                      f"(request #{req.id}) has started.")
     return _post(_adaptive_card(
         title=f"Hub Integration In Progress — Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text="Admin has started hub integration for this spoke VNET.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -262,13 +262,13 @@ def notify_hub_integrated(req, actions_taken: list = None) -> bool:
     action_text = ""
     if actions_taken:
         action_text = "\n\n" + "  \n".join(f"• {a}" for a in actions_taken)
-    _email_requester(req, f"[Subnet Manager] Request #{req.id} complete — hub integrated",
+    _email_requester(req, f"[Network Copilot] Request #{req.id} complete — hub integrated",
                      f"Hi {req.requester_name},\n\nYour spoke VNET (request #{req.id}, subnet "
                      f"{getattr(req, 'allocated_subnet', None) or '—'}) is fully integrated with the hub. "
                      f"Onboarding is complete.")
     return _post(_adaptive_card(
         title=f"Hub Integration Complete — Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text=f"All hub integration tasks have been completed successfully.{action_text}",
         facts=facts, color="success",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -279,7 +279,7 @@ def notify_hub_integrated(req, actions_taken: list = None) -> bool:
 def notify_custom(title: str, message: str, level: str = "info") -> bool:
     return _post(_adaptive_card(
         title=title,
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text=message, facts=[], color=level,
     ))
 
@@ -293,7 +293,7 @@ def notify_reminder(req, message: str) -> bool:
     ]
     return _post(_adaptive_card(
         title=f"Reminder — Request #{req.id}",
-        subtitle="Presight R&D Azure Subnet Manager",
+        subtitle="Presight R&D · Network Copilot",
         body_text=f"**{req.requester_name}** is following up on their request.",
         facts=facts, color="warning",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",

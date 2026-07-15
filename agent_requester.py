@@ -11,7 +11,7 @@ import notifications
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the Presight R&D Network Request Assistant.
+SYSTEM_PROMPT = """You are Network Copilot — Presight R&D's AI network assistant.
 
 You help internal teams submit and track network requests: spoke VNETs, firewall
 policy changes, hub integration, ZPA routing, subnets, decommissions and DNS.
