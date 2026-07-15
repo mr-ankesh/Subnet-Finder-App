@@ -509,7 +509,104 @@ def deallocate_subnet(selected_cidr, base_net):
 @require_admin
 def segment_select():
     pools = [{"key": k, "cidr": v} for k, v in POOLS.items()]
-    return render_template("index.html", pools=pools)
+    inventory_empty = SubnetRecord.query.count() == 0
+    return render_template("index.html", pools=pools, inventory_empty=inventory_empty)
+
+
+# ── Subnet inventory import (fresh deployments start with an empty DB) ──────
+
+def _import_inventory(rows):
+    """
+    Bulk-load current allocations. rows = [[subnet, purpose, requested_by,
+    allocated_by, status], ...]. Validates CIDR, pool membership and overlaps
+    (against the DB and within the batch). Returns per-line results.
+    """
+    from db_utils import get_pool_key, get_used_subnets_db
+    imported, errors = [], []
+    existing = {}
+    for p in POOLS:
+        existing[p] = []
+        for s in get_used_subnets_db(p):
+            try:
+                existing[p].append(ipaddress.ip_network(s))
+            except ValueError:
+                continue
+    for i, parts in enumerate(rows, 1):
+        subnet_raw, purpose, req_by, alloc_by, status = ([str(x).strip() for x in parts] + [""] * 5)[:5]
+        if not subnet_raw:
+            continue
+        status = (status or "used").lower()
+        if status not in ("used", "reserved"):
+            errors.append(f"line {i}: status '{status}' must be 'used' or 'reserved' — skipped")
+            continue
+        try:
+            net = ipaddress.ip_network(subnet_raw, strict=False)
+        except ValueError:
+            errors.append(f"line {i}: '{subnet_raw}' is not a valid CIDR")
+            continue
+        pool = get_pool_key(str(net))
+        if not pool:
+            errors.append(f"line {i}: {net} is outside the managed pools ({', '.join(POOLS.values())})")
+            continue
+        if any(net.overlaps(e) for e in existing[pool]):
+            errors.append(f"line {i}: {net} overlaps an existing/imported subnet — skipped")
+            continue
+        db.session.add(SubnetRecord(
+            subnet=str(net), pool=pool, status=status,
+            purpose=purpose or None, requested_by=req_by or None,
+            allocated_by=alloc_by or current_actor(), allocated_at=datetime.utcnow()))
+        existing[pool].append(net)
+        imported.append(str(net))
+    db.session.commit()
+    if imported:
+        audit.record("inventory_imported", actor=current_actor(), actor_role="admin",
+                     summary=f"Imported {len(imported)} subnet(s) into the inventory "
+                             f"({len(errors)} line(s) skipped)",
+                     data={"count": len(imported), "skipped": len(errors)})
+    return {"imported": imported, "errors": errors}
+
+
+@app.route("/admin/inventory", methods=["GET", "POST"])
+@require_admin
+def admin_inventory():
+    """
+    Post-deployment onboarding: the app ships with an EMPTY inventory — the
+    admin loads the environment's real allocation state here (paste or Excel)
+    so the allocator never hands out ranges that are already in use.
+    """
+    results = None
+    if request.method == "POST":
+        rows = []
+        f = request.files.get("file")
+        if f and f.filename:
+            try:
+                import pandas as pd
+                if f.filename.lower().endswith((".xlsx", ".xls")):
+                    df = pd.read_excel(f, dtype=str).fillna("")
+                else:
+                    df = pd.read_csv(f, dtype=str).fillna("")
+                df.columns = [c.strip().replace(" ", "") for c in df.columns]
+                if "Subnet" not in df.columns:
+                    results = {"imported": [], "errors": ["File needs a 'Subnet' column "
+                              "(optional: Purpose, RequestedBy, AllocatedBy, Status)."]}
+                else:
+                    for _, row in df.iterrows():
+                        rows.append([row.get("Subnet", ""), row.get("Purpose", ""),
+                                     row.get("RequestedBy", ""), row.get("AllocatedBy", ""),
+                                     row.get("Status", "used")])
+            except Exception as exc:
+                results = {"imported": [], "errors": [f"Could not read file: {exc}"]}
+        for raw in (request.form.get("entries") or "").splitlines():
+            raw = raw.strip()
+            if not raw or raw.startswith("#"):
+                continue
+            rows.append([p.strip() for p in raw.split(",")])
+        if results is None:
+            results = _import_inventory(rows) if rows else \
+                      {"imported": [], "errors": ["Nothing to import — paste entries or attach a file."]}
+    return render_template("inventory_import.html", results=results,
+                           inventory_empty=SubnetRecord.query.count() == 0,
+                           record_count=SubnetRecord.query.count(), pools=POOLS)
 
 
 @app.route("/allocator/<pool_key>")

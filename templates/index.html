@@ -27,9 +27,29 @@
 
 <!-- Pool Cards -->
 <div id="pools" class="pool-section">
+  {% if inventory_empty %}
+  <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+    <i class="bi bi-exclamation-triangle-fill" style="color:#f59e0b;font-size:20px;"></i>
+    <div style="flex:1;min-width:280px;">
+      <div style="font-size:14px;font-weight:700;color:#f59e0b;">Fresh deployment — subnet inventory is empty</div>
+      <div style="font-size:12.5px;color:var(--text-dim);margin-top:2px;">
+        This instance starts with a clean database. Import your environment's current subnet
+        allocations before assigning anything new, or the allocator may hand out ranges already in use.
+      </div>
+    </div>
+    <a href="{{ url_for('admin_inventory') }}" class="btn btn-glow" style="white-space:nowrap;">
+      <i class="bi bi-box-arrow-in-down me-2"></i>Import Inventory
+    </a>
+  </div>
+  {% endif %}
   <div class="pool-section-header">
     <span class="pool-section-title">Available network pools</span>
-    <span style="font-size:13px;color:var(--text-muted);">{{ pools|length }} pool{{ 's' if pools|length != 1 }}</span>
+    <span style="font-size:13px;">
+      <a href="{{ url_for('admin_inventory') }}" style="color:#60a5fa;text-decoration:none;margin-right:14px;">
+        <i class="bi bi-box-arrow-in-down"></i> Import inventory
+      </a>
+      <span style="color:var(--text-muted);">{{ pools|length }} pool{{ 's' if pools|length != 1 }}</span>
+    </span>
   </div>
   <div class="pool-grid">
     {% for p in pools %}

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Import Inventory | Network Copilot{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <h1 class="alloc-page-title">Import Subnet Inventory</h1>
+    <p class="alloc-page-sub">Load the environment's current allocation state so the allocator never hands out ranges already in use</p>
+  </div>
+</div>
+
+<div style="max-width:900px;margin:0 auto;padding:28px 40px 48px;">
+
+  {% if inventory_empty %}
+  <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#f59e0b;">
+    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+    <strong>The subnet inventory is empty.</strong> This deployment starts with a clean database —
+    import your current allocations below before assigning any new CIDRs.
+  </div>
+  {% else %}
+  <p style="font-size:13px;color:var(--text-muted);margin-bottom:20px;">
+    Inventory currently holds <strong style="color:var(--text);">{{ record_count }}</strong> subnet record(s).
+    Imports are additive — overlapping entries are skipped, nothing is overwritten.
+  </p>
+  {% endif %}
+
+  <div class="glass-card" style="margin-bottom:20px;">
+    <div class="card-header-bar"><i class="bi bi-clipboard-plus"></i> Paste Entries</div>
+    <div class="card-body-pad">
+      <form method="POST" enctype="multipart/form-data">
+        <p style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px;">
+          One subnet per line: <code>CIDR, purpose, requested_by, allocated_by, status</code>
+          — only the CIDR is required; status is <code>used</code> (default) or <code>reserved</code>.
+          Managed pools: {% for k, v in pools.items() %}<code>{{ v }}</code>{{ ', ' if not loop.last }}{% endfor %}.
+        </p>
+        <textarea name="entries" rows="8" class="form-control"
+                  style="font-family:var(--mono);font-size:12.5px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);"
+                  placeholder="10.110.4.0/24, AKS prod cluster, Jane Smith, Admin, used&#10;10.110.8.0/22, Data platform, , , used&#10;10.119.32.0/24, Reserved for DR, , , reserved"></textarea>
+
+        <div style="margin:16px 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);">
+          Or upload a file (.xlsx / .csv)
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+          Columns: <code>Subnet</code> (required), <code>Purpose</code>, <code>RequestedBy</code>,
+          <code>AllocatedBy</code>, <code>Status</code>.
+        </p>
+        <input type="file" name="file" accept=".xlsx,.xls,.csv" class="form-control"
+               style="max-width:420px;font-size:12.5px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+
+        <div style="margin-top:16px;">
+          <button type="submit" class="btn btn-glow"><i class="bi bi-box-arrow-in-down me-2"></i>Import</button>
+          <a href="{{ url_for('segment_select') }}" class="btn btn-glass" style="margin-left:8px;">Back to pools</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {% if results %}
+  <div class="glass-card">
+    <div class="card-header-bar"><i class="bi bi-list-check"></i> Import Results</div>
+    <div class="card-body-pad">
+      {% if results.imported %}
+      <div style="font-size:13px;color:#7edb56;margin-bottom:8px;">
+        <i class="bi bi-check-circle-fill me-1"></i>Imported {{ results.imported|length }} subnet(s):
+      </div>
+      <div style="font-family:var(--mono);font-size:12px;color:var(--text-dim);line-height:1.8;margin-bottom:14px;">
+        {{ results.imported | join(' · ') }}
+      </div>
+      {% endif %}
+      {% if results.errors %}
+      <div style="font-size:13px;color:#f59e0b;margin-bottom:8px;">
+        <i class="bi bi-exclamation-triangle-fill me-1"></i>{{ results.errors|length }} line(s) skipped:
+      </div>
+      {% for e in results.errors %}
+      <div style="font-size:12px;color:var(--text-muted);line-height:1.7;">• {{ e }}</div>
+      {% endfor %}
+      {% endif %}
+      {% if not results.imported and not results.errors %}
+      <p style="font-size:13px;color:var(--text-muted);margin:0;">Nothing to import.</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

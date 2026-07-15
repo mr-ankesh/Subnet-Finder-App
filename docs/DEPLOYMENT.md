@@ -93,12 +93,23 @@ curl https://<host>/health
 
 ## 4 — Post-deploy configuration (no restarts)
 
-Log in at `/admin/login`, open **Settings**:
+The image carries **no data** — a fresh deployment starts with an empty
+database: no requests and no subnet allocations from any other environment.
 
-1. **Azure Credentials** → fill in / test connection.
-2. **Hub & Subscriptions, Firewall, Routing** → your hub topology.
-3. **AI Agent / LLM** → provider, model, API key (stored encrypted).
-4. **Safety** → keep **Dry-run ON** until you've verified everything.
+Log in at `/admin/login`, then:
+
+1. **Import the current subnet inventory** — the home page shows a
+   "Fresh deployment" banner linking to `/admin/inventory`. Paste your
+   allocations (one `CIDR, purpose, requested_by, allocated_by, status`
+   per line) or upload an Excel/CSV export (`Subnet` column required).
+   Do this FIRST — until the real allocation state is loaded, the
+   allocator would hand out ranges that are already in use. Imports are
+   validated (CIDR, pool membership, overlaps) and audited.
+2. Open **Settings**:
+   - **Azure Credentials** → fill in / test connection.
+   - **Hub & Subscriptions, Firewall, Routing** → your hub topology.
+   - **AI Agent / LLM** → provider, model, API key (stored encrypted).
+   - **Safety** → keep **Dry-run ON** until you've verified everything.
 
 Every setting resolves live: DB override → env var → default.
 
