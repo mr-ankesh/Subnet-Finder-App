@@ -122,7 +122,7 @@
               </div>
               <div class="col-md-6">
                 <label class="form-label-custom">CIDR Size *</label>
-                <select class="form-input-custom" id="f_cidr">
+                <select class="form-input-custom" id="f_cidr" onchange="checkSubnetFit()">
                   <option value="21">/21 — 2,046 hosts</option>
                   <option value="22">/22 — 1,022 hosts</option>
                   <option value="23">/23 — 510 hosts</option>
@@ -242,6 +242,11 @@
                       </select>
                     </div>
                     <div class="col-12" id="subnetBlocks"></div>
+                    <div class="col-12" id="subnetFitWarn" style="display:none;">
+                      <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:10px;padding:10px 14px;font-size:.82rem;color:#f59e0b;">
+                        <i class="bi bi-exclamation-triangle-fill me-1"></i><span id="subnetFitMsg"></span>
+                      </div>
+                    </div>
                   </div>
                   <div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:10px;line-height:1.7;">
                     <strong>Naming examples</strong> —
@@ -914,14 +919,52 @@ function renderSubnetBlocks() {
       <div class="col-md-5"><label class="form-label-custom">Name *</label>
         <input type="text" class="form-input-custom snet-name" value="${p.name || ''}" placeholder="snet-app-conn-prd-prs-aen-00${i + 1}"></div>
       <div class="col-md-3"><label class="form-label-custom">Size *</label>
-        <select class="form-input-custom snet-size">${SUBNET_SIZES.map(([v, t]) =>
+        <select class="form-input-custom snet-size" onchange="checkSubnetFit()">${SUBNET_SIZES.map(([v, t]) =>
           `<option value="${v}" ${(p.size || '26') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
       <div class="col-md-4"><label class="form-label-custom">Purpose</label>
         <input type="text" class="form-input-custom snet-purpose" value="${p.purpose || ''}" placeholder="e.g. App Gateway"></div>
     </div>`;
   }
   holder.innerHTML = html;
+  checkSubnetFit();
 }
+
+// Mirror of the server-side carve: sequential, boundary-aligned allocation.
+function subnetsFit(vnetPrefix, sizes) {
+  let addr = 0;
+  const total = Math.pow(2, 32 - vnetPrefix);
+  for (const szRaw of sizes) {
+    const sz = parseInt(szRaw, 10);
+    if (!sz) continue;
+    if (sz < vnetPrefix) return false;              // subnet larger than the VNET
+    const block = Math.pow(2, 32 - sz);
+    if (addr % block) addr = (Math.floor(addr / block) + 1) * block;
+    if (addr + block > total) return false;
+    addr += block;
+  }
+  return true;
+}
+
+function checkSubnetFit() {
+  const warn = document.getElementById('subnetFitWarn');
+  if (!warn) return true;
+  const vnetPrefix = parseInt(document.getElementById('f_cidr').value, 10);
+  const sizes = [...document.querySelectorAll('#subnetBlocks .snet-size')].map(el => el.value);
+  const fits = subnetsFit(vnetPrefix, sizes);
+  if (!fits) {
+    let suggest = '';
+    for (let p = vnetPrefix - 1; p >= 16; p--) {
+      if (subnetsFit(p, sizes)) { suggest = ` They would fit in a /${p} — pick that VNET size instead.`; break; }
+    }
+    document.getElementById('subnetFitMsg').textContent =
+      `The selected subnets do not fit inside a /${vnetPrefix} VNET.${suggest}`;
+    warn.style.display = '';
+  } else {
+    warn.style.display = 'none';
+  }
+  return fits;
+}
+
 function collectSubnets() {
   const names = [...document.querySelectorAll('#subnetBlocks .snet-name')];
   const sizes = [...document.querySelectorAll('#subnetBlocks .snet-size')];
@@ -976,6 +1019,10 @@ async function submitNewRequest() {
     }
     if (subnets.some(s => !s.name || !s.size)) {
       return showResult('newReqResult', resultBox('error', 'Every subnet needs a name and a size.'));
+    }
+    if (!checkSubnetFit()) {
+      return showResult('newReqResult', resultBox('error',
+        document.getElementById('subnetFitMsg').textContent));
     }
     Object.assign(payload, { subscription_id: sub, resource_group: rg, vnet_name: vnet, region, subnets });
   }

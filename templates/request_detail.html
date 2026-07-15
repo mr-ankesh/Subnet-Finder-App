@@ -822,7 +822,10 @@ async function confirmTerminate(status) {
     body += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">
                No deployed changes found — the request will simply be marked <strong>${verb}ed</strong>.</div>`;
   }
-  body += `<div style="display:flex;gap:8px;">
+  body += `<label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Comment / reason</label>
+           <textarea id="terminateComment" rows="2" placeholder="Why is this request being ${verb.toLowerCase()}ed? (recorded in notes, history and the requester notification)"
+             style="width:100%;font-size:12.5px;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 10px;margin:4px 0 10px;resize:vertical;"></textarea>
+           <div style="display:flex;gap:8px;">
              <button class="btn btn-sm" style="flex:1;background:rgba(209,52,56,.2);border:1px solid rgba(209,52,56,.45);color:#f87171;font-weight:700;"
                onclick="doTerminate('${status}')"><i class="bi bi-check2 me-1"></i>Yes, ${verb.toLowerCase()} request</button>
              <button class="btn btn-glass btn-sm" style="flex:1;" onclick="document.getElementById('terminatePanel').style.display='none'">Keep request</button>
@@ -834,11 +837,12 @@ async function doTerminate(status) {
   const panel = document.getElementById('terminatePanel');
   const chk = document.getElementById('revertChk');
   const revert = chk ? chk.checked : true;
+  const comment = ((document.getElementById('terminateComment') || {}).value || '').trim();
   panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Reverting changes and updating status…</span>';
   try {
     const resp = await fetch(`/api/admin/requests/${REQ_ID}/terminate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status, revert })
+      body: JSON.stringify({ status, revert, comment })
     });
     const d = await resp.json();
     if (d.error) { panel.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; return; }

@@ -910,6 +910,15 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     return {"success": True, "request_id": req_id}, 200
 
 
+def _subnets_fit(vnet_prefix: int, subnets: list) -> bool:
+    import azure_tools
+    try:
+        azure_tools.carve_subnets(f"10.0.0.0/{vnet_prefix}", subnets)
+        return True
+    except ValueError:
+        return False
+
+
 def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "requester"):
     """
     Shared, validated creation path for New VNET requests — used by the form
@@ -953,6 +962,27 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
             return {"error": "Admin-deploy requires at least one subnet."}, 400
         if any(not s["name"] or not s["size"] for s in subnets):
             return {"error": "Every subnet needs a name and a size."}, 400
+
+    # The requested subnets must fit inside the requested VNET size — reject
+    # NOW rather than failing at deployment time.
+    if subnets and str(cidr_needed).isdigit():
+        import azure_tools
+        vnet_prefix = int(cidr_needed)
+        too_big = [f"/{s['size']} ({s['name']})" for s in subnets
+                   if str(s["size"]).isdigit() and int(s["size"]) < vnet_prefix]
+        if too_big:
+            return {"error": f"Subnet(s) larger than the /{vnet_prefix} VNET itself: "
+                             + ", ".join(too_big) + ". Pick smaller subnets or a bigger VNET."}, 400
+        try:
+            azure_tools.carve_subnets(f"10.0.0.0/{vnet_prefix}", subnets)
+        except ValueError:
+            fits = next((p for p in range(vnet_prefix - 1, 15, -1)
+                         if _subnets_fit(p, subnets)), None)
+            suggest = (f" They would fit in a /{fits} — request that size instead, "
+                       f"or use smaller/fewer subnets.") if fits else \
+                      " Use smaller or fewer subnets."
+            return {"error": f"The requested subnets do not fit inside a /{vnet_prefix} VNET."
+                             + suggest}, 400
 
     # Internet access requested for the spoke (via hub firewall)
     internet_access = str(data.get("internet_access", "")).strip().lower()
@@ -1917,6 +1947,7 @@ def request_terminate(req_id):
     data = request.get_json(force=True) or {}
     target = str(data.get("status", "")).strip()
     do_revert = bool(data.get("revert", True))
+    comment = str(data.get("comment", "")).strip()[:500]
     if target not in RequestType.TERMINALS:
         return jsonify({"error": "Target status must be CANCELLED or REJECTED."}), 400
     if req.status in RequestType.TERMINALS:
@@ -1942,15 +1973,23 @@ def request_terminate(req_id):
     req.status = target
     req.updated_at = datetime.utcnow()
     reverted = sum(1 for s in steps if s["success"])
+    stamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+    notes = []
+    if comment:
+        notes.append(f"[{stamp} UTC] {RequestStatus.label(target)} by {current_actor()}: {comment}")
     if steps:
-        note = (f"[{datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC] "
-                f"{RequestStatus.label(target)} with revert: {reverted}/{len(steps)} change(s) undone.")
-        req.notes = f"{req.notes}\n{note}" if req.notes else note
+        notes.append(f"[{stamp} UTC] {RequestStatus.label(target)} with revert: "
+                     f"{reverted}/{len(steps)} change(s) undone.")
+    if notes:
+        joined = "\n".join(notes)
+        req.notes = f"{req.notes}\n{joined}" if req.notes else joined
     db.session.commit()
     audit.record("status_changed", actor=current_actor(), actor_role="admin", request_id=req.id,
                  summary=f"Status: {RequestStatus.label(old_status)} → {RequestStatus.label(target)}"
-                         + (f" (reverted {reverted}/{len(steps)} deployed change(s))" if steps else ""),
-                 data={"old": old_status, "new": target, "reverted": reverted, "revert_steps": len(steps)})
+                         + (f" (reverted {reverted}/{len(steps)} deployed change(s))" if steps else "")
+                         + (f' — "{comment[:150]}"' if comment else ""),
+                 data={"old": old_status, "new": target, "reverted": reverted,
+                       "revert_steps": len(steps), "comment": comment or None})
     try:
         notifications.notify_status_changed(req)
     except Exception:

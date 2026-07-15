@@ -114,7 +114,7 @@ def carve_subnets(address_space: str, entries: list) -> list:
         except (TypeError, ValueError):
             sz = net.prefixlen
         if sz < net.prefixlen:
-            sz = net.prefixlen
+            raise ValueError(f"Subnet #{i + 1} (/{sz}) is larger than the VNET ({address_space}).")
         block_size = 2 ** (32 - sz)
         if addr % block_size:                      # align up to the block boundary
             addr = (addr // block_size + 1) * block_size
