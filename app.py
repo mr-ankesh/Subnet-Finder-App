@@ -1309,7 +1309,14 @@ def admin_azure_action(req_id):
         sources, dests, ip_protocols, ports, app_protocols, perrors = _fw_params(details)
 
         if action == "fw_check":
-            res = azure_tools.get_firewall_policy_status(rule_name=rule_name)
+            # Coverage is checked by traffic content (source/destination/ports),
+            # not by rule name — a broader existing rule (e.g. dest '*') counts.
+            cov_req = None
+            if dests and fw_action in ("add", "modify") and not perrors:
+                cov_req = {"kind": rule_kind, "sources": sources, "dests": dests,
+                           "ports": ports, "ip_protocols": ip_protocols,
+                           "app_protocols": app_protocols}
+            res = azure_tools.get_firewall_policy_status(rule_name=rule_name, coverage=cov_req)
             res["rule_name"] = rule_name
             res["fw_action"] = fw_action
             if perrors:

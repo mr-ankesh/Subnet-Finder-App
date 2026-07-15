@@ -696,7 +696,133 @@ def _describe_fw_rule(rule, collection_name: str) -> dict:
     return d
 
 
-def get_firewall_policy_status(rule_name: str = None) -> dict:
+# ── Coverage matching: is requested traffic already allowed/denied? ────────
+
+def _addr_covers(existing_list, requested) -> bool:
+    """Does any existing address entry ('*' or a CIDR/IP superset) cover the request?"""
+    import ipaddress
+    requested = str(requested).strip()
+    existing = [str(e).strip() for e in (existing_list or [])]
+    if requested == "*":
+        return any(e in ("*", "0.0.0.0/0") for e in existing)
+    try:
+        req = ipaddress.ip_network(requested, strict=False)
+    except ValueError:
+        return False
+    for e in existing:
+        if e == "*":
+            return True
+        try:
+            if req.subnet_of(ipaddress.ip_network(e, strict=False)):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _fqdn_covers(existing_list, requested) -> bool:
+    """'*' covers all; '*.example.com' covers sub.example.com (and narrower wildcards)."""
+    req = str(requested).strip().lower()
+    for e in (existing_list or []):
+        e = str(e).strip().lower()
+        if e == "*" or e == req:
+            return True
+        if e.startswith("*."):
+            suffix = e[1:]                       # ".example.com"
+            if req.startswith("*."):
+                if req == e or req[1:].endswith(suffix):
+                    return True
+            elif req.endswith(suffix):
+                return True
+    return False
+
+
+def _ports_cover(existing_ports, requested_ports) -> bool:
+    ranges = []
+    for p in (existing_ports or []):
+        p = str(p).strip()
+        if p == "*":
+            return True
+        if "-" in p:
+            a, _, b = p.partition("-")
+            if a.strip().isdigit() and b.strip().isdigit():
+                ranges.append((int(a), int(b)))
+        elif p.isdigit():
+            ranges.append((int(p), int(p)))
+    for rp in (requested_ports or []):
+        rp = str(rp).strip()
+        if not rp.isdigit():                     # '*' or unknown → needs existing '*'
+            return False
+        if not any(a <= int(rp) <= b for a, b in ranges):
+            return False
+    return True
+
+
+def _ip_protocols_cover(existing, requested) -> bool:
+    ex = {str(p).lower() for p in (existing or [])}
+    if "any" in ex:
+        return True
+    return all(str(p).lower() in ex and str(p).lower() != "any" for p in (requested or []))
+
+
+def _rule_covers(rule, kind: str, sources, dest, ports, ip_protocols, app_protocols) -> bool:
+    """Would this existing rule match ALL requested sources → this one destination?"""
+    rule_kind = "application" if rule.rule_type == "ApplicationRule" else "network"
+    if rule_kind != kind:
+        return False
+    if not all(_addr_covers(rule.source_addresses, s) for s in (sources or ["*"])):
+        return False
+    if kind == "application":
+        if not _fqdn_covers(rule.target_fqdns, dest):
+            return False
+        have = {(str(p.protocol_type).lower(), int(p.port)) for p in (rule.protocols or [])}
+        return all((str(p["protocol_type"]).lower(), int(p.get("port", 443))) in have
+                   for p in (app_protocols or []))
+    if not _addr_covers(rule.destination_addresses, dest):
+        return False
+    return (_ports_cover(rule.destination_ports, ports)
+            and _ip_protocols_cover(rule.ip_protocols, ip_protocols))
+
+
+def _analyze_coverage(rcgs, cov: dict) -> dict:
+    """
+    Per requested destination, find matching rules across every filter
+    collection and resolve the effective action the way Azure Firewall does:
+    lowest RCG priority, then lowest collection priority wins.
+    """
+    results, fully = [], True
+    for dest in cov.get("dests", []):
+        matches = []
+        for g in rcgs:
+            for rc in (g.rule_collections or []):
+                if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
+                    continue
+                action = getattr(getattr(rc, "action", None), "type", "") or "Allow"
+                for r in (rc.rules or []):
+                    if _rule_covers(r, cov["kind"], cov.get("sources"), dest,
+                                    cov.get("ports"), cov.get("ip_protocols"),
+                                    cov.get("app_protocols")):
+                        matches.append({"rule": r.name, "collection": rc.name, "rcg": g.name,
+                                        "action": action,
+                                        "_prio": (g.priority or 65000, rc.priority or 65000)})
+        matches.sort(key=lambda m: m["_prio"])
+        effective = matches[0] if matches else None
+        for m in matches:
+            m.pop("_prio", None)
+        covered = bool(effective and effective["action"] == "Allow")
+        fully = fully and covered
+        results.append({"dest": dest, "covered": covered,
+                        "denied": bool(effective and effective["action"] == "Deny"),
+                        "effective": effective, "matches": matches})
+    n_ok = sum(1 for r in results if r["covered"])
+    return {"evaluated": True, "kind": cov["kind"], "fully_covered": fully and bool(results),
+            "results": results,
+            "message": (f"All {len(results)} requested destination(s) are already allowed by "
+                        f"existing rules — no new rule needed." if fully and results else
+                        f"{n_ok}/{len(results)} requested destination(s) already allowed.")}
+
+
+def get_firewall_policy_status(rule_name: str = None, coverage: dict = None) -> dict:
     """
     Read-only firewall report for the admin UI: does the policy exist, what
     rule collection groups / collections / rules does it hold (across ALL
@@ -742,6 +868,8 @@ def get_firewall_policy_status(rule_name: str = None) -> dict:
                         if r.name == rule_name:
                             out["rule"] = _describe_fw_rule(r, rc.name)
                             out["rule"]["rcg"] = g.name
+        if coverage and coverage.get("dests"):
+            out["coverage"] = _analyze_coverage(rcgs, coverage)
         total = sum(len(c["rules"]) for c in out["collections"])
         out["message"] = (f"Policy '{cfg.FIREWALL_POLICY_NAME}' OK — {len(rcgs)} rule collection "
                           f"group(s), {len(out['collections'])} collection(s), {total} rule(s)."

@@ -123,7 +123,10 @@
               <div class="col-md-6">
                 <label class="form-label-custom">CIDR Size *</label>
                 <select class="form-input-custom" id="f_cidr">
-                  <option value="24">/24 — 254 hosts</option>
+                  <option value="21">/21 — 2,046 hosts</option>
+                  <option value="22">/22 — 1,022 hosts</option>
+                  <option value="23">/23 — 510 hosts</option>
+                  <option value="24" selected>/24 — 254 hosts</option>
                   <option value="25">/25 — 126 hosts</option>
                   <option value="26">/26 — 62 hosts</option>
                   <option value="27">/27 — 30 hosts</option>
@@ -895,8 +898,9 @@ function onInetChange() {
   }
 }
 
-const SUBNET_SIZES = [['24','/24 — 254 hosts'],['25','/25 — 126 hosts'],['26','/26 — 62 hosts'],
-                      ['27','/27 — 30 hosts'],['28','/28 — 14 hosts'],['29','/29 — 6 hosts']];
+const SUBNET_SIZES = [['22','/22 — 1,022 hosts'],['23','/23 — 510 hosts'],['24','/24 — 254 hosts'],
+                      ['25','/25 — 126 hosts'],['26','/26 — 62 hosts'],['27','/27 — 30 hosts'],
+                      ['28','/28 — 14 hosts'],['29','/29 — 6 hosts']];
 function renderSubnetBlocks() {
   const n = parseInt(document.getElementById('f_snet_count').value || '1', 10);
   const holder = document.getElementById('subnetBlocks');

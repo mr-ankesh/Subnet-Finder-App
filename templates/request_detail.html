@@ -990,6 +990,31 @@ function fwRenderStatus(d) {
   return html;
 }
 
+function fwRenderCoverage(cov) {
+  if (!cov || !cov.evaluated) return '';
+  let html = `<div style="border:1px solid ${cov.fully_covered ? 'rgba(126,219,86,.35)' : 'var(--border)'};border-radius:8px;padding:10px;margin-top:8px;">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:6px;">
+      <i class="bi bi-shield-check"></i> Coverage check — by source/destination, not rule name</div>`;
+  (cov.results || []).forEach(r => {
+    if (r.covered) {
+      const e = r.effective;
+      html += `<div style="font-size:12px;color:#7edb56;margin-bottom:3px;"><i class="bi bi-check-circle-fill me-1"></i>
+        <span style="font-family:var(--mono);">${r.dest}</span> — already allowed by rule
+        '<span style="font-family:var(--mono);">${e.rule}</span>' (${e.rcg}/${e.collection})</div>`;
+    } else if (r.denied) {
+      const e = r.effective;
+      html += `<div style="font-size:12px;color:#f87171;margin-bottom:3px;"><i class="bi bi-slash-circle-fill me-1"></i>
+        <span style="font-family:var(--mono);">${r.dest}</span> — explicitly DENIED by rule
+        '<span style="font-family:var(--mono);">${e.rule}</span>' (${e.rcg}/${e.collection})</div>`;
+    } else {
+      html += `<div style="font-size:12px;color:#f59e0b;margin-bottom:3px;"><i class="bi bi-x-circle me-1"></i>
+        <span style="font-family:var(--mono);">${r.dest}</span> — not allowed by any existing rule</div>`;
+    }
+  });
+  html += `<div style="font-size:12.5px;font-weight:600;margin-top:6px;color:${cov.fully_covered ? '#7edb56' : 'var(--text-dim)'};">${cov.message}</div></div>`;
+  return html;
+}
+
 async function runFwCheck(btn) {
   const d = await fwAction('fw_check', btn, 'Checking…');
   if (!d) return;
@@ -998,7 +1023,7 @@ async function runFwCheck(btn) {
     box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error || d.message}</span>`;
     return;
   }
-  box.innerHTML = fwRenderStatus(d) +
+  box.innerHTML = fwRenderCoverage(d.coverage) + fwRenderStatus(d) +
     `<div style="font-size:12px;color:var(--text-dim);margin-top:8px;">${d.message || ''}</div>`;
 }
 
@@ -1042,11 +1067,20 @@ async function runFwApply(btn) {
          Cannot ${fwAct}: rule '<span style="font-family:var(--mono);">${chk.rule_name}</span>' does not exist in the policy.</div>`;
       return;
     }
-    box.innerHTML = fwRenderStatus(chk);
+    box.innerHTML = fwRenderCoverage(chk.coverage) + fwRenderStatus(chk);
     const verb = fwAct === 'delete' ? 'DELETE this rule' : 'MODIFY this rule to the requested definition';
     if (!confirm(`Current rule definition is shown below the buttons.\n\n${verb}?\n\nRule: ${chk.rule_name}`)) return;
   } else {
-    if (!confirm('Add the requested firewall rule to the policy?')) return;
+    // Add: run the coverage check first — the requested traffic may already be allowed
+    const chk = await fwAction('fw_check', btn, 'Checking coverage…');
+    if (chk && chk.success && chk.coverage) {
+      box.innerHTML = fwRenderCoverage(chk.coverage);
+      if (chk.coverage.fully_covered) {
+        if (!confirm('The requested access is ALREADY allowed by existing rules (see coverage details).\n\nAdd a new rule anyway?')) return;
+      } else if (!confirm('Coverage check done (details shown). Add the requested firewall rule to the policy?')) return;
+    } else {
+      if (!confirm('Add the requested firewall rule to the policy?')) return;
+    }
   }
   const d = await fwAction('fw_apply', btn, 'Applying…');
   if (!d) return;
