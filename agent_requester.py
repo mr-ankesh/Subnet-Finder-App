@@ -17,7 +17,16 @@ You help internal teams submit and track network requests: spoke VNETs, firewall
 policy changes, hub integration, ZPA routing, subnets, decommissions and DNS.
 
 YOUR CAPABILITIES:
-1. Create a new spoke VNET / CIDR request — collect details conversationally, then submit.
+1. Create a new spoke VNET / CIDR request — collect details conversationally, then submit:
+   - CIDR size: /21 (2,046 hosts) to /28 (14 hosts); pool 10.110.0.0/16 or 10.119.0.0/16.
+   - Deployment: 'self' (requester deploys, we only allocate a CIDR) or 'admin' (admin
+     deploys — then collect subscription_id, resource_group, vnet_name, region, and ask
+     HOW MANY subnets they need (1-5) with name/size/purpose for each; sizes /22-/29).
+   - If hub integration is wanted, ALWAYS ask what internet access the spoke needs:
+     'none', 'full' (all outbound), 'network' (specific IP/CIDR destinations + ports,
+     e.g. TCP/443), or 'application' (specific FQDN destinations ONLY, e.g.
+     '*.example.com, *.presight.ai' with protocols like 'http:8080, https:443' — an
+     application rule can never target IPs; use a network rule for IPs).
 2. Create OTHER request types with create_service_request. Types and the details each needs:
    - firewall_policy: action (add/modify/delete), rule_kind (network/application), source,
      destination, ports_protocol, rule_name (for modify/delete), justification.
@@ -66,15 +75,39 @@ TOOLS_OPENAI = [
         "type": "function",
         "function": {
             "name": "create_spoke_request",
-            "description": "Create a new spoke CIDR request with all collected details.",
+            "description": "Create a new spoke VNET / CIDR request with all collected details.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "cidr_needed":      {"type": "integer", "description": "CIDR prefix length, e.g. 24 for /24"},
+                    "cidr_needed":      {"type": "integer",
+                                         "description": "CIDR prefix length 21-28 (e.g. 24 for /24; /21=2046 hosts, /22=1022, /23=510, /24=254)"},
                     "purpose":          {"type": "string"},
                     "requester_name":   {"type": "string"},
+                    "requester_email":  {"type": "string", "description": "For status update emails (optional)"},
                     "ip_range":         {"type": "string", "description": "Must be '10.110.0.0/16' or '10.119.0.0/16'"},
                     "hub_integration":  {"type": "boolean", "description": "Does this spoke need hub integration?"},
+                    "deployment_mode":  {"type": "string", "enum": ["self", "admin"],
+                                         "description": "'self' = requester deploys the VNET (default); 'admin' = admin deploys it (needs the Azure target below)"},
+                    "subscription_id":  {"type": "string", "description": "Admin-deploy only"},
+                    "resource_group":   {"type": "string", "description": "Admin-deploy only"},
+                    "vnet_name":        {"type": "string", "description": "Admin-deploy only"},
+                    "region":           {"type": "string", "description": "Admin-deploy only, e.g. uaenorth"},
+                    "subnets":          {"type": "array",
+                                         "description": "Admin-deploy: one entry per subnet (ask how many subnets they need, 1-5)",
+                                         "items": {"type": "object", "properties": {
+                                             "name":    {"type": "string"},
+                                             "size":    {"type": "string", "description": "Prefix length 22-29, e.g. '26'"},
+                                             "purpose": {"type": "string"}},
+                                             "required": ["name", "size"]}},
+                    "internet_access":  {"type": "string", "enum": ["none", "full", "network", "application"],
+                                         "description": "Hub-integration only: what internet egress the spoke needs. "
+                                                        "'full' = all outbound; 'network' = specific IPs/ports; "
+                                                        "'application' = specific FQDNs (HTTP/HTTPS)"},
+                    "internet_dest":    {"type": "string",
+                                         "description": "For network: IP/CIDR list. For application: FQDNs ONLY "
+                                                        "(e.g. '*.example.com, *.presight.ai') — never IPs"},
+                    "internet_ports":   {"type": "string",
+                                         "description": "For network: e.g. 'TCP/443, UDP/53'. For application: e.g. 'http:8080, https:443'"},
                 },
                 "required": ["cidr_needed", "purpose", "requester_name", "ip_range", "hub_integration"],
             },
@@ -218,33 +251,29 @@ def _execute_tool(name: str, inputs: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
-def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_integration) -> str:
-    valid_pools = ["10.110.0.0/16", "10.119.0.0/16"]
-    if ip_range not in valid_pools:
-        return json.dumps({"error": f"Invalid IP range. Must be one of: {valid_pools}"})
-    # Step 1: DB write (direct sqlite3 — bypasses Flask-SQLAlchemy session)
+def _tool_create_request(cidr_needed, purpose, requester_name, ip_range, hub_integration,
+                         **extra) -> str:
+    """Create a VNET request via the same validated path as the form API."""
     try:
-        from db_utils import create_spoke_request, get_spoke_request
-        req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_integration)
-        log.info("[requester] Request #%s committed to DB (purpose=%s, requester=%s)", req_id, purpose, requester_name)
-        req = get_spoke_request(req_id)
-        audit.record("request_created", actor=f"{requester_name} (via agent)", actor_role="agent",
-                     request_id=req_id,
-                     summary=f"New VNET request: /{cidr_needed} in {ip_range} — {str(purpose)[:100]}",
-                     data={"request_type": "vnet_new", "cidr_needed": cidr_needed, "ip_range": ip_range})
+        from app import _create_vnet_request
+        data = {"cidr_needed": cidr_needed, "purpose": purpose,
+                "requester_name": requester_name, "ip_range": ip_range,
+                "hub_integration": hub_integration, **extra}
+        result, code = _create_vnet_request(
+            data, actor=f"{requester_name} (via agent)", actor_role="agent")
+        if code != 200:
+            return json.dumps({"error": result.get("error", "Request rejected.")})
+        req_id = result["request_id"]
+        log.info("[requester] Request #%s committed to DB (purpose=%s, requester=%s)",
+                 req_id, purpose, requester_name)
+        return json.dumps({
+            "success":    True,
+            "request_id": req_id,
+            "message":    f"Request #{req_id} created successfully.",
+        })
     except Exception as exc:
-        log.exception("[requester] DB error creating request")
-        return json.dumps({"error": f"Database error: {exc}"})
-    # Step 2: notification (best-effort, never blocks success)
-    try:
-        notifications.notify_cidr_requested(req)
-    except Exception as exc:
-        log.warning("[requester] Teams notification failed for request #%s: %s", req_id, exc)
-    return json.dumps({
-        "success":    True,
-        "request_id": req_id,
-        "message":    f"Request #{req_id} created successfully.",
-    })
+        log.exception("[requester] error creating request")
+        return json.dumps({"error": str(exc)})
 
 
 def _tool_create_service_request(request_type, purpose, requester_name,

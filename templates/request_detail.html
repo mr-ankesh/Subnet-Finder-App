@@ -300,8 +300,21 @@
               <div><span style="color:var(--text-muted);">Region:</span> {{ vi.region or '—' }}</div>
               <div><span style="color:var(--text-muted);">Address space:</span> <span style="font-family:var(--mono);">{{ vi.address_space or req.allocated_subnet }}</span></div>
             </div>
+            <div style="margin-top:10px;">
+              <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:4px;">
+                Peering names — edit before deploying if needed
+              </div>
+              <label style="font-size:11px;color:var(--text-muted);">Spoke → Hub</label>
+              <input type="text" class="form-control" id="peerNameS2H"
+                     value="{{ peering_names.spoke_to_hub if peering_names else '' }}"
+                     style="font-family:var(--mono);font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);margin-bottom:6px;">
+              <label style="font-size:11px;color:var(--text-muted);">Hub → Spoke</label>
+              <input type="text" class="form-control" id="peerNameH2S"
+                     value="{{ peering_names.hub_to_spoke if peering_names else '' }}"
+                     style="font-family:var(--mono);font-size:12px;background:rgba(255,255,255,.05);border-color:var(--border);color:var(--text);">
+            </div>
             <div style="display:flex;gap:8px;margin-top:10px;">
-              <button class="btn btn-glow btn-sm" style="flex:1;" onclick="runAction('peer', this)"><i class="bi bi-check2 me-1"></i>Confirm &amp; Peer</button>
+              <button class="btn btn-glow btn-sm" style="flex:1;" onclick="runPeer(this)"><i class="bi bi-check2 me-1"></i>Confirm &amp; Peer</button>
               <button class="btn btn-glass btn-sm" style="flex:1;" onclick="togglePeerConfirm()">Cancel</button>
             </div>
             {% else %}
@@ -398,6 +411,8 @@
               • {{ r.name }} — {{ r.prefix }}<br>
               {% endfor %}
             </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Assign to which subnets?</div>
+            <div id="rtSubnetPick" style="margin-bottom:8px;"></div>
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Additional routes needed? (optional)</div>
             <div id="extraRoutes"></div>
             <a href="#" onclick="addExtraRouteRow(); return false;" style="font-size:11.5px;color:#60a5fa;text-decoration:none;">
@@ -611,10 +626,44 @@ function togglePeerConfirm() {
   el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
 }
 
+function runPeer(btn) {
+  runAction('peer', btn, {
+    spoke_to_hub_name: (document.getElementById('peerNameS2H') || {}).value || '',
+    hub_to_spoke_name: (document.getElementById('peerNameH2S') || {}).value || '',
+  });
+}
+
 // ── Spoke route table (default + additional routes → assign to subnets) ────
 function toggleSpokeRt() {
   const el = document.getElementById('spokeRtPanel');
-  el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+  const opening = (el.style.display === 'none' || !el.style.display);
+  el.style.display = opening ? 'block' : 'none';
+  if (opening) loadSpokeSubnets();
+}
+
+async function loadSpokeSubnets() {
+  const box = document.getElementById('rtSubnetPick');
+  if (!box || box.dataset.loaded === '1') return;
+  box.innerHTML = '<span style="font-size:11.5px;color:var(--text-muted);">Loading subnets…</span>';
+  try {
+    const d = await (await fetch(`/api/admin/requests/${REQ_ID}/spoke-subnets`)).json();
+    const subs = d.subnets || [];
+    if (!subs.length) {
+      box.innerHTML = '<span style="font-size:11.5px;color:#f59e0b;">No subnets found — all workload subnets will be assigned by default.</span>';
+      return;
+    }
+    box.dataset.loaded = '1';
+    box.innerHTML = subs.map(s => `
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);margin-bottom:4px;cursor:pointer;">
+        <input type="checkbox" class="rt-subnet" value="${s.name}" checked style="accent-color:#00a3ff;">
+        <span style="font-family:var(--mono);">${s.name}</span>
+        ${s.prefix ? `<span style="color:var(--text-muted);font-family:var(--mono);font-size:11px;">${s.prefix}</span>` : ''}
+        ${s.has_udr ? '<span style="color:#f59e0b;font-size:10px;">(already has a UDR — will be replaced)</span>' : ''}
+      </label>`).join('') +
+      `<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px;">Source: ${d.source === 'azure' ? 'live from Azure' : 'declared on the request'} — untick any subnet that should NOT get this route table.</div>`;
+  } catch (e) {
+    box.innerHTML = '<span style="font-size:11.5px;color:#f59e0b;">Could not load subnets — all workload subnets will be assigned by default.</span>';
+  }
 }
 
 function addExtraRouteRow() {
@@ -634,6 +683,17 @@ async function runSpokeRt(btn) {
     prefix: row.querySelector('.er-prefix').value.trim(),
   })).filter(r => r.name || r.prefix);
   const box = document.getElementById('actionResults');
+  // Subnet selection: only send it when the picker actually rendered checkboxes
+  const picks = [...document.querySelectorAll('#rtSubnetPick .rt-subnet')];
+  let assign = null;
+  if (picks.length) {
+    assign = picks.filter(cb => cb.checked).map(cb => cb.value);
+    if (!assign.length) {
+      box.style.display = 'block';
+      box.innerHTML = '<span style="color:#f59e0b;font-size:12px;">Select at least one subnet for the route table (or close and reopen to reset).</span>';
+      return;
+    }
+  }
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Creating…';
   box.style.display = 'block';
@@ -641,7 +701,8 @@ async function runSpokeRt(btn) {
   try {
     const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'spoke_route_table', additional_routes: routes })
+      body: JSON.stringify({ action: 'spoke_route_table', additional_routes: routes,
+                             ...(assign ? { assign_subnets: assign } : {}) })
     });
     const d = await resp.json();
     if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; }
@@ -710,7 +771,7 @@ async function completeManually() {
   }
 }
 
-async function runAction(action, btn) {
+async function runAction(action, btn, extra = {}) {
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Running…';
   const box = document.getElementById('actionResults') || document.getElementById('actionResultsZpa');
@@ -719,7 +780,7 @@ async function runAction(action, btn) {
   try {
     const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action })
+      body: JSON.stringify({ action, ...extra })
     });
     const d = await resp.json();
     const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');

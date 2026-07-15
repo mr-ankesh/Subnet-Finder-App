@@ -653,10 +653,21 @@ def requests_list():
 def request_detail(req_id):
     req = SpokeRequest.query.get_or_404(req_id)
     history = audit.list_entries(request_id=req_id, limit=50)
+    vi = req.vnet_info
+    peering_names = None
+    if vi and vi.vnet_name:
+        stored = req.get_details().get("peering_names") or {}
+        peering_names = {
+            "spoke_to_hub": stored.get("spoke_to_hub")
+                            or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=vi.vnet_name),
+            "hub_to_spoke": stored.get("hub_to_spoke")
+                            or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=vi.vnet_name),
+        }
     return render_template("request_detail.html", req=req, RequestStatus=RequestStatus,
                            history=history, done_actions=_done_actions(req),
                            spoke_default_routes=_spoke_default_routes(),
-                           fw_private_ip=cfg.HUB_FIREWALL_PRIVATE_IP)
+                           fw_private_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
+                           peering_names=peering_names)
 
 
 @app.route("/requests/<int:req_id>/complete-manual", methods=["POST"])
@@ -899,27 +910,12 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     return {"success": True, "request_id": req_id}, 200
 
 
-@app.route("/api/requester/new-request", methods=["POST"])
-def requester_new_request():
+def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "requester"):
+    """
+    Shared, validated creation path for New VNET requests — used by the form
+    API and the requester agent. Returns (result_dict, http_status).
+    """
     from db_utils import create_spoke_request, get_spoke_request
-    data = request.get_json(force=True)
-
-    # Non-VNET request types go through the shared service-request path
-    request_type = str(data.get("request_type", RequestType.VNET_NEW)).strip() or RequestType.VNET_NEW
-    if request_type != RequestType.VNET_NEW:
-        try:
-            result, code = _create_service_request(
-                request_type=request_type,
-                purpose=str(data.get("purpose", "")).strip(),
-                requester_name=str(data.get("requester_name", "")).strip(),
-                requester_email=str(data.get("requester_email", "")).strip(),
-                details=data.get("details") or {},
-            )
-            return jsonify(result), code
-        except Exception as exc:
-            log.exception("Form: error creating %s request", request_type)
-            return jsonify({"error": str(exc)}), 500
-
     cidr_needed   = str(data.get("cidr_needed", "")).strip()
     purpose       = str(data.get("purpose", "")).strip()
     requester_name = str(data.get("requester_name", "")).strip()
@@ -930,9 +926,9 @@ def requester_new_request():
     if deployment_mode not in ("self", "admin"):
         deployment_mode = "self"
     if not all([cidr_needed, purpose, requester_name, ip_range]):
-        return jsonify({"error": "All fields are required."}), 400
+        return {"error": "All fields are required."}, 400
     if ip_range not in ["10.110.0.0/16", "10.119.0.0/16"]:
-        return jsonify({"error": "Invalid IP range."}), 400
+        return {"error": "Invalid IP range."}, 400
 
     # When the requester wants the admin to deploy, the Azure target is required
     # up front so the admin can run the deploy without chasing details.
@@ -952,31 +948,30 @@ def requester_new_request():
         missing = [k for k in ("subscription_id", "resource_group", "vnet_name", "region")
                    if not azure[k]]
         if missing:
-            return jsonify({"error": "Admin-deploy requires: " + ", ".join(missing)}), 400
+            return {"error": "Admin-deploy requires: " + ", ".join(missing)}, 400
         if not subnets:
-            return jsonify({"error": "Admin-deploy requires at least one subnet."}), 400
+            return {"error": "Admin-deploy requires at least one subnet."}, 400
         if any(not s["name"] or not s["size"] for s in subnets):
-            return jsonify({"error": "Every subnet needs a name and a size."}), 400
+            return {"error": "Every subnet needs a name and a size."}, 400
 
     # Internet access requested for the spoke (via hub firewall)
     internet_access = str(data.get("internet_access", "")).strip().lower()
     internet_dest = str(data.get("internet_dest", "")).strip()
     internet_ports = str(data.get("internet_ports", "")).strip()
     if internet_access and internet_access not in ("full", "network", "application", "none"):
-        return jsonify({"error": "Invalid internet access option."}), 400
+        return {"error": "Invalid internet access option."}, 400
     if internet_access in ("network", "application"):
         _s, dests, _ip, _po, _ap, perrors = _fw_params(
             {"source": "", "destination": internet_dest, "ports_protocol": internet_ports})
         if perrors:
-            return jsonify({"error": "; ".join(perrors)}), 400
+            return {"error": "; ".join(perrors)}, 400
         if not dests:
-            return jsonify({"error": f"A {internet_access} internet rule needs destination(s)."}), 400
+            return {"error": f"A {internet_access} internet rule needs destination(s)."}, 400
         if internet_access == "application":
             bad = _fqdn_errors(dests)
             if bad:
-                return jsonify({"error": "Application rules only accept FQDN destinations "
-                                         "(e.g. *.presight.ai) — these are IPs: "
-                                         + ", ".join(bad)}), 400
+                return {"error": "Application rules only accept FQDN destinations "
+                                 "(e.g. *.presight.ai) — these are IPs: " + ", ".join(bad)}, 400
 
     details_payload = {}
     if subnets:
@@ -988,28 +983,53 @@ def requester_new_request():
         if internet_ports:
             details_payload["internet_ports"] = internet_ports
 
+    req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range,
+                                  hub_integration, requester_email=requester_email or None,
+                                  deployment_mode=deployment_mode,
+                                  details=details_payload or None)
+    if deployment_mode == "admin":
+        from db_utils import upsert_vnet_info
+        first = subnets[0]
+        upsert_vnet_info(req_id, subscription_id=azure["subscription_id"],
+                         resource_group=azure["resource_group"], vnet_name=azure["vnet_name"],
+                         region=azure["region"], subnet_name=first["name"],
+                         subnet_size=first["size"], subnet_purpose=first["purpose"] or None)
+    req = get_spoke_request(req_id)
+    audit.record("request_created", actor=actor or requester_name, actor_role=actor_role,
+                 request_id=req_id,
+                 summary=f"New VNET request: /{cidr_needed} in {ip_range} — {purpose[:100]}",
+                 data={"request_type": "vnet_new", "cidr_needed": cidr_needed,
+                       "ip_range": ip_range, "deployment_mode": deployment_mode})
     try:
-        req_id = create_spoke_request(cidr_needed, purpose, requester_name, ip_range,
-                                      hub_integration, requester_email=requester_email or None,
-                                      deployment_mode=deployment_mode,
-                                      details=details_payload or None)
-        if deployment_mode == "admin":
-            from db_utils import upsert_vnet_info
-            first = subnets[0]
-            upsert_vnet_info(req_id, subscription_id=azure["subscription_id"],
-                             resource_group=azure["resource_group"], vnet_name=azure["vnet_name"],
-                             region=azure["region"], subnet_name=first["name"],
-                             subnet_size=first["size"], subnet_purpose=first["purpose"] or None)
-        req = get_spoke_request(req_id)
-        audit.record("request_created", actor=requester_name, actor_role="requester", request_id=req_id,
-                     summary=f"New VNET request: /{cidr_needed} in {ip_range} — {purpose[:100]}",
-                     data={"request_type": "vnet_new", "cidr_needed": cidr_needed,
-                           "ip_range": ip_range, "deployment_mode": deployment_mode})
+        notifications.notify_cidr_requested(req)
+    except Exception:
+        pass
+    return {"success": True, "request_id": req_id}, 200
+
+
+@app.route("/api/requester/new-request", methods=["POST"])
+def requester_new_request():
+    data = request.get_json(force=True)
+
+    # Non-VNET request types go through the shared service-request path
+    request_type = str(data.get("request_type", RequestType.VNET_NEW)).strip() or RequestType.VNET_NEW
+    if request_type != RequestType.VNET_NEW:
         try:
-            notifications.notify_cidr_requested(req)
-        except Exception:
-            pass
-        return jsonify({"success": True, "request_id": req_id})
+            result, code = _create_service_request(
+                request_type=request_type,
+                purpose=str(data.get("purpose", "")).strip(),
+                requester_name=str(data.get("requester_name", "")).strip(),
+                requester_email=str(data.get("requester_email", "")).strip(),
+                details=data.get("details") or {},
+            )
+            return jsonify(result), code
+        except Exception as exc:
+            log.exception("Form: error creating %s request", request_type)
+            return jsonify({"error": str(exc)}), 500
+
+    try:
+        result, code = _create_vnet_request(data)
+        return jsonify(result), code
     except Exception as exc:
         log.exception("Form: error creating request")
         return jsonify({"error": str(exc)}), 500
@@ -1479,9 +1499,26 @@ def admin_azure_action(req_id):
             except Exception:
                 pass
     elif action == "peer":
+        body = request.get_json(force=True) or {}
+        raw_s2h = str(body.get("spoke_to_hub_name", "")).strip()
+        raw_h2s = str(body.get("hub_to_spoke_name", "")).strip()
+        s2h = sanitize(raw_s2h) if raw_s2h else None
+        h2s = sanitize(raw_h2s) if raw_h2s else None
         res = azure_tools.peer_hub_vnet(spoke_subscription_id=vi.subscription_id,
                                         spoke_resource_group=vi.resource_group,
-                                        spoke_vnet_name=vi.vnet_name, spoke_address_space=addr)
+                                        spoke_vnet_name=vi.vnet_name, spoke_address_space=addr,
+                                        spoke_to_hub_name=s2h, hub_to_spoke_name=h2s)
+        if res.get("success"):
+            # Remember the names actually used — revert/decommission delete by them
+            d = req.get_details()
+            d["peering_names"] = {
+                "spoke_to_hub": res.get("spoke_to_hub_name") or s2h
+                                or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=vi.vnet_name),
+                "hub_to_spoke": res.get("hub_to_spoke_name") or h2s
+                                or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=vi.vnet_name),
+            }
+            req.set_details(d)
+            db.session.commit()
     elif action == "internet_rule":
         # Requester asked for a specific network/application internet rule, not allow-all
         ia = details.get("internet_access", "")
@@ -1553,18 +1590,26 @@ def admin_azure_action(req_id):
                  f"/providers/Microsoft.Network/routeTables/{rt_name}")
         skip = ("GatewaySubnet", "AzureFirewallSubnet", "AzureFirewallManagementSubnet",
                 "AzureBastionSubnet")
-        listing = azure_tools.list_vnet_subnets(vi.subscription_id, vi.resource_group, vi.vnet_name)
-        if listing.get("success"):
-            targets = [s["name"] for s in listing["subnets"] if s["name"] not in skip]
+        # Admin can pick exactly which subnets get the route table; when the
+        # picker sent a selection, honour it verbatim (minus system subnets).
+        selected = [str(s).strip() for s in (body.get("assign_subnets") or []) if str(s).strip()]
+        if "assign_subnets" in body and not selected:
+            return jsonify({"error": "Select at least one subnet to assign the route table to."}), 400
+        if selected:
+            targets = [s for s in selected if s not in skip]
         else:
-            # VNET not reachable (e.g. dry-run before deploy) — use the declared subnets
-            targets = [s.get("name") for s in (details.get("subnets") or []) if s.get("name")] \
-                      or ([vi.subnet_name] if vi.subnet_name else [])
-            steps.append({"label": "List spoke subnets", "success": bool(targets), "dry_run": False,
-                          "message": (f"Could not list live subnets ({listing.get('message', '')[:120]}) — "
-                                      f"using the request's declared subnet(s).") if targets else
-                                     "Could not list subnets and none are declared on the request."})
-            ok = ok and bool(targets)
+            listing = azure_tools.list_vnet_subnets(vi.subscription_id, vi.resource_group, vi.vnet_name)
+            if listing.get("success"):
+                targets = [s["name"] for s in listing["subnets"] if s["name"] not in skip]
+            else:
+                # VNET not reachable (e.g. dry-run before deploy) — use the declared subnets
+                targets = [s.get("name") for s in (details.get("subnets") or []) if s.get("name")] \
+                          or ([vi.subnet_name] if vi.subnet_name else [])
+                steps.append({"label": "List spoke subnets", "success": bool(targets), "dry_run": False,
+                              "message": (f"Could not list live subnets ({listing.get('message', '')[:120]}) — "
+                                          f"using the request's declared subnet(s).") if targets else
+                                         "Could not list subnets and none are declared on the request."})
+                ok = ok and bool(targets)
         for name in targets:
             ok = _step(f"Assign route table to subnet '{name}'",
                        azure_tools.assign_route_table_to_subnet(
@@ -1784,7 +1829,10 @@ def _revert_change(req, key):
     if key == "vnet":
         return azure_tools.delete_spoke_vnet(vi.subscription_id, vi.resource_group, vi.vnet_name)
     if key == "peer":
-        return azure_tools.delete_hub_spoke_peerings(vi.subscription_id, vi.resource_group, vi.vnet_name)
+        pn = details.get("peering_names") or {}
+        return azure_tools.delete_hub_spoke_peerings(
+            vi.subscription_id, vi.resource_group, vi.vnet_name,
+            spoke_to_hub_name=pn.get("spoke_to_hub"), hub_to_spoke_name=pn.get("hub_to_spoke"))
     if key == "internet":
         rule_name = render_name("TPL_FW_RULE_NAME", vnet=vi.vnet_name, request_id=req.id,
                                 region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
@@ -1825,6 +1873,30 @@ def _revert_change(req, key):
             udr_name, udr_rg, sanitize(f"to-zpa-{details.get('connector_name', 'rnd')}"),
             subscription_id=details.get("spoke_subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID)
     return {"success": False, "message": f"Unknown change '{key}'."}
+
+
+@app.route("/api/admin/requests/<int:req_id>/spoke-subnets")
+@require_admin
+def request_spoke_subnets(req_id):
+    """Subnets of the request's spoke VNET — live from Azure when reachable,
+    otherwise the subnets declared on the request. Feeds the UDR-assignment picker."""
+    import azure_tools
+    req = SpokeRequest.query.get_or_404(req_id)
+    vi = req.vnet_info
+    skip = ("GatewaySubnet", "AzureFirewallSubnet", "AzureFirewallManagementSubnet",
+            "AzureBastionSubnet")
+    if vi and all([vi.subscription_id, vi.resource_group, vi.vnet_name]):
+        listing = azure_tools.list_vnet_subnets(vi.subscription_id, vi.resource_group, vi.vnet_name)
+        if listing.get("success"):
+            return jsonify({"source": "azure", "subnets": [
+                {"name": s["name"], "prefix": s.get("address_prefix") or "",
+                 "has_udr": bool(s.get("has_udr"))}
+                for s in listing["subnets"] if s["name"] not in skip]})
+    declared = [{"name": s.get("name"), "prefix": "", "has_udr": False}
+                for s in (req.get_details().get("subnets") or []) if s.get("name")]
+    if not declared and vi and vi.subnet_name:
+        declared = [{"name": vi.subnet_name, "prefix": "", "has_udr": False}]
+    return jsonify({"source": "declared", "subnets": declared})
 
 
 @app.route("/api/admin/requests/<int:req_id>/deployed-changes")

@@ -231,10 +231,13 @@ def peer_hub_vnet(
     allow_forwarded_traffic: bool = None,
     allow_gateway_transit: bool = None,
     use_remote_gateways: bool = None,
+    spoke_to_hub_name: str = None,
+    hub_to_spoke_name: str = None,
 ) -> dict:
     """
     Creates VNET peering in both directions (spoke→hub, hub→spoke).
-    If peering settings are None, falls back to env var defaults.
+    If peering settings are None, falls back to env var defaults; peering
+    names default to the naming templates but can be overridden per call.
     """
     try:
         # Use env var defaults for any unspecified settings
@@ -257,12 +260,15 @@ def peer_hub_vnet(
             f"/providers/Microsoft.Network/virtualNetworks/{spoke_vnet_name}"
         )
 
+        s2h = spoke_to_hub_name or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name)
+        h2s = hub_to_spoke_name or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name)
+
         # Spoke → Hub
-        log.info("Creating spoke→hub peering (%s → %s)", spoke_vnet_name, cfg.HUB_VNET_NAME)
+        log.info("Creating spoke→hub peering '%s' (%s → %s)", s2h, spoke_vnet_name, cfg.HUB_VNET_NAME)
         spoke_client.virtual_network_peerings.begin_create_or_update(
             resource_group_name=spoke_resource_group,
             virtual_network_name=spoke_vnet_name,
-            virtual_network_peering_name=render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name),
+            virtual_network_peering_name=s2h,
             virtual_network_peering_parameters={
                 "allow_virtual_network_access": allow_vnet_access,
                 "allow_forwarded_traffic":      allow_forwarded_traffic,
@@ -273,11 +279,11 @@ def peer_hub_vnet(
         ).result()
 
         # Hub → Spoke
-        log.info("Creating hub→spoke peering (%s → %s)", cfg.HUB_VNET_NAME, spoke_vnet_name)
+        log.info("Creating hub→spoke peering '%s' (%s → %s)", h2s, cfg.HUB_VNET_NAME, spoke_vnet_name)
         hub_client.virtual_network_peerings.begin_create_or_update(
             resource_group_name=cfg.HUB_RESOURCE_GROUP,
             virtual_network_name=cfg.HUB_VNET_NAME,
-            virtual_network_peering_name=render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name),
+            virtual_network_peering_name=h2s,
             virtual_network_peering_parameters={
                 "allow_virtual_network_access": allow_vnet_access,
                 "allow_forwarded_traffic":      allow_forwarded_traffic,
@@ -287,7 +293,10 @@ def peer_hub_vnet(
             },
         ).result()
 
-        return {"success": True, "message": f"Peering created between {spoke_vnet_name} and {cfg.HUB_VNET_NAME}."}
+        return {"success": True,
+                "spoke_to_hub_name": s2h, "hub_to_spoke_name": h2s,
+                "message": f"Peering created between {spoke_vnet_name} and {cfg.HUB_VNET_NAME} "
+                           f"('{s2h}' / '{h2s}')."}
 
     except Exception as exc:
         log.error("peer_hub_vnet failed: %s", exc)
@@ -588,13 +597,15 @@ def delete_hub_spoke_peerings(
     spoke_subscription_id: str,
     spoke_resource_group: str,
     spoke_vnet_name: str,
+    spoke_to_hub_name: str = None,
+    hub_to_spoke_name: str = None,
 ) -> dict:
     """Delete both peering directions (spoke→hub and hub→spoke)."""
     results = []
     # Hub side first — it survives even if the spoke VNET was already deleted
     try:
         hub_client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
-        name = render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name)
+        name = hub_to_spoke_name or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name)
         log.info("Deleting hub→spoke peering '%s'", name)
         hub_client.virtual_network_peerings.begin_delete(
             cfg.HUB_RESOURCE_GROUP, cfg.HUB_VNET_NAME, name).result()
@@ -607,7 +618,7 @@ def delete_hub_spoke_peerings(
             return {"success": False, "message": f"Hub-side peering delete failed: {exc}"}
     try:
         spoke_client = _network_client(spoke_subscription_id)
-        name = render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name)
+        name = spoke_to_hub_name or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name)
         log.info("Deleting spoke→hub peering '%s'", name)
         spoke_client.virtual_network_peerings.begin_delete(
             spoke_resource_group, spoke_vnet_name, name).result()
