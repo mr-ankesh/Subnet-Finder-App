@@ -760,7 +760,7 @@ async function runSpokeRt(btn) {
 }
 
 // ── Requested internet rule (network/application, not allow-all) ───────────
-async function runInternetRule(btn) {
+async function runInternetRule(btn, onConflict = '') {
   const sel = fwSelection();
   const box = document.getElementById('actionResults');
   if (!sel.rcg || !sel.collection) {
@@ -775,9 +775,15 @@ async function runInternetRule(btn) {
   try {
     const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'internet_rule', ...sel })
+      body: JSON.stringify({ action: 'internet_rule', ...sel,
+                             ...(onConflict ? { on_conflict: onConflict } : {}) })
     });
     const d = await resp.json();
+    if (d.conflict) {
+      btn.disabled = false; btn.innerHTML = orig;
+      renderConflict(box, d, mode => runInternetRule(btn, mode));
+      return;
+    }
     const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
     box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}${d.success ? ' Reloading…' : ''}</span>`;
     if (d.success) setTimeout(() => location.reload(), 2000);
@@ -820,6 +826,11 @@ async function runAction(action, btn, extra = {}) {
       body: JSON.stringify({ action, ...extra })
     });
     const d = await resp.json();
+    if (d.conflict) {
+      btn.disabled = false; btn.innerHTML = orig;
+      renderConflict(box, d, mode => runAction(action, btn, { ...extra, on_conflict: mode }));
+      return;
+    }
     const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
     box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message || (d.success ? 'Done' : 'Completed with issues')}</span>`;
     if (d.success) setTimeout(() => location.reload(), 1500);
@@ -979,6 +990,35 @@ async function runDecomRelease(btn) {
 // Let the browser paint freshly-set innerHTML before a blocking confirm()
 function _paint() { return new Promise(r => setTimeout(r, 80)); }
 
+// ── Existing-configuration conflicts: view / edit / proceed ────────────────
+let _conflictRetry = null;
+
+function renderConflict(box, d, retry) {
+  _conflictRetry = retry;
+  box.style.display = 'block';
+  box.innerHTML =
+    `<div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;padding:8px 12px;font-size:12px;color:#f59e0b;">
+       <i class="bi bi-exclamation-triangle-fill me-1"></i>${d.message || 'This configuration already exists.'}
+       Review the current rule below, then choose how to proceed.</div>` +
+    (d.existing_rule ? fwRenderRule(d.existing_rule) : '') +
+    `<div id="conflictRow" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+       <button class="btn btn-glow btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('replace')">
+         <i class="bi bi-pencil-square me-1"></i>Update rule to requested definition
+       </button>
+       <button class="btn btn-glass btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('keep')">
+         <i class="bi bi-check2-circle me-1"></i>Proceed without updating — keep existing rule
+       </button>
+       <button class="btn btn-glass btn-sm" style="flex:0 0 auto;"
+               onclick="document.getElementById('conflictRow').remove()">Cancel</button>
+     </div>`;
+}
+
+async function _conflictGo(mode) {
+  const row = document.getElementById('conflictRow');
+  if (row) row.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Working…</span>';
+  if (_conflictRetry) await _conflictRetry(mode);
+}
+
 // ── NMO ZPA routing steps ──────────────────────────────────────────────────
 async function nmoPost(action) {
   const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
@@ -1120,7 +1160,7 @@ function fwSelection() {
   };
 }
 
-async function fwAction(action, btn, runningLabel) {
+async function fwAction(action, btn, runningLabel, extra = {}) {
   const box = document.getElementById('fwResults');
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = `<i class="bi bi-hourglass-split me-2"></i>${runningLabel}`;
@@ -1130,7 +1170,7 @@ async function fwAction(action, btn, runningLabel) {
   try {
     const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, ...fwSelection() })
+      body: JSON.stringify({ action, ...fwSelection(), ...extra })
     });
     d = await resp.json();
   } catch (e) {
@@ -1272,8 +1312,17 @@ async function runFwApply(btn) {
       if (!confirm('Add the requested firewall rule to the policy?')) return;
     }
   }
-  const d = await fwAction('fw_apply', btn, 'Applying…');
+  await fwApplyPost(btn, box);
+}
+
+async function fwApplyPost(btn, box, onConflict = '') {
+  const d = await fwAction('fw_apply', btn, 'Applying…',
+                           onConflict ? { on_conflict: onConflict } : {});
   if (!d) return;
+  if (d.conflict) {
+    renderConflict(box, d, mode => fwApplyPost(btn, box, mode));
+    return;
+  }
   if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; return; }
   const color = d.success ? '#7edb56' : '#f59e0b';
   box.innerHTML = `<span style="font-size:12px;color:${color};">${d.message}${d.success ? ' Reloading…' : ''}</span>`;

@@ -1411,7 +1411,9 @@ def admin_azure_action(req_id):
                      summary=f"Azure action '{action}' — "
                              f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
                      data={"action": action, "dry_run": bool(res.get("dry_run")),
-                           "success": bool(res.get("success")), "message": str(res.get("message", ""))[:400]})
+                           "success": bool(res.get("success")),
+                           "kept": bool(res.get("kept_existing")),
+                           "message": str(res.get("message", ""))[:400]})
 
     # ── ZPA routing actions — driven by request details, not vnet_info ──
     if action == "zpa_route_to_spoke":
@@ -1495,6 +1497,8 @@ def admin_azure_action(req_id):
             _audit_azure(res)
             return jsonify(res), (200 if res.get("success") else 207)
 
+        on_conflict = str(body.get("on_conflict", "")).strip()
+
         # fw_apply — perform the requested add / modify / delete
         if perrors and fw_action in ("add", "modify"):
             return jsonify({"error": "Fix the request's ports/protocol first: "
@@ -1518,8 +1522,17 @@ def admin_azure_action(req_id):
                 rule_name, rule_kind, sources, dests,
                 ports=ports, ip_protocols=ip_protocols, app_protocols=app_protocols,
                 rcg_name=rcg_sel or None, collection_name=col_sel or None)
-        else:  # add
-            if rule_kind == "application":
+        else:  # add — with view/edit/proceed handling when the rule already exists
+            if on_conflict == "keep":
+                res = {"success": True, "kept_existing": True,
+                       "message": f"Existing rule '{rule_name}' kept as-is — request accepted "
+                                  f"without Azure changes."}
+            elif on_conflict == "replace":
+                res = azure_tools.replace_firewall_rule(
+                    rule_name, rule_kind, sources, dests,
+                    ports=ports, ip_protocols=ip_protocols, app_protocols=app_protocols,
+                    rcg_name=rcg_sel or None, collection_name=col_sel or None)
+            elif rule_kind == "application":
                 res = azure_tools.add_firewall_application_rule(
                     rule_name, dests, app_protocols, source_addresses=sources,
                     rcg_name=rcg_sel, collection_name=col_sel)
@@ -1748,11 +1761,22 @@ def admin_azure_action(req_id):
         if not dests:
             return jsonify({"error": "The request has no internet destinations in its details."}), 400
         rule_name = sanitize(f"{vi.vnet_name}-inet-req{req.id}")
+        on_conflict = str(body.get("on_conflict", "")).strip()
         if ia == "application":
             bad = _fqdn_errors(dests)
             if bad:
                 return jsonify({"error": "Application rules only accept FQDN destinations — "
                                          "these are IPs: " + ", ".join(bad)}), 400
+        if on_conflict == "keep":
+            res = {"success": True, "kept_existing": True,
+                   "message": f"Existing firewall rule '{rule_name}' kept as-is — internet step "
+                              f"marked complete without Azure changes."}
+        elif on_conflict == "replace":
+            res = azure_tools.replace_firewall_rule(
+                rule_name, ia, [addr], dests, ports=ports, ip_protocols=ip_protocols,
+                app_protocols=app_protocols, rcg_name=rcg_sel or None,
+                collection_name=col_sel or None)
+        elif ia == "application":
             res = azure_tools.add_firewall_application_rule(
                 rule_name, dests, app_protocols, source_addresses=[addr],
                 rcg_name=rcg_sel, collection_name=col_sel)
@@ -1829,9 +1853,19 @@ def admin_azure_action(req_id):
                            f"{len(targets)} subnet(s)." if ok else
                            "Some route-table steps failed — see details.")}
     elif action == "internet":
+        body = request.get_json(force=True) or {}
         rule_name = render_name("TPL_FW_RULE_NAME", vnet=vi.vnet_name, request_id=req.id,
                                 region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
-        res = azure_tools.allow_internet_rule(addr, rule_name)
+        on_conflict = str(body.get("on_conflict", "")).strip()
+        if on_conflict == "keep":
+            res = {"success": True, "kept_existing": True,
+                   "message": f"Existing firewall rule '{rule_name}' kept as-is — internet step "
+                              f"marked complete without Azure changes."}
+        elif on_conflict == "replace":
+            res = azure_tools.replace_firewall_rule(
+                rule_name, "network", [addr], ["*"], ports=["*"], ip_protocols=["Any"])
+        else:
+            res = azure_tools.allow_internet_rule(addr, rule_name)
     elif action in ("gateway_route", "zpa_route"):
         table = (cfg.UDR_GATEWAY_NAME or cfg.UDR_NAME_1) if action == "gateway_route" \
                 else (cfg.UDR_ZPA_NAME or cfg.UDR_NAME_2)
@@ -1853,7 +1887,9 @@ def admin_azure_action(req_id):
                  summary=f"Azure action '{action}' — "
                          f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
                  data={"action": action, "dry_run": bool(res.get("dry_run")),
-                       "success": bool(res.get("success")), "message": str(res.get("message", ""))[:400]})
+                       "success": bool(res.get("success")),
+                       "kept": bool(res.get("kept_existing")),
+                       "message": str(res.get("message", ""))[:400]})
     _auto_advance(req)
     return jsonify(res), (200 if res.get("success") else 207)
 
@@ -2019,6 +2055,11 @@ def _deployed_changes(req):
         if key not in _REVERT_ORDER or not d.get("success"):
             continue
         if e["action"] == "azure_action":
+            if d.get("kept"):
+                # Admin accepted a pre-existing rule as-is — this request
+                # created nothing, so there is nothing to revert.
+                done.pop(key, None)
+                continue
             done[key] = {"dry_run": bool(d.get("dry_run"))}
         elif e["action"] == "azure_revert":
             done.pop(key, None)

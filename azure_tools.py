@@ -1227,10 +1227,12 @@ def add_firewall_network_rule(
             return {"success": False,
                     "message": f"Rule collection '{collection_name or '(any filter)'}' "
                                f"not found in RCG '{rcg.name}'."}
-        if any(r.name == rule_name for r in (target.rules or [])):
-            return {"success": False,
+        existing = next((r for r in (target.rules or []) if r.name == rule_name), None)
+        if existing is not None:
+            return {"success": False, "conflict": True,
+                    "existing_rule": _describe_fw_rule(existing, target.name),
                     "message": f"A rule named '{rule_name}' already exists in "
-                               f"'{target.name}' — use modify instead."}
+                               f"'{rcg.name}/{target.name}'."}
         conflict = _collection_kind_conflict(target, "network")
         if conflict:
             return {"success": False, "message": conflict}
@@ -1293,10 +1295,12 @@ def add_firewall_application_rule(
             return {"success": False,
                     "message": f"Rule collection '{collection_name or '(any filter)'}' "
                                f"not found in RCG '{rcg.name}'."}
-        if any(r.name == rule_name for r in (target.rules or [])):
-            return {"success": False,
+        existing = next((r for r in (target.rules or []) if r.name == rule_name), None)
+        if existing is not None:
+            return {"success": False, "conflict": True,
+                    "existing_rule": _describe_fw_rule(existing, target.name),
                     "message": f"A rule named '{rule_name}' already exists in "
-                               f"'{target.name}' — use modify instead."}
+                               f"'{rcg.name}/{target.name}'."}
         conflict = _collection_kind_conflict(target, "application")
         if conflict:
             return {"success": False, "message": conflict}
