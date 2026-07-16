@@ -25,6 +25,7 @@ CATEGORIES = {
     "hub":           {"title": "Hub & Subscriptions", "desc": "Hub VNET topology and default subscriptions/region for new spokes."},
     "firewall":      {"title": "Firewall",            "desc": "Azure Firewall policy that receives spoke egress rules."},
     "routing":       {"title": "Routing / UDRs",      "desc": "Hub route tables updated when a spoke is onboarded."},
+    "nmo":           {"title": "ZPA NMO Integration", "desc": "Targets used by 'Routing from NMO ZPA' requests: the NMO routing table, connector subnet, the NSG outbound allow rule and the firewall allow/deny rules that carry per-spoke CIDR lists."},
     "peering":       {"title": "Peering Defaults",    "desc": "Defaults applied to hub↔spoke peerings (overridable per action)."},
     "naming":        {"title": "Naming Conventions",  "desc": "Templates for generated resource names. Placeholders: {vnet} {request_id} {region} {cidr_mask} {purpose} {date}. Global prefix/suffix are joined with '-'."},
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
@@ -81,6 +82,22 @@ SETTINGS_SPEC = {
                                "udr-to-default=0.0.0.0/0, udr-to-zpa-rnd=10.110.5.32/27",
                                help="name=prefix pairs (comma-separated) added to every new spoke route "
                                     "table. Next hop is always the firewall private IP above."),
+
+    # ── ZPA NMO integration ──
+    "UDR_ZPA_NMO_NAME":        _f("nmo", "ZPA NMO route table",
+                                  help="Hub routing table for the NMO connector — gets a route to each NMO-routed spoke."),
+    "ZPA_NMO_CONNECTION_SUBNET": _f("nmo", "NMO connector subnet (CIDR)",
+                                    help="Routed into the spoke's UDR so return traffic reaches the NMO connector."),
+    "NMO_SUBSCRIPTION_ID":     _f("nmo", "NMO subscription ID",
+                                  help="Where the NMO NSG lives. Blank = hub subscription."),
+    "NMO_NSG_NAME":            _f("nmo", "NMO NSG name"),
+    "NMO_NSG_RG":              _f("nmo", "NMO NSG resource group"),
+    "NMO_NSG_ALLOW_RULE":      _f("nmo", "NSG outbound allow rule",
+                                  help="Security rule whose destination list receives each spoke CIDR."),
+    "NMO_FW_ALLOW_RULE":       _f("nmo", "Firewall ALLOW rule name",
+                                  help="Network rule (searched across all rule collection groups) whose destination list receives each spoke CIDR."),
+    "NMO_FW_DENY_RULE":        _f("nmo", "Firewall DENY rule name",
+                                  help="Deny rule whose destination list receives each spoke CIDR."),
 
     # ── Peering defaults ──
     "PEERING_ALLOW_VNET_ACCESS":       _f("peering", "Allow virtual network access", "true",  type="bool"),

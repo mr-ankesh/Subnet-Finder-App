@@ -391,6 +391,20 @@
                     <div class="col-12 zpa-common-2"></div>
                   </div>
                 </div>
+
+                <!-- ── Routing from NMO ZPA ── -->
+                <div class="col-12 type-section" id="section-zpa_nmo_routing" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:8px 12px;font-size:.78rem;color:#60a5fa;">
+                        <i class="bi bi-info-circle me-1"></i>NMO routing includes the NMO route table, your
+                        spoke's route table, the NMO NSG allow list and the firewall allow/deny lists —
+                        the admin handles all five steps from your details below.
+                      </div>
+                    </div>
+                    <div class="col-12 zpa-common-3"></div>
+                  </div>
+                </div>
                 <!-- shared ZPA fields template (cloned into whichever ZPA section is active) -->
                 <template id="zpaFieldsTemplate">
                   <div class="row g-3">
@@ -808,8 +822,8 @@ function selectType(t) {
   if (section) {
     section.style.display = '';
     // ZPA types share a block of fields — clone them into the active section once
-    if (t === 'zpa_rnd_routing' || t === 'zpa_other_routing') {
-      const holder = section.querySelector('.zpa-common, .zpa-common-2');
+    if (t === 'zpa_rnd_routing' || t === 'zpa_other_routing' || t === 'zpa_nmo_routing') {
+      const holder = section.querySelector('.zpa-common, .zpa-common-2, .zpa-common-3');
       if (holder && !holder.hasChildNodes()) {
         holder.appendChild(document.getElementById('zpaFieldsTemplate').content.cloneNode(true));
       }

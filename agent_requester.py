@@ -40,6 +40,9 @@ YOUR CAPABILITIES:
    - zpa_rnd_routing: spoke_vnet_name, spoke_cidr, spoke_udr_name, spoke_udr_rg,
      spoke_subscription_id, justification — to be routable via the ZPA R&D connector
    - zpa_other_routing: same as zpa_rnd_routing plus connector_name (required)
+   - zpa_nmo_routing: same fields as zpa_rnd_routing — routing via the NMO ZPA connector.
+     The admin will add the NMO route, the spoke route, and put the spoke CIDR into the
+     NMO NSG allow list and the firewall allow/deny lists.
    - subnet_additional: vnet_name, subnet_size, subnet_purpose, existing_request_id (optional)
    - vnet_decommission: vnet_name, resource_group, subscription_id, allocated_cidr,
      created_by_admin ("yes"/"no" — was the VNET created by the admin via this portal?),
@@ -118,15 +121,17 @@ TOOLS_OPENAI = [
         "function": {
             "name": "create_service_request",
             "description": ("Create a non-VNET network request: firewall_policy, hub_integration, "
-                            "zpa_rnd_routing, zpa_other_routing, subnet_additional, vnet_decommission, "
-                            "dns, or other. Collect the type-specific details first (see system prompt)."),
+                            "zpa_rnd_routing, zpa_other_routing, zpa_nmo_routing, subnet_additional, "
+                            "vnet_decommission, dns, or other. Collect the type-specific details "
+                            "first (see system prompt)."),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "request_type":    {"type": "string",
                                         "enum": ["firewall_policy", "hub_integration", "zpa_rnd_routing",
-                                                 "zpa_other_routing", "subnet_additional",
-                                                 "vnet_decommission", "dns", "other"]},
+                                                 "zpa_other_routing", "zpa_nmo_routing",
+                                                 "subnet_additional", "vnet_decommission",
+                                                 "dns", "other"]},
                     "purpose":         {"type": "string", "description": "One-line summary of the request"},
                     "requester_name":  {"type": "string"},
                     "requester_email": {"type": "string"},

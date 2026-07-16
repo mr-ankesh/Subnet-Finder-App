@@ -941,6 +941,7 @@ TYPE_REQUIRED_DETAILS = {
                                     "region", "address_space"],
     RequestType.ZPA_RND_ROUTING:   ["spoke_vnet_name", "spoke_cidr"],
     RequestType.ZPA_OTHER_ROUTING: ["spoke_vnet_name", "spoke_cidr", "connector_name"],
+    RequestType.ZPA_NMO_ROUTING:   ["spoke_vnet_name", "spoke_cidr"],
     RequestType.SUBNET_ADDITIONAL: ["vnet_name", "subnet_size"],
     RequestType.VNET_DECOMMISSION: ["vnet_name", "resource_group", "confirm",
                                     "created_by_admin", "manual_changes"],
@@ -1544,6 +1545,66 @@ def admin_azure_action(req_id):
         _audit_azure(res)
         return jsonify(res), (200 if res.get("success") else 207)
 
+    # ── NMO ZPA routing actions — driven by request details ──
+    if action.startswith("nmo_"):
+        spoke_cidr = details.get("spoke_cidr", "")
+        if not spoke_cidr:
+            return jsonify({"error": "Request has no spoke CIDR in its details."}), 400
+
+        if action == "nmo_zpa_route":
+            if not cfg.UDR_ZPA_NMO_NAME:
+                return jsonify({"error": "ZPA NMO route table not configured "
+                                         "(Settings → ZPA NMO Integration)."}), 400
+            res = azure_tools.add_route_to_table(
+                route_table_name=cfg.UDR_ZPA_NMO_NAME, resource_group=cfg.UDR_RESOURCE_GROUP,
+                route_name=render_name("TPL_ROUTE_NAME",
+                                       vnet=details.get("spoke_vnet_name", f"req{req.id}"),
+                                       request_id=req.id),
+                address_prefix=spoke_cidr, next_hop_type="VirtualAppliance",
+                next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP, subscription_id=cfg.HUB_SUBSCRIPTION_ID)
+        elif action == "nmo_spoke_udr":
+            if not cfg.ZPA_NMO_CONNECTION_SUBNET:
+                return jsonify({"error": "NMO connector subnet not configured "
+                                         "(Settings → ZPA NMO Integration)."}), 400
+            udr_name = details.get("spoke_udr_name", "")
+            udr_rg = details.get("spoke_udr_rg", "")
+            if not udr_name or not udr_rg:
+                return jsonify({"error": "Request details are missing the spoke UDR "
+                                         "name/resource group."}), 400
+            res = azure_tools.add_route_to_table(
+                route_table_name=udr_name, resource_group=udr_rg,
+                route_name=sanitize("to-zpa-nmo"),
+                address_prefix=cfg.ZPA_NMO_CONNECTION_SUBNET, next_hop_type="VirtualAppliance",
+                next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
+                subscription_id=details.get("spoke_subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID)
+        elif action == "nmo_nsg_check":
+            res = azure_tools.get_nsg_rule_status(cfg.NMO_NSG_NAME, cfg.NMO_NSG_RG,
+                                                  cfg.NMO_NSG_ALLOW_RULE)
+        elif action == "nmo_nsg_add":
+            if not cfg.NMO_NSG_NAME or not cfg.NMO_NSG_RG or not cfg.NMO_NSG_ALLOW_RULE:
+                return jsonify({"error": "NMO NSG name/resource group/rule not configured "
+                                         "(Settings → ZPA NMO Integration)."}), 400
+            res = azure_tools.add_cidr_to_nsg_rule(cfg.NMO_NSG_NAME, cfg.NMO_NSG_RG,
+                                                   cfg.NMO_NSG_ALLOW_RULE, spoke_cidr)
+        elif action in ("nmo_fw_allow_check", "nmo_fw_deny_check"):
+            rule = cfg.NMO_FW_ALLOW_RULE if action == "nmo_fw_allow_check" else cfg.NMO_FW_DENY_RULE
+            if not rule:
+                return jsonify({"error": "NMO firewall rule name not configured "
+                                         "(Settings → ZPA NMO Integration)."}), 400
+            res = azure_tools.get_firewall_policy_status(rule_name=rule)
+            res["rule_name"] = rule
+        elif action in ("nmo_fw_allow_add", "nmo_fw_deny_add"):
+            rule = cfg.NMO_FW_ALLOW_RULE if action == "nmo_fw_allow_add" else cfg.NMO_FW_DENY_RULE
+            if not rule:
+                return jsonify({"error": "NMO firewall rule name not configured "
+                                         "(Settings → ZPA NMO Integration)."}), 400
+            res = azure_tools.add_cidr_to_firewall_rule(rule, spoke_cidr)
+        else:
+            return jsonify({"error": f"Unknown action '{action}'."}), 400
+        _audit_azure(res)
+        _auto_advance(req)
+        return jsonify(res), (200 if res.get("success") else 207)
+
     # ── VNET decommission actions — driven by request details ──
     if action in ("decom_check", "decom_execute", "decom_release"):
         vnet_name = details.get("vnet_name", "")
@@ -1802,13 +1863,20 @@ def admin_azure_action(req_id):
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Deployed-change keys in revert order (most-dependent first; reverse of deploy)
-_REVERT_ORDER = ["spoke_route_table", "spoke_udr_zpa", "zpa_route_to_spoke", "zpa_route",
+_REVERT_ORDER = ["spoke_route_table", "spoke_udr_zpa", "zpa_route_to_spoke",
+                 "nmo_fw_deny_add", "nmo_fw_allow_add", "nmo_nsg_add",
+                 "nmo_spoke_udr", "nmo_zpa_route", "zpa_route",
                  "gateway_route", "internet", "internet_rule", "fw_apply", "peer", "vnet"]
 
 _REVERT_LABELS = {
     "spoke_route_table": "Unassign & delete the spoke route table",
     "spoke_udr_zpa":     "Remove ZPA connection route from the spoke UDR",
     "zpa_route_to_spoke": "Remove spoke route from the ZPA connector routing table",
+    "nmo_fw_deny_add":   "Remove spoke CIDR from the NMO firewall DENY rule",
+    "nmo_fw_allow_add":  "Remove spoke CIDR from the NMO firewall ALLOW rule",
+    "nmo_nsg_add":       "Remove spoke CIDR from the NMO NSG outbound allow rule",
+    "nmo_spoke_udr":     "Remove NMO connector route from the spoke UDR",
+    "nmo_zpa_route":     "Remove spoke route from the ZPA NMO routing table",
     "zpa_route":         "Remove spoke route from the hub ZPA routing table",
     "gateway_route":     "Remove spoke route from the hub gateway routing table",
     "internet":          "Remove the internet-egress firewall rule",
@@ -1870,6 +1938,9 @@ def _required_actions(req) -> set:
         return {"peer", "gateway_route", "zpa_route"}
     if t in (RequestType.ZPA_RND_ROUTING, RequestType.ZPA_OTHER_ROUTING):
         return {"zpa_route_to_spoke", "spoke_udr_zpa"}
+    if t == RequestType.ZPA_NMO_ROUTING:
+        return {"nmo_zpa_route", "nmo_spoke_udr", "nmo_nsg_add",
+                "nmo_fw_allow_add", "nmo_fw_deny_add"}
     return set()
 
 
@@ -1899,6 +1970,17 @@ def _auto_advance(req):
         elif "spoke_udr_zpa" in done:
             new = RequestStatus.SPOKE_UDR_UPDATED
         elif "zpa_route_to_spoke" in done:
+            new = RequestStatus.ZPA_ROUTE_ADDED
+    elif t == RequestType.ZPA_NMO_ROUTING:
+        if required <= done:
+            new = RequestStatus.COMPLETED
+        elif {"nmo_fw_allow_add", "nmo_fw_deny_add"} <= done:
+            new = RequestStatus.FW_RULES_UPDATED
+        elif "nmo_nsg_add" in done:
+            new = RequestStatus.NSG_UPDATED
+        elif "nmo_spoke_udr" in done:
+            new = RequestStatus.SPOKE_UDR_UPDATED
+        elif "nmo_zpa_route" in done:
             new = RequestStatus.ZPA_ROUTE_ADDED
     # Only ever move forward within the workflow
     if (not new or new == req.status or new not in wf
@@ -2020,6 +2102,26 @@ def _revert_change(req, key):
         return azure_tools.delete_route_from_table(
             udr_name, udr_rg, sanitize(f"to-zpa-{details.get('connector_name', 'rnd')}"),
             subscription_id=details.get("spoke_subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID)
+    if key == "nmo_zpa_route":
+        return azure_tools.delete_route_from_table(
+            cfg.UDR_ZPA_NMO_NAME, cfg.UDR_RESOURCE_GROUP,
+            render_name("TPL_ROUTE_NAME", vnet=details.get("spoke_vnet_name", f"req{req.id}"),
+                        request_id=req.id),
+            subscription_id=cfg.HUB_SUBSCRIPTION_ID)
+    if key == "nmo_spoke_udr":
+        udr_name, udr_rg = details.get("spoke_udr_name", ""), details.get("spoke_udr_rg", "")
+        if not udr_name or not udr_rg:
+            return {"success": False, "message": "Spoke UDR name/resource group missing from details."}
+        return azure_tools.delete_route_from_table(
+            udr_name, udr_rg, sanitize("to-zpa-nmo"),
+            subscription_id=details.get("spoke_subscription_id") or cfg.SPOKE_SUBSCRIPTION_ID)
+    if key == "nmo_nsg_add":
+        return azure_tools.remove_cidr_from_nsg_rule(
+            cfg.NMO_NSG_NAME, cfg.NMO_NSG_RG, cfg.NMO_NSG_ALLOW_RULE,
+            details.get("spoke_cidr", ""))
+    if key in ("nmo_fw_allow_add", "nmo_fw_deny_add"):
+        rule = cfg.NMO_FW_ALLOW_RULE if key == "nmo_fw_allow_add" else cfg.NMO_FW_DENY_RULE
+        return azure_tools.remove_cidr_from_firewall_rule(rule, details.get("spoke_cidr", ""))
     return {"success": False, "message": f"Unknown change '{key}'."}
 
 

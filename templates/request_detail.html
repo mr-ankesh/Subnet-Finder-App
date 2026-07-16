@@ -207,6 +207,43 @@
         </div>
         {% endif %}
 
+        {# ── NMO ZPA routing actions ── #}
+        {% if rtype == 'zpa_nmo_routing' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-shield-shaded"></i> NMO ZPA Routing Steps</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          {% set nmo_steps = [
+            ('nmo_zpa_route',    'bi-signpost-split', '1 · Add Spoke Route — ZPA NMO Routing Table', none),
+            ('nmo_spoke_udr',    'bi-signpost-2',     '2 · Add NMO Connector Route — Spoke Route Table', none),
+            ('nmo_nsg_add',      'bi-shield-check',   '3 · Add Spoke CIDR — NSG Outbound Allow List', 'nmo_nsg_check'),
+            ('nmo_fw_allow_add', 'bi-check-circle',   '4 · Add Spoke CIDR — Firewall ALLOW Rule', 'nmo_fw_allow_check'),
+            ('nmo_fw_deny_add',  'bi-slash-circle',   '5 · Add Spoke CIDR — Firewall DENY Rule', 'nmo_fw_deny_check'),
+          ] %}
+          {% for key, icon, label, check in nmo_steps %}
+          {% if key in done_actions %}
+          <button class="btn btn-glass w-100 mb-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>{{ label }} — Done
+          </button>
+          {% elif check %}
+          <button class="btn btn-glass w-100 mb-2" onclick="runNmoChecked('{{ key }}', '{{ check }}', this)">
+            <i class="bi {{ icon }} me-2"></i>{{ label }}
+          </button>
+          {% else %}
+          <button class="btn btn-glass w-100 mb-2" onclick="runNmo('{{ key }}', this)">
+            <i class="bi {{ icon }} me-2"></i>{{ label }}
+          </button>
+          {% endif %}
+          {% endfor %}
+          <div style="margin-top:2px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            Steps 3–5 fetch and show the current NSG/firewall state before asking you to confirm
+            the update. Status advances automatically as steps complete.
+          </div>
+          <div id="nmoResults" style="display:none;margin-top:10px;"></div>
+        </div>
+        {% endif %}
+
         {# ── VNET Decommission actions ── #}
         {% if rtype == 'vnet_decommission' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
         {% set d = req.get_details() %}
@@ -937,6 +974,67 @@ async function runDecomRelease(btn) {
   const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
   box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}${d.success ? ' Reloading…' : ''}</span>`;
   if (d.success) setTimeout(() => location.reload(), 1500);
+}
+
+// ── NMO ZPA routing steps ──────────────────────────────────────────────────
+async function nmoPost(action) {
+  const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action })
+  });
+  return resp.json();
+}
+
+function nmoRenderCurrent(action, d) {
+  // Current-state summary shown before the admin confirms the update
+  if (d.rule && d.rule.destinations !== undefined && d.rule.direction !== undefined) {
+    // NSG rule
+    return `<div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;font-size:12px;line-height:1.7;">
+      <div style="font-weight:700;color:#60a5fa;"><i class="bi bi-file-earmark-text me-1"></i>Current NSG rule — ${d.rule.name}</div>
+      <div><span style="color:var(--text-muted);">Direction/Access:</span> ${d.rule.direction} / ${d.rule.access} (priority ${d.rule.priority})</div>
+      <div><span style="color:var(--text-muted);">Sources:</span> <span style="font-family:var(--mono);">${(d.rule.sources||[]).join(', ') || '*'}</span></div>
+      <div><span style="color:var(--text-muted);">Ports:</span> ${(d.rule.ports||[]).join(', ') || '*'} · <span style="color:var(--text-muted);">Protocol:</span> ${d.rule.protocol}</div>
+      <div><span style="color:var(--text-muted);">Destinations (${(d.rule.destinations||[]).length}):</span>
+        <span style="font-family:var(--mono);font-size:11px;">${(d.rule.destinations||[]).join(', ') || '—'}</span></div>
+    </div>`;
+  }
+  if (d.rule) return fwRenderRule(d.rule);   // firewall rule (shared renderer)
+  return `<div style="font-size:12px;color:#f59e0b;">${d.message || 'Rule not found.'}</div>`;
+}
+
+async function runNmo(action, btn) {
+  const box = document.getElementById('nmoResults');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Running…';
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running…</span>';
+  try {
+    const d = await nmoPost(action);
+    const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
+    box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}${d.success && !d.error ? ' Reloading…' : ''}</span>`;
+    if (d.success) setTimeout(() => location.reload(), 1800);
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+async function runNmoChecked(applyAction, checkAction, btn) {
+  // Fetch the current NSG/firewall state FIRST, show it, then confirm the update.
+  const box = document.getElementById('nmoResults');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Fetching current state…';
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Fetching current state…</span>';
+  let chk = null;
+  try { chk = await nmoPost(checkAction); } catch (e) {}
+  btn.disabled = false; btn.innerHTML = orig;
+  if (!chk || chk.error || !chk.success) {
+    box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${(chk && (chk.error || chk.message)) || 'Could not fetch current state.'}</span>`;
+    return;
+  }
+  box.innerHTML = nmoRenderCurrent(applyAction, chk) +
+    `<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">${chk.message || ''}</div>`;
+  if (!confirm('Current state is shown below the buttons.\n\nAdd the spoke CIDR to this rule now?')) return;
+  runNmo(applyAction, btn);
 }
 
 // ── Firewall policy steps ──────────────────────────────────────────────────

@@ -24,6 +24,8 @@ class RequestStatus:
     RULE_IMPLEMENTED  = "RULE_IMPLEMENTED"
     ZPA_ROUTE_ADDED   = "ZPA_ROUTE_ADDED"
     SPOKE_UDR_UPDATED = "SPOKE_UDR_UPDATED"
+    NSG_UPDATED       = "NSG_UPDATED"
+    FW_RULES_UPDATED  = "FW_RULES_UPDATED"
     SUBNET_ALLOCATED  = "SUBNET_ALLOCATED"
     RESOURCES_REMOVED = "RESOURCES_REMOVED"
     CIDR_RELEASED     = "CIDR_RELEASED"
@@ -56,6 +58,8 @@ class RequestStatus:
         RULE_IMPLEMENTED:            "Rule Implemented",
         ZPA_ROUTE_ADDED:             "ZPA Route Added",
         SPOKE_UDR_UPDATED:           "Spoke UDR Updated",
+        NSG_UPDATED:                 "NSG Updated",
+        FW_RULES_UPDATED:            "Firewall Rules Updated",
         SUBNET_ALLOCATED:            "Subnet Allocated",
         RESOURCES_REMOVED:           "Resources Removed",
         CIDR_RELEASED:               "CIDR Released",
@@ -77,6 +81,8 @@ class RequestStatus:
         RULE_IMPLEMENTED:            "primary",
         ZPA_ROUTE_ADDED:             "primary",
         SPOKE_UDR_UPDATED:           "primary",
+        NSG_UPDATED:                 "primary",
+        FW_RULES_UPDATED:            "primary",
         SUBNET_ALLOCATED:            "primary",
         RESOURCES_REMOVED:           "primary",
         CIDR_RELEASED:               "primary",
@@ -100,13 +106,15 @@ class RequestType:
     HUB_INTEGRATION   = "hub_integration"
     ZPA_RND_ROUTING   = "zpa_rnd_routing"
     ZPA_OTHER_ROUTING = "zpa_other_routing"
+    ZPA_NMO_ROUTING   = "zpa_nmo_routing"
     SUBNET_ADDITIONAL = "subnet_additional"
     VNET_DECOMMISSION = "vnet_decommission"
     DNS               = "dns"
     OTHER             = "other"
 
     ALL = [VNET_NEW, FIREWALL_POLICY, HUB_INTEGRATION, ZPA_RND_ROUTING,
-           ZPA_OTHER_ROUTING, SUBNET_ADDITIONAL, VNET_DECOMMISSION, DNS, OTHER]
+           ZPA_OTHER_ROUTING, ZPA_NMO_ROUTING, SUBNET_ADDITIONAL,
+           VNET_DECOMMISSION, DNS, OTHER]
 
     _LABELS = {
         VNET_NEW:          "New VNET",
@@ -114,6 +122,7 @@ class RequestType:
         HUB_INTEGRATION:   "Hub Integration",
         ZPA_RND_ROUTING:   "Routing from ZPA R&D",
         ZPA_OTHER_ROUTING: "Routing from Other ZPA",
+        ZPA_NMO_ROUTING:   "Routing from NMO ZPA",
         SUBNET_ADDITIONAL: "New Subnet in Existing VNET",
         VNET_DECOMMISSION: "VNET Decommission",
         DNS:               "DNS / Private DNS Link",
@@ -126,6 +135,7 @@ class RequestType:
         HUB_INTEGRATION:   "VNET already exists — request hub peering/integration only.",
         ZPA_RND_ROUTING:   "Make your spoke routable via the ZPA R&D connector.",
         ZPA_OTHER_ROUTING: "Make your spoke routable via another ZPA connector.",
+        ZPA_NMO_ROUTING:   "Make your spoke routable via the NMO ZPA connector (routes, NSG and firewall lists).",
         SUBNET_ADDITIONAL: "Carve an additional subnet inside an onboarded VNET.",
         VNET_DECOMMISSION: "Retire a spoke: remove peering/routes and release the CIDR.",
         DNS:               "DNS record or Private DNS zone link for your spoke.",
@@ -138,6 +148,7 @@ class RequestType:
         HUB_INTEGRATION:   "sign-turn-right",
         ZPA_RND_ROUTING:   "shield-lock",
         ZPA_OTHER_ROUTING: "shield-plus",
+        ZPA_NMO_ROUTING:   "shield-shaded",
         SUBNET_ADDITIONAL: "grid-1x2",
         VNET_DECOMMISSION: "trash3",
         DNS:               "globe2",
@@ -155,6 +166,9 @@ class RequestType:
                             RequestStatus.SPOKE_UDR_UPDATED, RequestStatus.COMPLETED],
         ZPA_OTHER_ROUTING: [RequestStatus.SUBMITTED, RequestStatus.ZPA_ROUTE_ADDED,
                             RequestStatus.SPOKE_UDR_UPDATED, RequestStatus.COMPLETED],
+        ZPA_NMO_ROUTING:   [RequestStatus.SUBMITTED, RequestStatus.ZPA_ROUTE_ADDED,
+                            RequestStatus.SPOKE_UDR_UPDATED, RequestStatus.NSG_UPDATED,
+                            RequestStatus.FW_RULES_UPDATED, RequestStatus.COMPLETED],
         SUBNET_ADDITIONAL: [RequestStatus.SUBMITTED, RequestStatus.SUBNET_ALLOCATED,
                             RequestStatus.COMPLETED],
         VNET_DECOMMISSION: [RequestStatus.SUBMITTED, RequestStatus.RESOURCES_REMOVED,

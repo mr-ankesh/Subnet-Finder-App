@@ -1033,6 +1033,152 @@ def replace_firewall_rule(
         return {"success": False, "message": str(exc)}
 
 
+# ── NSG rule CIDR lists (NMO ZPA outbound allow) ────────────────────────────
+
+def _nsg_rule_prefixes(rule) -> list:
+    out = list(rule.destination_address_prefixes or [])
+    if rule.destination_address_prefix:
+        out.insert(0, rule.destination_address_prefix)
+    return out
+
+
+def get_nsg_rule_status(nsg_name: str, resource_group: str, rule_name: str,
+                        subscription_id: str = None) -> dict:
+    """Read-only: current definition of one NSG security rule (never mutates)."""
+    if not nsg_name or not resource_group or not rule_name:
+        return {"success": False,
+                "message": "NMO NSG name / resource group / rule not configured in Settings → ZPA NMO."}
+    try:
+        client = _network_client(subscription_id or cfg.NMO_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
+        rule = client.security_rules.get(resource_group, nsg_name, rule_name)
+        prefixes = _nsg_rule_prefixes(rule)
+        return {"success": True, "exists": True,
+                "rule": {"name": rule.name, "direction": str(rule.direction or ""),
+                         "access": str(rule.access or ""), "priority": rule.priority,
+                         "protocol": str(rule.protocol or ""),
+                         "sources": ([rule.source_address_prefix] if rule.source_address_prefix
+                                     else list(rule.source_address_prefixes or [])),
+                         "destinations": prefixes,
+                         "ports": ([rule.destination_port_range] if rule.destination_port_range
+                                   else list(rule.destination_port_ranges or []))},
+                "message": (f"NSG rule '{rule_name}' ({rule.access} {rule.direction}, "
+                            f"priority {rule.priority}) — {len(prefixes)} destination prefix(es).")}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": False, "exists": False,
+                    "message": f"NSG rule '{rule_name}' not found on '{nsg_name}' ({resource_group})."}
+        log.error("get_nsg_rule_status failed: %s", exc)
+        return {"success": False, "exists": None, "message": str(exc)}
+
+
+@_guard
+def add_cidr_to_nsg_rule(nsg_name: str, resource_group: str, rule_name: str,
+                         cidr: str, subscription_id: str = None) -> dict:
+    """Append a CIDR to an NSG rule's destination list (idempotent)."""
+    try:
+        client = _network_client(subscription_id or cfg.NMO_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
+        rule = client.security_rules.get(resource_group, nsg_name, rule_name)
+        prefixes = _nsg_rule_prefixes(rule)
+        if cidr in prefixes:
+            return {"success": True,
+                    "message": f"{cidr} is already in NSG rule '{rule_name}' — nothing to do."}
+        rule.destination_address_prefix = None      # move single-prefix form to the list form
+        rule.destination_address_prefixes = prefixes + [cidr]
+        log.info("Adding %s to NSG rule %s/%s", cidr, nsg_name, rule_name)
+        client.security_rules.begin_create_or_update(
+            resource_group, nsg_name, rule_name, rule).result()
+        return {"success": True,
+                "message": f"{cidr} added to NSG rule '{rule_name}' "
+                           f"({len(prefixes) + 1} destination prefixes now)."}
+    except Exception as exc:
+        log.error("add_cidr_to_nsg_rule failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def remove_cidr_from_nsg_rule(nsg_name: str, resource_group: str, rule_name: str,
+                              cidr: str, subscription_id: str = None) -> dict:
+    """Remove a CIDR from an NSG rule's destination list (not-found = success)."""
+    try:
+        client = _network_client(subscription_id or cfg.NMO_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
+        rule = client.security_rules.get(resource_group, nsg_name, rule_name)
+        prefixes = _nsg_rule_prefixes(rule)
+        if cidr not in prefixes:
+            return {"success": True,
+                    "message": f"{cidr} not present in NSG rule '{rule_name}' (already removed)."}
+        prefixes = [p for p in prefixes if p != cidr]
+        rule.destination_address_prefix = None
+        rule.destination_address_prefixes = prefixes
+        client.security_rules.begin_create_or_update(
+            resource_group, nsg_name, rule_name, rule).result()
+        return {"success": True, "message": f"{cidr} removed from NSG rule '{rule_name}'."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "message": f"NSG rule '{rule_name}' not found (nothing to remove)."}
+        log.error("remove_cidr_from_nsg_rule failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+# ── Firewall rule CIDR lists (NMO ZPA allow/deny) ───────────────────────────
+
+def _mutate_fw_rule_destinations(rule_name: str, cidr: str, add: bool) -> dict:
+    """Append/remove a CIDR on a named network rule's destination list
+    (searched across every rule collection group). Idempotent both ways."""
+    client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+    for rcg in _iter_rcgs(client):
+        for rc in (rcg.rule_collections or []):
+            if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
+                continue
+            for r in (rc.rules or []):
+                if r.name != rule_name or r.rule_type != "NetworkRule":
+                    continue
+                dests = list(r.destination_addresses or [])
+                if add:
+                    if cidr in dests:
+                        return {"success": True, "found": True,
+                                "message": f"{cidr} is already in firewall rule '{rule_name}' — nothing to do."}
+                    r.destination_addresses = dests + [cidr]
+                else:
+                    if cidr not in dests:
+                        return {"success": True, "found": True,
+                                "message": f"{cidr} not present in firewall rule '{rule_name}' (already removed)."}
+                    r.destination_addresses = [d for d in dests if d != cidr]
+                log.info("%s %s on firewall rule %s (%s/%s)",
+                         "Adding" if add else "Removing", cidr, rule_name, rcg.name, rc.name)
+                client.firewall_policy_rule_collection_groups.begin_create_or_update(
+                    cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg).result()
+                return {"success": True, "found": True,
+                        "message": f"{cidr} {'added to' if add else 'removed from'} firewall rule "
+                                   f"'{rule_name}' ({rcg.name}/{rc.name}, "
+                                   f"{len(r.destination_addresses)} destination(s) now)."}
+    if not add:
+        return {"success": True, "found": False,
+                "message": f"Firewall rule '{rule_name}' not found (nothing to remove)."}
+    return {"success": False, "found": False,
+            "message": f"Firewall network rule '{rule_name}' not found in policy "
+                       f"'{cfg.FIREWALL_POLICY_NAME}' — check the name in Settings → ZPA NMO."}
+
+
+@_guard
+def add_cidr_to_firewall_rule(rule_name: str, cidr: str) -> dict:
+    try:
+        return _mutate_fw_rule_destinations(rule_name, cidr, add=True)
+    except Exception as exc:
+        log.error("add_cidr_to_firewall_rule failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def remove_cidr_from_firewall_rule(rule_name: str, cidr: str) -> dict:
+    try:
+        return _mutate_fw_rule_destinations(rule_name, cidr, add=False)
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "message": f"Firewall rule '{rule_name}' not found (nothing to remove)."}
+        log.error("remove_cidr_from_firewall_rule failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
 # ── 6. Firewall — network rule ────────────────────────────────────────────
 
 def _find_target_collection(rcg, collection_name=None):
