@@ -1403,17 +1403,30 @@ def admin_azure_action(req_id):
     import azure_tools
     from naming import sanitize
     req = SpokeRequest.query.get_or_404(req_id)
-    action = (request.get_json(force=True) or {}).get("action", "")
+    payload = request.get_json(force=True) or {}
+    action = payload.get("action", "")
+    on_conflict = str(payload.get("on_conflict", "")).strip()
     details = req.get_details()
 
     def _audit_azure(res):
+        # 'kept' also covers in-place updates of PRE-EXISTING config — either
+        # way this request created nothing new, so there is nothing to revert.
         audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
                      summary=f"Azure action '{action}' — "
                              f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
                      data={"action": action, "dry_run": bool(res.get("dry_run")),
                            "success": bool(res.get("success")),
-                           "kept": bool(res.get("kept_existing")),
+                           "kept": bool(res.get("kept_existing") or res.get("replaced_existing")),
                            "message": str(res.get("message", ""))[:400]})
+
+    def _route_res(**kwargs):
+        """Route additions with view/edit/proceed conflict handling."""
+        if on_conflict == "keep":
+            return {"success": True, "kept_existing": True,
+                    "message": "Existing route kept as-is — step marked complete "
+                               "without Azure changes."}
+        return azure_tools.add_route_to_table(
+            on_conflict=("replace" if on_conflict == "replace" else None), **kwargs)
 
     # ── ZPA routing actions — driven by request details, not vnet_info ──
     if action == "zpa_route_to_spoke":
@@ -1425,7 +1438,7 @@ def admin_azure_action(req_id):
         if not table:
             return jsonify({"error": "No ZPA routing table configured "
                                      "(set 'ZPA route table' in Settings)."}), 400
-        res = azure_tools.add_route_to_table(
+        res = _route_res(
             route_table_name=table, resource_group=cfg.UDR_RESOURCE_GROUP,
             route_name=render_name("TPL_ROUTE_NAME", vnet=details.get("spoke_vnet_name", f"req{req.id}"),
                                    request_id=req.id),
@@ -1447,7 +1460,7 @@ def admin_azure_action(req_id):
         if not udr_name or not udr_rg:
             return jsonify({"error": "Request details are missing the spoke UDR name/resource group."}), 400
         connector = details.get("connector_name", "rnd")
-        res = azure_tools.add_route_to_table(
+        res = _route_res(
             route_table_name=udr_name, resource_group=udr_rg,
             route_name=sanitize(f"to-zpa-{connector}"),
             address_prefix=zpa_subnet, next_hop_type="VirtualAppliance",
@@ -1568,7 +1581,7 @@ def admin_azure_action(req_id):
             if not cfg.UDR_ZPA_NMO_NAME:
                 return jsonify({"error": "ZPA NMO route table not configured "
                                          "(Settings → ZPA NMO Integration)."}), 400
-            res = azure_tools.add_route_to_table(
+            res = _route_res(
                 route_table_name=cfg.UDR_ZPA_NMO_NAME, resource_group=cfg.UDR_RESOURCE_GROUP,
                 route_name=render_name("TPL_ROUTE_NAME",
                                        vnet=details.get("spoke_vnet_name", f"req{req.id}"),
@@ -1584,7 +1597,7 @@ def admin_azure_action(req_id):
             if not udr_name or not udr_rg:
                 return jsonify({"error": "Request details are missing the spoke UDR "
                                          "name/resource group."}), 400
-            res = azure_tools.add_route_to_table(
+            res = _route_res(
                 route_table_name=udr_name, resource_group=udr_rg,
                 route_name=sanitize("to-zpa-nmo"),
                 address_prefix=cfg.ZPA_NMO_CONNECTION_SUBNET, next_hop_type="VirtualAppliance",
@@ -1874,7 +1887,7 @@ def admin_azure_action(req_id):
                                      f"(set UDR_GATEWAY_NAME / UDR_ZPA_NAME)."}), 400
         route_name = render_name("TPL_ROUTE_NAME", vnet=vi.vnet_name, request_id=req.id,
                                  region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
-        res = azure_tools.add_route_to_table(
+        res = _route_res(
             route_table_name=table, resource_group=cfg.UDR_RESOURCE_GROUP,
             route_name=route_name, address_prefix=addr,
             next_hop_type="VirtualAppliance", next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP,
@@ -1888,7 +1901,7 @@ def admin_azure_action(req_id):
                          f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
                  data={"action": action, "dry_run": bool(res.get("dry_run")),
                        "success": bool(res.get("success")),
-                       "kept": bool(res.get("kept_existing")),
+                       "kept": bool(res.get("kept_existing") or res.get("replaced_existing")),
                        "message": str(res.get("message", ""))[:400]})
     _auto_advance(req)
     return jsonify(res), (200 if res.get("success") else 207)

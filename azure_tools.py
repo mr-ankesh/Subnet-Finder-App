@@ -357,11 +357,50 @@ def add_route_to_table(
     next_hop_type: str,
     next_hop_ip: str = None,
     subscription_id: str = None,
+    on_conflict: str = None,        # None = report conflicts; "replace" = update the existing route
 ) -> dict:
-    """Add a single route to a specific route table."""
+    """
+    Add a single route to a route table. Azure forbids two routes with the
+    same address prefix — when another route already covers the prefix, this
+    returns a conflict (with the existing route) unless on_conflict='replace',
+    which updates that existing route in place to the requested next hop.
+    """
+    import ipaddress
     try:
         sub = subscription_id or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID
         client = _network_client(sub)
+
+        def _norm(p):
+            try:
+                return str(ipaddress.ip_network(str(p), strict=False))
+            except ValueError:
+                return str(p)
+
+        replaced = None
+        try:
+            rt = client.route_tables.get(resource_group, route_table_name)
+            existing = next((r for r in (rt.routes or [])
+                             if r.name != route_name and r.address_prefix
+                             and _norm(r.address_prefix) == _norm(address_prefix)), None)
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+            existing = None
+        if existing is not None:
+            if on_conflict == "replace":
+                replaced = existing.name
+                route_name = existing.name          # update the conflicting route in place
+            else:
+                return {"success": False, "conflict": True,
+                        "existing_route": {"name": existing.name,
+                                           "prefix": existing.address_prefix,
+                                           "next_hop_type": str(existing.next_hop_type or ""),
+                                           "next_hop_ip": existing.next_hop_ip_address or "",
+                                           "table": route_table_name},
+                        "message": f"Route '{existing.name}' already covers {address_prefix} "
+                                   f"in '{route_table_name}' — Azure does not allow two routes "
+                                   f"with the same address prefix."}
+
         params = {"address_prefix": address_prefix, "next_hop_type": next_hop_type}
         if next_hop_ip and next_hop_type == "VirtualAppliance":
             params["next_hop_ip_address"] = next_hop_ip
@@ -373,6 +412,11 @@ def add_route_to_table(
             route_name=route_name,
             route_parameters=params,
         ).result()
+        if replaced:
+            return {"success": True, "replaced_existing": True,
+                    "message": f"Existing route '{replaced}' updated in place "
+                               f"({address_prefix} → {next_hop_type}"
+                               f"{' ' + next_hop_ip if next_hop_ip else ''}) in {route_table_name}."}
         return {"success": True, "message": f"Route '{route_name}' ({address_prefix} → {next_hop_type}) added to {route_table_name}."}
     except Exception as exc:
         log.error("add_route_to_table failed: %s", exc)

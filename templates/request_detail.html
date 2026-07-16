@@ -993,20 +993,31 @@ function _paint() { return new Promise(r => setTimeout(r, 80)); }
 // ── Existing-configuration conflicts: view / edit / proceed ────────────────
 let _conflictRetry = null;
 
+function renderExistingRoute(r) {
+  return `<div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.7;">
+    <div style="font-weight:700;color:#60a5fa;"><i class="bi bi-signpost-split me-1"></i>Existing route — ${r.name}</div>
+    <div><span style="color:var(--text-muted);">Table:</span> <span style="font-family:var(--mono);">${r.table}</span></div>
+    <div><span style="color:var(--text-muted);">Prefix:</span> <span style="font-family:var(--mono);">${r.prefix}</span></div>
+    <div><span style="color:var(--text-muted);">Next hop:</span> ${r.next_hop_type}${r.next_hop_ip ? ' → <span style="font-family:var(--mono);">' + r.next_hop_ip + '</span>' : ''}</div>
+  </div>`;
+}
+
 function renderConflict(box, d, retry) {
   _conflictRetry = retry;
+  const isRoute = !!d.existing_route;
   box.style.display = 'block';
   box.innerHTML =
     `<div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;padding:8px 12px;font-size:12px;color:#f59e0b;">
        <i class="bi bi-exclamation-triangle-fill me-1"></i>${d.message || 'This configuration already exists.'}
-       Review the current rule below, then choose how to proceed.</div>` +
+       Review the current ${isRoute ? 'route' : 'rule'} below, then choose how to proceed.</div>` +
     (d.existing_rule ? fwRenderRule(d.existing_rule) : '') +
+    (d.existing_route ? renderExistingRoute(d.existing_route) : '') +
     `<div id="conflictRow" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
        <button class="btn btn-glow btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('replace')">
-         <i class="bi bi-pencil-square me-1"></i>Update rule to requested definition
+         <i class="bi bi-pencil-square me-1"></i>Update ${isRoute ? 'existing route to requested next hop' : 'rule to requested definition'}
        </button>
        <button class="btn btn-glass btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('keep')">
-         <i class="bi bi-check2-circle me-1"></i>Proceed without updating — keep existing rule
+         <i class="bi bi-check2-circle me-1"></i>Proceed without updating — keep existing ${isRoute ? 'route' : 'rule'}
        </button>
        <button class="btn btn-glass btn-sm" style="flex:0 0 auto;"
                onclick="document.getElementById('conflictRow').remove()">Cancel</button>
@@ -1020,10 +1031,10 @@ async function _conflictGo(mode) {
 }
 
 // ── NMO ZPA routing steps ──────────────────────────────────────────────────
-async function nmoPost(action) {
+async function nmoPost(action, extra = {}) {
   const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action })
+    body: JSON.stringify({ action, ...extra })
   });
   return resp.json();
 }
@@ -1045,14 +1056,19 @@ function nmoRenderCurrent(action, d) {
   return `<div style="font-size:12px;color:#f59e0b;">${d.message || 'Rule not found.'}</div>`;
 }
 
-async function runNmo(action, btn) {
+async function runNmo(action, btn, extra = {}) {
   const box = document.getElementById('nmoResults');
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Running…';
   box.style.display = 'block';
   box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Running…</span>';
   try {
-    const d = await nmoPost(action);
+    const d = await nmoPost(action, extra);
+    if (d.conflict) {
+      btn.disabled = false; btn.innerHTML = orig;
+      renderConflict(box, d, mode => runNmo(action, btn, { ...extra, on_conflict: mode }));
+      return;
+    }
     const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
     box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}${d.success && !d.error ? ' Reloading…' : ''}</span>`;
     if (d.success) setTimeout(() => location.reload(), 1800);
