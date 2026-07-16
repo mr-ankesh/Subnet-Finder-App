@@ -976,6 +976,9 @@ async function runDecomRelease(btn) {
   if (d.success) setTimeout(() => location.reload(), 1500);
 }
 
+// Let the browser paint freshly-set innerHTML before a blocking confirm()
+function _paint() { return new Promise(r => setTimeout(r, 80)); }
+
 // ── NMO ZPA routing steps ──────────────────────────────────────────────────
 async function nmoPost(action) {
   const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
@@ -1018,7 +1021,9 @@ async function runNmo(action, btn) {
 }
 
 async function runNmoChecked(applyAction, checkAction, btn) {
-  // Fetch the current NSG/firewall state FIRST, show it, then confirm the update.
+  // Fetch the current NSG/firewall state FIRST, render it, then confirm
+  // inline. (A native confirm() would block the browser before it paints
+  // the fetched state — so the confirmation lives in the page instead.)
   const box = document.getElementById('nmoResults');
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Fetching current state…';
@@ -1032,9 +1037,29 @@ async function runNmoChecked(applyAction, checkAction, btn) {
     return;
   }
   box.innerHTML = nmoRenderCurrent(applyAction, chk) +
-    `<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">${chk.message || ''}</div>`;
-  if (!confirm('Current state is shown below the buttons.\n\nAdd the spoke CIDR to this rule now?')) return;
-  runNmo(applyAction, btn);
+    `<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">${chk.message || ''}</div>` +
+    `<div id="nmoConfirmRow" style="display:flex;gap:8px;margin-top:10px;">
+       <button class="btn btn-glow btn-sm" style="flex:1;" onclick="nmoConfirmApply('${applyAction}', this)">
+         <i class="bi bi-check2 me-1"></i>Confirm — Add Spoke CIDR
+       </button>
+       <button class="btn btn-glass btn-sm" style="flex:1;"
+               onclick="document.getElementById('nmoConfirmRow').remove()">Cancel</button>
+     </div>`;
+}
+
+async function nmoConfirmApply(action, btn) {
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Applying…';
+  let d = null;
+  try { d = await nmoPost(action); } catch (e) {}
+  const row = document.getElementById('nmoConfirmRow');
+  if (!d) {
+    row.outerHTML = '<div style="font-size:12px;color:var(--danger);margin-top:8px;">Network error.</div>';
+    return;
+  }
+  const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
+  row.outerHTML = `<div style="font-size:12px;color:${color};margin-top:8px;">
+    ${d.error || d.message}${d.success && !d.error ? ' Reloading…' : ''}</div>`;
+  if (d.success) setTimeout(() => location.reload(), 2200);
 }
 
 // ── Firewall policy steps ──────────────────────────────────────────────────
@@ -1231,6 +1256,7 @@ async function runFwApply(btn) {
       return;
     }
     box.innerHTML = fwRenderCoverage(chk.coverage) + fwRenderStatus(chk);
+    await _paint();
     const verb = fwAct === 'delete' ? 'DELETE this rule' : 'MODIFY this rule to the requested definition';
     if (!confirm(`Current rule definition is shown below the buttons.\n\n${verb}?\n\nRule: ${chk.rule_name}`)) return;
   } else {
@@ -1238,6 +1264,7 @@ async function runFwApply(btn) {
     const chk = await fwAction('fw_check', btn, 'Checking coverage…');
     if (chk && chk.success && chk.coverage) {
       box.innerHTML = fwRenderCoverage(chk.coverage);
+      await _paint();
       if (chk.coverage.fully_covered) {
         if (!confirm('The requested access is ALREADY allowed by existing rules (see coverage details).\n\nAdd a new rule anyway?')) return;
       } else if (!confirm('Coverage check done (details shown). Add the requested firewall rule to the policy?')) return;
