@@ -714,7 +714,7 @@ function addExtraRouteRow() {
     </div>`);
 }
 
-async function runSpokeRt(btn) {
+async function runSpokeRt(btn, onConflict = '') {
   const routes = [...document.querySelectorAll('#extraRoutes .extra-route-row')].map(row => ({
     name: row.querySelector('.er-name').value.trim(),
     prefix: row.querySelector('.er-prefix').value.trim(),
@@ -739,9 +739,15 @@ async function runSpokeRt(btn) {
     const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'spoke_route_table', additional_routes: routes,
-                             ...(assign ? { assign_subnets: assign } : {}) })
+                             ...(assign ? { assign_subnets: assign } : {}),
+                             ...(onConflict ? { on_conflict: onConflict } : {}) })
     });
     const d = await resp.json();
+    if (d.conflict) {
+      btn.disabled = false; btn.innerHTML = orig;
+      renderConflict(box, d, mode => runSpokeRt(btn, mode));
+      return;
+    }
     if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; }
     else {
       let html = '';
@@ -1002,22 +1008,68 @@ function renderExistingRoute(r) {
   </div>`;
 }
 
+function renderExistingVnet(v) {
+  return `<div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.7;">
+    <div style="font-weight:700;color:#60a5fa;"><i class="bi bi-diagram-3 me-1"></i>Existing VNET — ${v.name}</div>
+    <div><span style="color:var(--text-muted);">Address space:</span> <span style="font-family:var(--mono);">${(v.address_space||[]).join(', ')}</span></div>
+    <div><span style="color:var(--text-muted);">Subnets (${(v.subnets||[]).length}):</span></div>
+    ${(v.subnets||[]).map(s => `<div style="margin-left:14px;font-family:var(--mono);font-size:11.5px;">${s.name} · ${s.prefix || '—'}</div>`).join('')}
+  </div>`;
+}
+
+function renderExistingPeerings(list) {
+  return `<div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.7;">
+    <div style="font-weight:700;color:#60a5fa;"><i class="bi bi-diagram-3 me-1"></i>Existing peering(s)</div>
+    ${list.map(p => `<div>· <span style="font-family:var(--mono);">${p.name}</span> (${p.side}) —
+      ${p.state}, remote <span style="font-family:var(--mono);">${p.remote}</span>,
+      forwarded traffic ${p.allow_forwarded_traffic ? 'on' : 'off'}</div>`).join('')}
+  </div>`;
+}
+
+function renderExistingRouteTable(rt) {
+  return `<div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.7;">
+    <div style="font-weight:700;color:#60a5fa;"><i class="bi bi-table me-1"></i>Existing route table — ${rt.name} (${(rt.routes||[]).length} route(s))</div>
+    ${(rt.routes||[]).map(r => `<div style="margin-left:14px;font-family:var(--mono);font-size:11.5px;">${r.name} · ${r.prefix} → ${r.next_hop_ip || r.next_hop_type}</div>`).join('')}
+  </div>`;
+}
+
 function renderConflict(box, d, retry) {
   _conflictRetry = retry;
-  const isRoute = !!d.existing_route;
+  let stateHtml = '', replaceLabel = 'Update to requested definition',
+      keepLabel = 'Proceed without updating — keep existing', showReplace = true, kind = 'configuration';
+  if (d.existing_rule) {
+    stateHtml = fwRenderRule(d.existing_rule); kind = 'rule';
+    replaceLabel = 'Update rule to requested definition';
+    keepLabel = 'Proceed without updating — keep existing rule';
+  } else if (d.existing_route) {
+    stateHtml = renderExistingRoute(d.existing_route); kind = 'route';
+    replaceLabel = 'Update existing route to requested definition';
+    keepLabel = 'Proceed without updating — keep existing route';
+  } else if (d.existing_vnet) {
+    stateHtml = renderExistingVnet(d.existing_vnet); kind = 'VNET';
+    replaceLabel = 'OVERWRITE VNET — replaces address space & subnets';
+    keepLabel = 'Proceed — treat the existing VNET as deployed';
+  } else if (d.existing_peerings) {
+    stateHtml = renderExistingPeerings(d.existing_peerings); kind = 'peering';
+    replaceLabel = 'Overwrite peering settings with requested values';
+    keepLabel = 'Proceed without updating — keep existing peering';
+  } else if (d.existing_route_table) {
+    stateHtml = renderExistingRouteTable(d.existing_route_table); kind = 'route table';
+    showReplace = false;                       // recreating would clear its routes
+    keepLabel = 'Reuse the existing table as-is & continue';
+  }
   box.style.display = 'block';
   box.innerHTML =
     `<div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;padding:8px 12px;font-size:12px;color:#f59e0b;">
        <i class="bi bi-exclamation-triangle-fill me-1"></i>${d.message || 'This configuration already exists.'}
-       Review the current ${isRoute ? 'route' : 'rule'} below, then choose how to proceed.</div>` +
-    (d.existing_rule ? fwRenderRule(d.existing_rule) : '') +
-    (d.existing_route ? renderExistingRoute(d.existing_route) : '') +
+       Review the current ${kind} below, then choose how to proceed — nothing is changed without your confirmation.</div>` +
+    stateHtml +
     `<div id="conflictRow" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-       <button class="btn btn-glow btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('replace')">
-         <i class="bi bi-pencil-square me-1"></i>Update ${isRoute ? 'existing route to requested next hop' : 'rule to requested definition'}
-       </button>
+       ${showReplace ? `<button class="btn btn-glow btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('replace')">
+         <i class="bi bi-pencil-square me-1"></i>${replaceLabel}
+       </button>` : ''}
        <button class="btn btn-glass btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('keep')">
-         <i class="bi bi-check2-circle me-1"></i>Proceed without updating — keep existing ${isRoute ? 'route' : 'rule'}
+         <i class="bi bi-check2-circle me-1"></i>${keepLabel}
        </button>
        <button class="btn btn-glass btn-sm" style="flex:0 0 auto;"
                onclick="document.getElementById('conflictRow').remove()">Cancel</button>

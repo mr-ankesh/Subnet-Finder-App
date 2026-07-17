@@ -138,9 +138,32 @@ def create_spoke_vnet(
     subnet_name: str = "default",
     subnet_size=None,
     subnets: list = None,           # [{"name", "size"}, ...] — overrides the single-subnet args
+    on_conflict: str = None,        # "replace" = overwrite an existing VNET after confirmation
 ) -> dict:
     """Ensure the RG exists, then create the spoke VNET with the requested subnet(s)."""
     try:
+        # No silent overwrite: create_or_update REPLACES an existing VNET
+        # (address space and subnets) — surface its current state first.
+        before = None
+        try:
+            existing = _network_client(subscription_id).virtual_networks.get(
+                resource_group, vnet_name)
+            before = {"name": existing.name, "location": existing.location,
+                      "address_space": list(existing.address_space.address_prefixes or []),
+                      "subnets": [{"name": s.name,
+                                   "prefix": s.address_prefix or ", ".join(
+                                       getattr(s, "address_prefixes", None) or [])}
+                                  for s in (existing.subnets or [])]}
+            if on_conflict != "replace":
+                return {"success": False, "conflict": True, "existing_vnet": before,
+                        "message": f"VNET '{vnet_name}' already exists in {resource_group} "
+                                   f"({', '.join(before['address_space'])}, "
+                                   f"{len(before['subnets'])} subnet(s)) — deploying would "
+                                   f"OVERWRITE its address space and subnets."}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+
         rg_res = ensure_resource_group(subscription_id, resource_group, location)
         if not rg_res.get("success"):
             return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
@@ -169,7 +192,22 @@ def create_spoke_vnet(
         msg = f"VNET '{vnet_name}' ({address_space}) created with subnet(s): {snet_desc}."
         if rg_res.get("created"):
             msg = f"RG '{resource_group}' created. " + msg
-        return {"success": True, "message": msg}
+        after = {"name": vnet_name, "location": location, "address_space": [address_space],
+                 "subnets": [{"name": s["name"], "prefix": s["address_prefix"]}
+                             for s in subnet_params]}
+        change = {"target": f"VNET {vnet_name} @ {resource_group}",
+                  "before": before, "after": after}
+        if before:      # overwrote an existing VNET — revert restores its old definition
+            change.update({"revert_op": "restore_vnet",
+                           "revert_params": {"sub": subscription_id, "rg": resource_group,
+                                             "vnet": vnet_name, "location": before["location"],
+                                             "address_space": before["address_space"],
+                                             "subnets": before["subnets"]}})
+        else:
+            change.update({"revert_op": "delete_vnet",
+                           "revert_params": {"sub": subscription_id, "rg": resource_group,
+                                             "vnet": vnet_name}})
+        return {"success": True, "replaced_existing": bool(before), "change": change, "message": msg}
     except Exception as exc:
         log.error("create_spoke_vnet failed: %s", exc)
         return {"success": False, "message": str(exc)}
@@ -178,9 +216,22 @@ def create_spoke_vnet(
 @_guard
 def delete_spoke_route_table(subscription_id: str, resource_group: str,
                              vnet_name: str, route_table_name: str) -> dict:
-    """Disassociate a route table from the VNET's subnets, then delete it."""
+    """Disassociate a route table from the VNET's subnets, then delete it.
+    Routes and associations are snapshotted so the deletion can be reverted."""
     try:
         client = _network_client(subscription_id)
+        before = None
+        try:
+            rt = client.route_tables.get(resource_group, route_table_name)
+            before = {"location": rt.location,
+                      "routes": [{"name": r.name, "prefix": r.address_prefix,
+                                  "next_hop_type": str(r.next_hop_type or ""),
+                                  "next_hop_ip": r.next_hop_ip_address or ""}
+                                 for r in (rt.routes or [])],
+                      "assigned_subnets": []}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
         cleared = []
         try:
             for s in client.subnets.list(resource_group, vnet_name):
@@ -192,16 +243,65 @@ def delete_spoke_route_table(subscription_id: str, resource_group: str,
         except Exception as exc:
             if not _is_not_found(exc):        # VNET already gone → nothing associated
                 raise
+        if before is not None:
+            before["assigned_subnets"] = cleared
         client.route_tables.begin_delete(resource_group, route_table_name).result()
         msg = f"Route table '{route_table_name}' deleted."
         if cleared:
             msg = f"Unassigned from subnet(s) {', '.join(cleared)}. " + msg
-        return {"success": True, "message": msg}
+        res = {"success": True, "message": msg}
+        if before is not None:
+            res["change"] = {"target": f"route table {route_table_name} @ {resource_group}",
+                             "before": before, "after": None,
+                             "revert_op": "restore_spoke_rt",
+                             "revert_params": {"sub": subscription_id, "rg": resource_group,
+                                               "vnet": vnet_name, "rt": route_table_name,
+                                               "location": before["location"],
+                                               "routes": before["routes"],
+                                               "assigned_subnets": cleared}}
+        return res
     except Exception as exc:
         if _is_not_found(exc):
             return {"success": True,
                     "message": f"Route table '{route_table_name}' not found (already deleted)."}
         log.error("delete_spoke_route_table failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def restore_spoke_route_table(subscription_id: str, resource_group: str, vnet_name: str,
+                              route_table_name: str, location: str,
+                              routes: list, assigned_subnets: list) -> dict:
+    """Recreate a deleted spoke route table (routes + subnet associations)."""
+    try:
+        client = _network_client(subscription_id)
+        loc = location or cfg.DEFAULT_AZURE_REGION
+        log.info("Restoring route table '%s' in %s", route_table_name, resource_group)
+        result = client.route_tables.begin_create_or_update(
+            resource_group, route_table_name,
+            {"location": loc, "properties": {"disableBgpRoutePropagation": True}}).result()
+        for r in routes:
+            params = {"address_prefix": r["prefix"], "next_hop_type": r.get("next_hop_type") or "VirtualAppliance"}
+            if r.get("next_hop_ip"):
+                params["next_hop_ip_address"] = r["next_hop_ip"]
+            client.routes.begin_create_or_update(
+                resource_group, route_table_name, r["name"], params).result()
+        reassigned, failed = [], []
+        for sname in (assigned_subnets or []):
+            try:
+                subnet = client.subnets.get(resource_group, vnet_name, sname)
+                subnet.route_table = {"id": result.id}
+                client.subnets.begin_create_or_update(
+                    resource_group, vnet_name, sname, subnet).result()
+                reassigned.append(sname)
+            except Exception:
+                failed.append(sname)
+        msg = (f"Route table '{route_table_name}' restored with {len(routes)} route(s)"
+               + (f", re-assigned to {', '.join(reassigned)}" if reassigned else "")
+               + (f" (could not re-assign: {', '.join(failed)})" if failed else "") + ".")
+        return {"success": not failed, "message": msg}
+    except Exception as exc:
+        log.error("restore_spoke_route_table failed: %s", exc)
         return {"success": False, "message": str(exc)}
 
 
@@ -233,6 +333,7 @@ def peer_hub_vnet(
     use_remote_gateways: bool = None,
     spoke_to_hub_name: str = None,
     hub_to_spoke_name: str = None,
+    on_conflict: str = None,        # "replace" = overwrite existing peerings after confirmation
 ) -> dict:
     """
     Creates VNET peering in both directions (spoke→hub, hub→spoke).
@@ -262,6 +363,32 @@ def peer_hub_vnet(
 
         s2h = spoke_to_hub_name or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name)
         h2s = hub_to_spoke_name or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name)
+
+        # No silent overwrite: creating over an existing peering replaces its
+        # settings — surface the current state unless explicitly told to replace.
+        if on_conflict != "replace":
+            existing = []
+            for client_, rg_, vnet_, name_, side in (
+                    (spoke_client, spoke_resource_group, spoke_vnet_name, s2h, "spoke → hub"),
+                    (hub_client, cfg.HUB_RESOURCE_GROUP, cfg.HUB_VNET_NAME, h2s, "hub → spoke")):
+                try:
+                    p = client_.virtual_network_peerings.get(rg_, vnet_, name_)
+                    existing.append({
+                        "name": p.name, "side": side,
+                        "state": str(p.peering_state or ""),
+                        "remote": (p.remote_virtual_network.id.split("/")[-1]
+                                   if p.remote_virtual_network and p.remote_virtual_network.id else ""),
+                        "allow_forwarded_traffic": bool(p.allow_forwarded_traffic),
+                        "allow_vnet_access": bool(p.allow_virtual_network_access)})
+                except Exception as exc:
+                    if not _is_not_found(exc):
+                        raise
+            if existing:
+                return {"success": False, "conflict": True, "existing_peerings": existing,
+                        "message": "Peering(s) with these names already exist — creating again "
+                                   "would overwrite their settings: "
+                                   + "; ".join(f"{e['name']} ({e['side']}, {e['state']}, "
+                                               f"remote {e['remote']})" for e in existing)}
 
         # Spoke → Hub
         log.info("Creating spoke→hub peering '%s' (%s → %s)", s2h, spoke_vnet_name, cfg.HUB_VNET_NAME)
@@ -295,6 +422,14 @@ def peer_hub_vnet(
 
         return {"success": True,
                 "spoke_to_hub_name": s2h, "hub_to_spoke_name": h2s,
+                "change": {"target": f"peering {spoke_vnet_name} ↔ {cfg.HUB_VNET_NAME}",
+                           "before": None,
+                           "after": {"spoke_to_hub": s2h, "hub_to_spoke": h2s},
+                           "revert_op": "delete_peerings",
+                           "revert_params": {"sub": spoke_subscription_id,
+                                             "rg": spoke_resource_group,
+                                             "vnet": spoke_vnet_name,
+                                             "s2h": s2h, "h2s": h2s}},
                 "message": f"Peering created between {spoke_vnet_name} and {cfg.HUB_VNET_NAME} "
                            f"('{s2h}' / '{h2s}')."}
 
@@ -322,12 +457,32 @@ def create_route_table(
     location: str = None,
     subscription_id: str = None,
     disable_bgp_route_propagation: bool = True,
+    on_conflict: str = None,        # "keep" = reuse the existing table untouched
 ) -> dict:
     """Create a new route table (UDR) in the given subscription/RG."""
     try:
         sub = subscription_id or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID
         loc = location or cfg.DEFAULT_AZURE_REGION
         client = _network_client(sub)
+        # No silent overwrite: a PUT on an existing table would clear its routes.
+        try:
+            existing = client.route_tables.get(resource_group, name)
+            routes = [{"name": r.name, "prefix": r.address_prefix,
+                       "next_hop_type": str(r.next_hop_type or ""),
+                       "next_hop_ip": r.next_hop_ip_address or ""}
+                      for r in (existing.routes or [])]
+            if on_conflict == "keep":
+                return {"success": True, "kept_existing": True, "id": existing.id,
+                        "name": existing.name,
+                        "message": f"Route table '{name}' already exists "
+                                   f"({len(routes)} route(s)) — reusing it as-is."}
+            return {"success": False, "conflict": True,
+                    "existing_route_table": {"name": name, "routes": routes},
+                    "message": f"Route table '{name}' already exists in {resource_group} "
+                               f"with {len(routes)} route(s) — recreating it would clear them."}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
         log.info("Creating route table '%s' in %s/%s", name, resource_group, loc)
         result = client.route_tables.begin_create_or_update(
             resource_group_name=resource_group,
@@ -376,30 +531,43 @@ def add_route_to_table(
             except ValueError:
                 return str(p)
 
-        replaced = None
+        def _route_dict(r):
+            return {"name": r.name, "prefix": r.address_prefix,
+                    "next_hop_type": str(r.next_hop_type or ""),
+                    "next_hop_ip": r.next_hop_ip_address or "",
+                    "table": route_table_name}
+
+        replaced, before = None, None
         try:
             rt = client.route_tables.get(resource_group, route_table_name)
-            existing = next((r for r in (rt.routes or [])
-                             if r.name != route_name and r.address_prefix
-                             and _norm(r.address_prefix) == _norm(address_prefix)), None)
+            routes = list(rt.routes or [])
         except Exception as exc:
             if not _is_not_found(exc):
                 raise
-            existing = None
+            routes = []
+        # Conflict 1: another route already covers this prefix (Azure rejects it)
+        existing = next((r for r in routes
+                         if r.name != route_name and r.address_prefix
+                         and _norm(r.address_prefix) == _norm(address_prefix)), None)
+        # Conflict 2: a route with OUR name exists with different values —
+        # create_or_update would silently overwrite it. Never do that by default.
+        same_name = next((r for r in routes if r.name == route_name), None)
+        if existing is None and same_name is not None and (
+                _norm(same_name.address_prefix or "") != _norm(address_prefix)
+                or (same_name.next_hop_ip_address or "") != (next_hop_ip or "")):
+            existing = same_name
         if existing is not None:
             if on_conflict == "replace":
                 replaced = existing.name
+                before = _route_dict(existing)
                 route_name = existing.name          # update the conflicting route in place
             else:
                 return {"success": False, "conflict": True,
-                        "existing_route": {"name": existing.name,
-                                           "prefix": existing.address_prefix,
-                                           "next_hop_type": str(existing.next_hop_type or ""),
-                                           "next_hop_ip": existing.next_hop_ip_address or "",
-                                           "table": route_table_name},
-                        "message": f"Route '{existing.name}' already covers {address_prefix} "
-                                   f"in '{route_table_name}' — Azure does not allow two routes "
-                                   f"with the same address prefix."}
+                        "existing_route": _route_dict(existing),
+                        "message": f"Route '{existing.name}' already exists in "
+                                   f"'{route_table_name}' with a conflicting definition "
+                                   f"({existing.address_prefix}) — updating it would overwrite "
+                                   f"the current route."}
 
         params = {"address_prefix": address_prefix, "next_hop_type": next_hop_type}
         if next_hop_ip and next_hop_type == "VirtualAppliance":
@@ -412,12 +580,26 @@ def add_route_to_table(
             route_name=route_name,
             route_parameters=params,
         ).result()
+        after = {"name": route_name, "prefix": address_prefix,
+                 "next_hop_type": next_hop_type, "next_hop_ip": next_hop_ip or "",
+                 "table": route_table_name}
         if replaced:
             return {"success": True, "replaced_existing": True,
+                    "change": {"target": f"route {route_name} @ {route_table_name}",
+                               "before": before, "after": after,
+                               "revert_op": "restore_route",
+                               "revert_params": {"table": route_table_name, "rg": resource_group,
+                                                 "route": before, "sub": sub}},
                     "message": f"Existing route '{replaced}' updated in place "
                                f"({address_prefix} → {next_hop_type}"
                                f"{' ' + next_hop_ip if next_hop_ip else ''}) in {route_table_name}."}
-        return {"success": True, "message": f"Route '{route_name}' ({address_prefix} → {next_hop_type}) added to {route_table_name}."}
+        return {"success": True,
+                "change": {"target": f"route {route_name} @ {route_table_name}",
+                           "before": None, "after": after,
+                           "revert_op": "delete_route",
+                           "revert_params": {"table": route_table_name, "rg": resource_group,
+                                             "route_name": route_name, "sub": sub}},
+                "message": f"Route '{route_name}' ({address_prefix} → {next_hop_type}) added to {route_table_name}."}
     except Exception as exc:
         log.error("add_route_to_table failed: %s", exc)
         return {"success": False, "message": str(exc)}
@@ -523,18 +705,34 @@ def assign_route_table_to_subnet(
     resource_group: str,
     vnet_name: str,
     subnet_name: str,
-    route_table_id: str,
+    route_table_id: str,            # None/"" clears the association (used by revert)
 ) -> dict:
-    """Associate a route table (UDR) with a specific subnet."""
+    """Associate a route table (UDR) with a subnet; the previous association
+    is snapshotted so the change can be reverted."""
     try:
         client = _network_client(subscription_id)
         subnet = client.subnets.get(resource_group, vnet_name, subnet_name)
-        subnet.route_table = {"id": route_table_id}
-        log.info("Assigning UDR %s to subnet %s/%s", route_table_id, vnet_name, subnet_name)
+        prev_id = subnet.route_table.id if subnet.route_table else None
+        subnet.route_table = {"id": route_table_id} if route_table_id else None
+        log.info("Assigning UDR %s to subnet %s/%s", route_table_id or "(none)",
+                 vnet_name, subnet_name)
         client.subnets.begin_create_or_update(
             resource_group, vnet_name, subnet_name, subnet
         ).result()
-        return {"success": True, "message": f"UDR assigned to subnet '{subnet_name}'."}
+        new_name = route_table_id.split("/")[-1] if route_table_id else None
+        prev_name = prev_id.split("/")[-1] if prev_id else None
+        return {"success": True,
+                "change": {"target": f"subnet {vnet_name}/{subnet_name} UDR association",
+                           "before": {"route_table": prev_name, "route_table_id": prev_id},
+                           "after": {"route_table": new_name, "route_table_id": route_table_id},
+                           "revert_op": "assign_subnet_rt",
+                           "revert_params": {"sub": subscription_id, "rg": resource_group,
+                                             "vnet": vnet_name, "subnet": subnet_name,
+                                             "rt_id": prev_id}},
+                "message": (f"UDR {'assigned to' if route_table_id else 'cleared from'} subnet "
+                            f"'{subnet_name}'"
+                            + (f" (replaced previous UDR '{prev_name}')."
+                               if prev_id and route_table_id else "."))}
     except Exception as exc:
         log.error("assign_route_table_to_subnet failed: %s", exc)
         return {"success": False, "message": str(exc)}
@@ -560,13 +758,30 @@ def delete_route_from_table(
     route_name: str,
     subscription_id: str = None,
 ) -> dict:
-    """Delete a single named route from a route table."""
+    """Delete a single named route (its definition is snapshotted for revert)."""
     try:
         sub = subscription_id or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID
         client = _network_client(sub)
+        before = None
+        try:
+            r = client.routes.get(resource_group, route_table_name, route_name)
+            before = {"name": r.name, "prefix": r.address_prefix,
+                      "next_hop_type": str(r.next_hop_type or ""),
+                      "next_hop_ip": r.next_hop_ip_address or "",
+                      "table": route_table_name}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
         log.info("Deleting route '%s' from table '%s'", route_name, route_table_name)
         client.routes.begin_delete(resource_group, route_table_name, route_name).result()
-        return {"success": True, "message": f"Route '{route_name}' removed from {route_table_name}."}
+        res = {"success": True, "message": f"Route '{route_name}' removed from {route_table_name}."}
+        if before:
+            res["change"] = {"target": f"route {route_name} @ {route_table_name}",
+                             "before": before, "after": None,
+                             "revert_op": "restore_route",
+                             "revert_params": {"table": route_table_name, "rg": resource_group,
+                                               "route": before, "sub": sub}}
+        return res
     except Exception as exc:
         if _is_not_found(exc):
             return {"success": True,
@@ -587,13 +802,24 @@ def remove_routes_by_prefix(
         sub = subscription_id or cfg.HUB_SUBSCRIPTION_ID
         client = _network_client(sub)
         rt = client.route_tables.get(resource_group, route_table_name)
-        matches = [r.name for r in (rt.routes or []) if r.address_prefix == address_prefix]
-        for name in matches:
-            log.info("Deleting route '%s' (%s) from '%s'", name, address_prefix, route_table_name)
-            client.routes.begin_delete(resource_group, route_table_name, name).result()
-        if matches:
+        matched = [r for r in (rt.routes or []) if r.address_prefix == address_prefix]
+        removed = []
+        for r in matched:
+            log.info("Deleting route '%s' (%s) from '%s'", r.name, address_prefix, route_table_name)
+            client.routes.begin_delete(resource_group, route_table_name, r.name).result()
+            removed.append({"name": r.name, "prefix": r.address_prefix,
+                            "next_hop_type": str(r.next_hop_type or ""),
+                            "next_hop_ip": r.next_hop_ip_address or "",
+                            "table": route_table_name})
+        if removed:
             return {"success": True,
-                    "message": f"Removed {len(matches)} route(s) for {address_prefix} from {route_table_name}: {', '.join(matches)}."}
+                    "change": {"target": f"{len(removed)} route(s) @ {route_table_name}",
+                               "before": removed, "after": None,
+                               "revert_op": "restore_routes",
+                               "revert_params": {"table": route_table_name, "rg": resource_group,
+                                                 "routes": removed, "sub": sub}},
+                    "message": f"Removed {len(removed)} route(s) for {address_prefix} from "
+                               f"{route_table_name}: {', '.join(r['name'] for r in removed)}."}
         return {"success": True,
                 "message": f"No routes for {address_prefix} in {route_table_name} (nothing to remove)."}
     except Exception as exc:
@@ -613,22 +839,27 @@ def remove_firewall_rule(rule_name: str, rcg_name: str = None,
     try:
         client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
         for rcg in _iter_rcgs(client, rcg_name):
-            removed = False
+            removed_def, removed_col = None, None
             for rc in (rcg.rule_collections or []):
                 if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
                     continue
                 if collection_name and rc.name != collection_name:
                     continue
-                before = len(rc.rules or [])
-                rc.rules = [r for r in (rc.rules or []) if r.name != rule_name]
-                if len(rc.rules) < before:
-                    removed = True
-            if removed:
+                hit = next((r for r in (rc.rules or []) if r.name == rule_name), None)
+                if hit is not None:
+                    removed_def, removed_col = _describe_fw_rule(hit, rc.name), rc.name
+                    rc.rules = [r for r in (rc.rules or []) if r.name != rule_name]
+            if removed_def:
                 log.info("Removing firewall rule '%s' from RCG '%s'", rule_name, rcg.name)
                 client.firewall_policy_rule_collection_groups.begin_create_or_update(
                     cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
                 ).result()
                 return {"success": True,
+                        "change": {"target": f"fw rule {rule_name} @ {rcg.name}/{removed_col}",
+                                   "before": removed_def, "after": None,
+                                   "revert_op": "restore_fw_rule",
+                                   "revert_params": {"rule": removed_def, "rcg": rcg.name,
+                                                     "collection": removed_col}},
                         "message": f"Firewall rule '{rule_name}' removed (RCG '{rcg.name}')."}
         return {"success": True, "message": f"Firewall rule '{rule_name}' not present (already removed)."}
     except Exception as exc:
@@ -673,21 +904,76 @@ def delete_hub_spoke_peerings(
         else:
             log.error("delete spoke→hub peering failed: %s", exc)
             return {"success": False, "message": f"Spoke-side peering delete failed: {exc}"}
-    return {"success": True, "message": "Peerings removed: " + "; ".join(results) + "."}
+    s2h_final = spoke_to_hub_name or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=spoke_vnet_name)
+    h2s_final = hub_to_spoke_name or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=spoke_vnet_name)
+    return {"success": True,
+            "change": {"target": f"peering {spoke_vnet_name} ↔ {cfg.HUB_VNET_NAME}",
+                       "before": {"spoke_to_hub": s2h_final, "hub_to_spoke": h2s_final},
+                       "after": None,
+                       "revert_op": "restore_peerings",
+                       "revert_params": {"sub": spoke_subscription_id, "rg": spoke_resource_group,
+                                         "vnet": spoke_vnet_name,
+                                         "s2h": s2h_final, "h2s": h2s_final}},
+            "message": "Peerings removed: " + "; ".join(results) + "."}
 
 
 @_guard
 def delete_spoke_vnet(subscription_id: str, resource_group: str, vnet_name: str) -> dict:
-    """Delete a spoke VNET (fails in Azure if any subnet still has attached devices)."""
+    """Delete a spoke VNET; its network definition is snapshotted for revert.
+    (Fails in Azure if any subnet still has attached devices.)"""
     try:
         client = _network_client(subscription_id)
+        before = None
+        try:
+            v = client.virtual_networks.get(resource_group, vnet_name)
+            before = {"name": v.name, "location": v.location,
+                      "address_space": list(v.address_space.address_prefixes or []),
+                      "subnets": [{"name": s.name,
+                                   "prefix": s.address_prefix or ", ".join(
+                                       getattr(s, "address_prefixes", None) or [])}
+                                  for s in (v.subnets or [])]}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
         log.info("Deleting VNET '%s' in %s", vnet_name, resource_group)
         client.virtual_networks.begin_delete(resource_group, vnet_name).result()
-        return {"success": True, "message": f"VNET '{vnet_name}' deleted."}
+        res = {"success": True, "message": f"VNET '{vnet_name}' deleted."}
+        if before:
+            res["change"] = {"target": f"VNET {vnet_name} @ {resource_group}",
+                             "before": before, "after": None,
+                             "revert_op": "restore_vnet",
+                             "revert_params": {"sub": subscription_id, "rg": resource_group,
+                                               "vnet": vnet_name, "location": before["location"],
+                                               "address_space": before["address_space"],
+                                               "subnets": before["subnets"]}}
+        return res
     except Exception as exc:
         if _is_not_found(exc):
             return {"success": True, "message": f"VNET '{vnet_name}' not found (already deleted)."}
         log.error("delete_spoke_vnet failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def restore_vnet(subscription_id: str, resource_group: str, vnet_name: str,
+                 location: str, address_space: list, subnets: list) -> dict:
+    """Recreate a VNET from a stored snapshot (network definition only —
+    attached devices/NSGs from before a decommission cannot be restored)."""
+    try:
+        client = _network_client(subscription_id)
+        log.info("Restoring VNET '%s' in %s", vnet_name, resource_group)
+        client.virtual_networks.begin_create_or_update(
+            resource_group, vnet_name,
+            {"location": location,
+             "address_space": {"address_prefixes": address_space},
+             "subnets": [{"name": s["name"], "address_prefix": s["prefix"].split(",")[0].strip()}
+                         for s in subnets if s.get("prefix")]},
+        ).result()
+        return {"success": True,
+                "message": f"VNET '{vnet_name}' restored ({', '.join(address_space)}, "
+                           f"{len(subnets)} subnet(s)). Attached devices/NSGs are NOT restored."}
+    except Exception as exc:
+        log.error("restore_vnet failed: %s", exc)
         return {"success": False, "message": str(exc)}
 
 
@@ -1051,7 +1337,7 @@ def replace_firewall_rule(
                                   ports=ports, ip_protocols=ip_protocols,
                                   app_protocols=app_protocols)
         for rcg in _iter_rcgs(client, rcg_name):
-            found = False
+            found, before, found_col = False, None, None
             for rc in (rcg.rule_collections or []):
                 if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
                     continue
@@ -1059,14 +1345,21 @@ def replace_firewall_rule(
                     continue
                 for i, r in enumerate(rc.rules or []):
                     if r.name == rule_name:
+                        before = _describe_fw_rule(r, rc.name)
                         rc.rules[i] = new_rule
-                        found = True
+                        found, found_col = True, rc.name
             if found:
                 log.info("Replacing firewall rule '%s' in RCG '%s'", rule_name, rcg.name)
                 client.firewall_policy_rule_collection_groups.begin_create_or_update(
                     cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
                 ).result()
                 return {"success": True,
+                        "change": {"target": f"fw rule {rule_name} @ {rcg.name}/{found_col}",
+                                   "before": before,
+                                   "after": _describe_fw_rule(new_rule, found_col),
+                                   "revert_op": "restore_fw_rule",
+                                   "revert_params": {"rule": before, "rcg": rcg.name,
+                                                     "collection": found_col}},
                         "message": f"Rule '{rule_name}' updated in place (RCG '{rcg.name}')."}
         where = f" in {rcg_name}/{collection_name}" if (rcg_name or collection_name) else ""
         return {"success": False,
@@ -1132,6 +1425,12 @@ def add_cidr_to_nsg_rule(nsg_name: str, resource_group: str, rule_name: str,
         client.security_rules.begin_create_or_update(
             resource_group, nsg_name, rule_name, rule).result()
         return {"success": True,
+                "change": {"target": f"NSG rule {rule_name} @ {nsg_name}",
+                           "before": prefixes, "after": prefixes + [cidr],
+                           "revert_op": "remove_nsg_cidr",
+                           "revert_params": {"nsg": nsg_name, "rg": resource_group,
+                                             "rule": rule_name, "cidr": cidr,
+                                             "sub": subscription_id or ""}},
                 "message": f"{cidr} added to NSG rule '{rule_name}' "
                            f"({len(prefixes) + 1} destination prefixes now)."}
     except Exception as exc:
@@ -1150,12 +1449,20 @@ def remove_cidr_from_nsg_rule(nsg_name: str, resource_group: str, rule_name: str
         if cidr not in prefixes:
             return {"success": True,
                     "message": f"{cidr} not present in NSG rule '{rule_name}' (already removed)."}
+        before = list(prefixes)
         prefixes = [p for p in prefixes if p != cidr]
         rule.destination_address_prefix = None
         rule.destination_address_prefixes = prefixes
         client.security_rules.begin_create_or_update(
             resource_group, nsg_name, rule_name, rule).result()
-        return {"success": True, "message": f"{cidr} removed from NSG rule '{rule_name}'."}
+        return {"success": True,
+                "change": {"target": f"NSG rule {rule_name} @ {nsg_name}",
+                           "before": before, "after": prefixes,
+                           "revert_op": "add_nsg_cidr",
+                           "revert_params": {"nsg": nsg_name, "rg": resource_group,
+                                             "rule": rule_name, "cidr": cidr,
+                                             "sub": subscription_id or ""}},
+                "message": f"{cidr} removed from NSG rule '{rule_name}'."}
     except Exception as exc:
         if _is_not_found(exc):
             return {"success": True, "message": f"NSG rule '{rule_name}' not found (nothing to remove)."}
@@ -1192,6 +1499,10 @@ def _mutate_fw_rule_destinations(rule_name: str, cidr: str, add: bool) -> dict:
                 client.firewall_policy_rule_collection_groups.begin_create_or_update(
                     cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg).result()
                 return {"success": True, "found": True,
+                        "change": {"target": f"fw rule {rule_name} destinations",
+                                   "before": dests, "after": list(r.destination_addresses),
+                                   "revert_op": "remove_fw_cidr" if add else "add_fw_cidr",
+                                   "revert_params": {"rule_name": rule_name, "cidr": cidr}},
                         "message": f"{cidr} {'added to' if add else 'removed from'} firewall rule "
                                    f"'{rule_name}' ({rcg.name}/{rc.name}, "
                                    f"{len(r.destination_addresses)} destination(s) now)."}
@@ -1220,6 +1531,48 @@ def remove_cidr_from_firewall_rule(rule_name: str, cidr: str) -> dict:
         if _is_not_found(exc):
             return {"success": True, "message": f"Firewall rule '{rule_name}' not found (nothing to remove)."}
         log.error("remove_cidr_from_firewall_rule failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def restore_firewall_rule(rule_desc: dict, rcg_name: str = None,
+                          collection_name: str = None) -> dict:
+    """
+    Recreate/restore a rule from a stored _describe_fw_rule snapshot — used
+    by the change-revert engine to undo deletions and modifications.
+    """
+    try:
+        name = rule_desc["name"]
+        kind = rule_desc.get("kind", "network")
+        collection = collection_name or rule_desc.get("collection")
+        if kind == "application":
+            app_protocols = []
+            for p in (rule_desc.get("protocols") or []):
+                t, _, port = str(p).partition("/")
+                app_protocols.append({"protocol_type": t or "Https",
+                                      "port": int(port) if port.isdigit() else 443})
+            dests, ports, ip_protocols = rule_desc.get("fqdns") or [], None, None
+        else:
+            dests = rule_desc.get("destinations") or []
+            ports = rule_desc.get("ports") or ["*"]
+            ip_protocols = rule_desc.get("protocols") or ["Any"]
+            app_protocols = None
+        # Replace when the rule still exists, else re-add into its collection
+        res = replace_firewall_rule(name, kind, rule_desc.get("sources") or ["*"], dests,
+                                    ports=ports, ip_protocols=ip_protocols,
+                                    app_protocols=app_protocols,
+                                    rcg_name=rcg_name, collection_name=collection)
+        if res.get("success"):
+            return {"success": True, "message": f"Rule '{name}' restored (updated in place)."}
+        if kind == "application":
+            return add_firewall_application_rule(name, dests, app_protocols,
+                                                 source_addresses=rule_desc.get("sources"),
+                                                 rcg_name=rcg_name, collection_name=collection)
+        return add_firewall_network_rule(name, dests, ports, protocol=ip_protocols,
+                                         source_addresses=rule_desc.get("sources"),
+                                         rcg_name=rcg_name, collection_name=collection)
+    except Exception as exc:
+        log.error("restore_firewall_rule failed: %s", exc)
         return {"success": False, "message": str(exc)}
 
 
@@ -1290,6 +1643,11 @@ def add_firewall_network_rule(
             cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
         ).result()
         return {"success": True,
+                "change": {"target": f"fw rule {rule_name} @ {rcg.name}/{target.name}",
+                           "before": None, "after": _describe_fw_rule(new_rule, target.name),
+                           "revert_op": "remove_fw_rule",
+                           "revert_params": {"rule_name": rule_name, "rcg": rcg.name,
+                                             "collection": target.name}},
                 "message": f"Network rule '{rule_name}' added to {rcg.name}/{target.name}."}
     except Exception as exc:
         log.error("add_firewall_network_rule failed: %s", exc)
@@ -1356,6 +1714,11 @@ def add_firewall_application_rule(
             cfg.FIREWALL_POLICY_RG, cfg.FIREWALL_POLICY_NAME, rcg.name, rcg,
         ).result()
         return {"success": True,
+                "change": {"target": f"fw rule {rule_name} @ {rcg.name}/{target.name}",
+                           "before": None, "after": _describe_fw_rule(new_rule, target.name),
+                           "revert_op": "remove_fw_rule",
+                           "revert_params": {"rule_name": rule_name, "rcg": rcg.name,
+                                             "collection": target.name}},
                 "message": f"Application rule '{rule_name}' added to {rcg.name}/{target.name} "
                            f"for {target_fqdns}."}
     except Exception as exc:

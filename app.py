@@ -8,6 +8,7 @@ from datetime import datetime
 log = logging.getLogger(__name__)
 
 import audit
+import changes
 import search
 import settings_store
 from config import cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view
@@ -188,6 +189,9 @@ with app.app_context():
 
     # Audit trail table
     audit.ensure_table()
+
+    # Change ledger (undo history)
+    changes.ensure_table()
 
 
 # ── Admin auth ──────────────────────────────────────────────────────────────
@@ -669,6 +673,10 @@ def allocate():
         audit.record("subnet_allocated", actor=current_actor(), actor_role="admin",
                      summary=f"Allocated {selected} ({purpose}) for {requested_by}",
                      data={"subnet": selected, "pool": pool, "allocated_by": allocated_by})
+        changes.record(action="subnet_allocated", actor=current_actor(),
+                       target=f"CIDR {selected}", summary=f"Allocated for {requested_by} ({purpose})",
+                       before=None, after={"subnet": selected, "pool": pool, "purpose": purpose},
+                       revert_op="release_cidr", revert_params={"subnet": selected})
     return jsonify({"error": msg} if not success else {"message": msg}), (400 if not success else 200)
 
 
@@ -679,10 +687,19 @@ def deallocate():
     selected = request.form.get("selected")
     if not selected:
         return jsonify({"error": "No subnet selected"}), 400
+    rec = SubnetRecord.query.filter_by(subnet=selected).first()
+    snapshot = ({"subnet": rec.subnet, "pool": rec.pool, "purpose": rec.purpose or "",
+                 "requested_by": rec.requested_by or "", "allocated_by": rec.allocated_by or ""}
+                if rec else None)
     success, msg = deallocate_subnet(selected, base_net)
     if success:
         audit.record("subnet_deallocated", actor=current_actor(), actor_role="admin",
                      summary=f"Deallocated {selected}", data={"subnet": selected, "pool": pool})
+        if snapshot:
+            changes.record(action="subnet_deallocated", actor=current_actor(),
+                           target=f"CIDR {selected}", summary=f"Deallocated {selected}",
+                           before=snapshot, after=None,
+                           revert_op="allocate_cidr", revert_params=snapshot)
     return jsonify({"error": msg} if not success else {"message": msg}), (400 if not success else 200)
 
 
@@ -827,6 +844,26 @@ def admin_audit():
     )
     return render_template("audit.html", entries=entries, actions=audit.distinct_actions(),
                            f_actor=f_actor, f_action=f_action, f_req=f_req, f_q=f_q)
+
+
+@app.route("/admin/changes")
+@require_admin
+def admin_changes():
+    """Change ledger — every recorded mutation with its before-state, and the
+    dedicated place to revert any of them."""
+    f_req = request.args.get("request_id", "").strip()
+    f_status = request.args.get("status", "").strip()
+    entries = changes.list_changes(
+        request_id=int(f_req) if f_req.isdigit() else None,
+        status=f_status or None, limit=200)
+    return render_template("changes.html", entries=entries, f_req=f_req, f_status=f_status)
+
+
+@app.route("/api/admin/changes/<int:cid>/revert", methods=["POST"])
+@require_admin
+def admin_change_revert(cid):
+    res = changes.execute_revert(cid, actor=current_actor())
+    return jsonify(res), (200 if res.get("success") else 400)
 
 
 @app.route("/admin/search")
@@ -1408,9 +1445,21 @@ def admin_azure_action(req_id):
     on_conflict = str(payload.get("on_conflict", "")).strip()
     details = req.get_details()
 
+    def _record_change(res, act=None):
+        """Persist the mutation + its before-state into the change ledger."""
+        ch = res.get("change")
+        if res.get("success") and ch and not res.get("dry_run"):
+            changes.record(action=act or action, actor=current_actor(), request_id=req.id,
+                           target=ch.get("target", ""),
+                           summary=str(res.get("message", ""))[:300],
+                           before=ch.get("before"), after=ch.get("after"),
+                           revert_op=ch.get("revert_op"),
+                           revert_params=ch.get("revert_params"))
+
     def _audit_azure(res):
         # 'kept' also covers in-place updates of PRE-EXISTING config — either
         # way this request created nothing new, so there is nothing to revert.
+        _record_change(res)
         audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
                      summary=f"Azure action '{action}' — "
                              f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
@@ -1655,6 +1704,7 @@ def admin_azure_action(req_id):
             steps = []
 
             def _step(label, res):
+                _record_change(res)
                 steps.append({"label": label, "success": bool(res.get("success")),
                               "dry_run": bool(res.get("dry_run")),
                               "message": str(res.get("message", ""))})
@@ -1691,6 +1741,19 @@ def admin_azure_action(req_id):
         if not cidr:
             return jsonify({"error": "No CIDR to release — the request has no allocated/declared CIDR."}), 400
         from db_utils import deallocate_subnet_db
+        rec = SubnetRecord.query.filter_by(subnet=cidr).first()
+        if rec:
+            changes.record(action="decom_release", actor=current_actor(), request_id=req.id,
+                           target=f"CIDR {cidr}", summary=f"Released {cidr} during decommission",
+                           before={"subnet": rec.subnet, "pool": rec.pool,
+                                   "purpose": rec.purpose or "",
+                                   "requested_by": rec.requested_by or "",
+                                   "allocated_by": rec.allocated_by or ""},
+                           after=None, revert_op="allocate_cidr",
+                           revert_params={"subnet": rec.subnet, "pool": rec.pool,
+                                          "purpose": rec.purpose or "",
+                                          "requested_by": rec.requested_by or "",
+                                          "allocated_by": rec.allocated_by or ""})
         ok, msg = deallocate_subnet_db(cidr)
         already_gone = not ok and "not found" in str(msg).lower()
         if ok or already_gone:
@@ -1720,11 +1783,17 @@ def admin_azure_action(req_id):
                                  "VNET Name, Region). Edit VNET Info first."}), 400
 
     if action == "vnet":
-        res = azure_tools.create_spoke_vnet(vi.subscription_id, vi.resource_group,
-                                            vi.vnet_name, vi.region, addr,
-                                            subnet_name=vi.subnet_name or "default",
-                                            subnet_size=vi.subnet_size,
-                                            subnets=details.get("subnets") or None)
+        if on_conflict == "keep":
+            res = {"success": True, "kept_existing": True,
+                   "message": f"Existing VNET '{vi.vnet_name}' kept as-is — deploy step "
+                              f"marked complete without Azure changes."}
+        else:
+            res = azure_tools.create_spoke_vnet(vi.subscription_id, vi.resource_group,
+                                                vi.vnet_name, vi.region, addr,
+                                                subnet_name=vi.subnet_name or "default",
+                                                subnet_size=vi.subnet_size,
+                                                subnets=details.get("subnets") or None,
+                                                on_conflict=(on_conflict or None))
         if res.get("success") and req.status == RequestStatus.CIDR_ASSIGNED:
             req.status = RequestStatus.VNET_CREATED
             req.updated_at = datetime.utcnow()
@@ -1739,10 +1808,16 @@ def admin_azure_action(req_id):
         raw_h2s = str(body.get("hub_to_spoke_name", "")).strip()
         s2h = sanitize(raw_s2h) if raw_s2h else None
         h2s = sanitize(raw_h2s) if raw_h2s else None
-        res = azure_tools.peer_hub_vnet(spoke_subscription_id=vi.subscription_id,
-                                        spoke_resource_group=vi.resource_group,
-                                        spoke_vnet_name=vi.vnet_name, spoke_address_space=addr,
-                                        spoke_to_hub_name=s2h, hub_to_spoke_name=h2s)
+        if on_conflict == "keep":
+            res = {"success": True, "kept_existing": True,
+                   "message": "Existing peering kept as-is — peer step marked complete "
+                              "without Azure changes."}
+        else:
+            res = azure_tools.peer_hub_vnet(spoke_subscription_id=vi.subscription_id,
+                                            spoke_resource_group=vi.resource_group,
+                                            spoke_vnet_name=vi.vnet_name, spoke_address_space=addr,
+                                            spoke_to_hub_name=s2h, hub_to_spoke_name=h2s,
+                                            on_conflict=(on_conflict or None))
         if res.get("success"):
             # Remember the names actually used — revert/decommission delete by them
             d = req.get_details()
@@ -1817,15 +1892,21 @@ def admin_azure_action(req_id):
         steps = []
 
         def _step(label, r):
+            _record_change(r)
             steps.append({"label": label, "success": bool(r.get("success")),
                           "dry_run": bool(r.get("dry_run")),
                           "message": str(r.get("message", ""))})
             return bool(r.get("success"))
 
-        ok = _step(f"Create route table '{rt_name}'",
-                   azure_tools.create_route_table(rt_name, vi.resource_group,
-                                                  location=vi.region,
-                                                  subscription_id=vi.subscription_id))
+        create_res = azure_tools.create_route_table(
+            rt_name, vi.resource_group, location=vi.region,
+            subscription_id=vi.subscription_id,
+            on_conflict=("keep" if on_conflict == "keep" else None))
+        if create_res.get("conflict"):
+            # Existing table with routes — never overwrite silently; the UI
+            # shows its current routes and offers reuse-as-is.
+            return jsonify(create_res), 207
+        ok = _step(f"Create route table '{rt_name}'", create_res)
         for r in _spoke_default_routes() + extra:
             ok = _step(f"Route {r['name']} → {r['prefix']} via {cfg.HUB_FIREWALL_PRIVATE_IP}",
                        azure_tools.add_route_to_table(
@@ -1896,6 +1977,7 @@ def admin_azure_action(req_id):
     else:
         return jsonify({"error": f"Unknown action '{action}'."}), 400
 
+    _record_change(res)
     audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
                  summary=f"Azure action '{action}' — "
                          f"{'dry-run' if res.get('dry_run') else ('ok' if res.get('success') else 'FAILED')}",
@@ -2098,11 +2180,19 @@ def _revert_change(req, key):
 
     if key == "cidr":
         from db_utils import deallocate_subnet_db
+        rec = SubnetRecord.query.filter_by(subnet=addr).first()
+        snapshot = ({"subnet": rec.subnet, "pool": rec.pool, "purpose": rec.purpose or "",
+                     "requested_by": rec.requested_by or "", "allocated_by": rec.allocated_by or ""}
+                    if rec else None)
         ok, msg = deallocate_subnet_db(addr)
         if ok or "not found" in str(msg).lower():
             req.allocated_subnet = None
             db.session.commit()
-            return {"success": True, "message": f"CIDR {addr} released back to the pool."}
+            out = {"success": True, "message": f"CIDR {addr} released back to the pool."}
+            if snapshot:
+                out["change"] = {"target": f"CIDR {addr}", "before": snapshot, "after": None,
+                                 "revert_op": "allocate_cidr", "revert_params": snapshot}
+            return out
         return {"success": False, "message": msg}
 
     if key in ("vnet", "peer", "internet", "internet_rule", "gateway_route",
@@ -2233,6 +2323,13 @@ def request_terminate(req_id):
             res = _revert_change(req, ch["key"])
             ok = bool(res.get("success"))
             all_ok = all_ok and ok
+            if ok and res.get("change") and not res.get("dry_run"):
+                c = res["change"]
+                changes.record(action=f"cancel_revert:{ch['key']}", actor=current_actor(),
+                               request_id=req.id, target=c.get("target", ""),
+                               summary=str(res.get("message", ""))[:300],
+                               before=c.get("before"), after=c.get("after"),
+                               revert_op=c.get("revert_op"), revert_params=c.get("revert_params"))
             steps.append({"key": ch["key"], "label": ch["label"], "success": ok,
                           "dry_run": bool(res.get("dry_run")), "message": str(res.get("message", ""))})
             audit.record("azure_revert", actor=current_actor(), actor_role="admin", request_id=req.id,
