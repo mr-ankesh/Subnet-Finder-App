@@ -507,6 +507,16 @@ def admin_settings_test_azure():
     return jsonify(res), (200 if res.get("success") else 400)
 
 
+@app.route("/api/admin/settings/test-keycloak", methods=["POST"])
+@require_admin
+def admin_settings_test_keycloak():
+    # Rebuild the OIDC client so the test reflects just-saved settings.
+    oidc._oauth = None
+    oidc._fingerprint = None
+    res = oidc.test_connection()
+    return jsonify(res), (200 if res.get("success") else 400)
+
+
 @app.route("/api/admin/settings/preview-name", methods=["POST"])
 @require_admin
 def admin_settings_preview_name():

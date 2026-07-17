@@ -84,6 +84,63 @@ def roles_from_token(token: dict) -> set:
     return roles
 
 
+def test_connection() -> dict:
+    """
+    Diagnose SSO reachability by fetching the OIDC discovery document — the
+    exact step /auth/login performs. Reports the specific failure so the
+    admin can fix it from the Settings UI. Uses the currently SAVED settings.
+    """
+    if cfg.AUTH_PROVIDER != "keycloak":
+        return {"success": False,
+                "message": "Set 'Auth provider' to keycloak and Save first."}
+    missing = [n for n, v in (("server URL", cfg.KEYCLOAK_SERVER_URL),
+                              ("realm", cfg.KEYCLOAK_REALM),
+                              ("client ID", cfg.KEYCLOAK_CLIENT_ID)) if not v]
+    if missing:
+        return {"success": False, "message": "Missing (save these first): " + ", ".join(missing)}
+
+    url = _metadata_url()
+    import requests
+    try:
+        r = requests.get(url, timeout=8)
+    except requests.exceptions.SSLError as exc:
+        return {"success": False, "url": url,
+                "message": f"TLS/certificate error reaching Keycloak. If it uses a private or "
+                           f"self-signed cert, the app container must trust it. ({exc})"}
+    except requests.exceptions.ConnectionError as exc:
+        return {"success": False, "url": url,
+                "message": f"Cannot connect to {url}. Check the server URL and that the pod can "
+                           f"reach Keycloak (DNS / NetworkPolicy / firewall). Is Keycloak "
+                           f"internal-only? ({str(exc)[:160]})"}
+    except requests.exceptions.Timeout:
+        return {"success": False, "url": url,
+                "message": f"Timed out reaching {url} — Keycloak is not reachable from the cluster."}
+    except Exception as exc:
+        return {"success": False, "url": url, "message": f"Error reaching {url}: {exc}"}
+
+    if r.status_code == 404:
+        return {"success": False, "url": url,
+                "message": f"404 at {url}. Realm '{cfg.KEYCLOAK_REALM}' not found, OR the server "
+                           f"URL has the wrong path: modern Keycloak has NO '/auth' suffix; "
+                           f"legacy Keycloak (≤16) DOES need '/auth'."}
+    if r.status_code != 200:
+        return {"success": False, "url": url,
+                "message": f"HTTP {r.status_code} from {url}."}
+    try:
+        meta = r.json()
+    except Exception:
+        return {"success": False, "url": url,
+                "message": f"{url} did not return JSON — that URL is not a Keycloak realm "
+                           f"discovery endpoint. Double-check the server URL and realm."}
+
+    issuer = meta.get("issuer", "")
+    n_ep = sum(1 for k in meta if k.endswith("_endpoint"))
+    return {"success": True, "url": url, "issuer": issuer,
+            "message": f"Reached Keycloak ✓  Realm issuer: {issuer}  ({n_ep} endpoints "
+                       f"discovered). Client secret and redirect URIs are validated at "
+                       f"actual sign-in."}
+
+
 def end_session_url(post_logout_uri: str, id_token: str = None) -> str:
     """Keycloak RP-initiated logout URL."""
     base = (cfg.KEYCLOAK_SERVER_URL or "").rstrip("/")

@@ -101,7 +101,13 @@
           <button class="btn-glass" onclick="testAzure(this)"><i class="bi bi-plug"></i> Test Connection</button>
           <span id="testResult" style="font-size:.85rem;"></span>
           {% endif %}
+          {% if cat.key == 'auth' %}
+          <button class="btn-glass" onclick="testKeycloak(this)"><i class="bi bi-plug"></i> Test SSO Connection</button>
+          {% endif %}
         </div>
+        {% if cat.key == 'auth' %}
+        <div id="kcTestResult" style="font-size:.82rem; margin-top:.75rem; line-height:1.5;"></div>
+        {% endif %}
 
         {% if cat.key == 'firewall' %}
         <hr style="border-color:rgba(255,255,255,.1); margin:1.5rem 0;">
@@ -215,6 +221,21 @@
       const data = await r.json();
       out.style.color = data.success ? '#4ade80' : 'var(--danger)';
       out.textContent = data.message;
+    } catch (e) {
+      out.style.color = 'var(--danger)'; out.textContent = 'Request failed: ' + e;
+    } finally { btn.disabled = false; }
+  }
+
+  async function testKeycloak(btn) {
+    const out = document.getElementById('kcTestResult');
+    btn.disabled = true;
+    out.style.color = 'var(--text-muted)';
+    out.textContent = 'Contacting Keycloak (using saved settings)…';
+    try {
+      const r = await fetch('/api/admin/settings/test-keycloak', {method: 'POST'});
+      const data = await r.json();
+      out.style.color = data.success ? '#4ade80' : 'var(--danger)';
+      out.textContent = data.message + (data.url ? '  [' + data.url + ']' : '');
     } catch (e) {
       out.style.color = 'var(--danger)'; out.textContent = 'Request failed: ' + e;
     } finally { btn.disabled = false; }
