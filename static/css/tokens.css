@@ -1,0 +1,90 @@
+/* ============================================================
+   Presight Brand Design Tokens — single source of truth.
+   Matches presight.ai. See docs/BRANDING.md before adding pages.
+   ============================================================ */
+
+:root {
+  /* ── Brand palette ── */
+  --p-blue:        #155EEF;
+  --p-ink:         #404040;
+  --p-body:        #484848;
+  --p-line:        #E9EEF4;
+  --p-line-soft:   rgba(51, 55, 65, 0.07);
+  --p-success:     #7EDB56;
+  --p-danger:      #EF6B51;
+
+  /* Signature gradients */
+  --p-grad-h:      linear-gradient(90deg, #0700C4 0%, #10B5B0 76.89%, #7EDB56 100%);
+  --p-grad-v:      linear-gradient(180deg, #155EEF 0%, #10B5B0 50%, #7EDB56 85%);
+
+  /* Glass fills */
+  --p-glass-light: rgba(255, 255, 255, 0.50);
+  --p-glass-dark:  rgba(20, 20, 25, 0.55);
+
+  /* Radius & elevation */
+  --p-radius-card: 20px;
+  --p-radius-pill: 100px;
+  --p-shadow-card: inset 0 0 64px rgba(0, 0, 0, 0.10), 0 11px 70px rgba(0, 0, 0, 0.03);
+  --p-shadow-card-dark: inset 0 0 64px rgba(0, 0, 0, 0.35), 0 11px 70px rgba(0, 0, 0, 0.20);
+  --p-blur:        15px;
+
+  /* ── Typography ── */
+  --p-font-body:   "Helvetica Neue", "HelveticaNeueLTArabic", "Almarai",
+                   -apple-system, "Segoe UI", sans-serif;
+  --p-font-mono:   "IBM Plex Mono", "Cascadia Code", monospace;
+  --p-track-mono:  4.8px;
+
+  /* Type scale (desktop) */
+  --p-h1-size: 84px;  --p-h1-weight: 700; --p-h1-track: -1.44px; --p-h1-leading: 97%;
+  --p-h2-size: 56px;  --p-h2-weight: 500; --p-h2-track: -1.68px;
+  --p-h3-size: 36px;  --p-h3-weight: 500; --p-h3-track: -1.26px;
+  --p-h4-size: 28px;  --p-h4-weight: 400;
+  --p-h5-size: 24px;  --p-h5-weight: 700;
+  --p-h6-size: 16px;  /* eyebrow — IBM Plex Mono, uppercase, 4.8px tracking */
+
+  /* ── Dark portal ambience ── */
+  --p-bg-dark:     #0B0F14;
+  --p-loader-bg:   #171719;
+
+  /* ============================================================
+     Bridge: remap the app's legacy variables onto brand tokens so
+     every existing template inherits the brand without edits.
+     ============================================================ */
+  --bg:            var(--p-bg-dark);
+  --bg-card:       #0E141C;
+  --bg-card-2:     #101823;
+  --bg-section:    #080C11;
+  --border:        rgba(255, 255, 255, 0.08);
+  --border-bright: rgba(255, 255, 255, 0.15);
+  --primary:       var(--p-blue);
+  --accent:        var(--p-blue);
+  --grad-btn:      var(--p-grad-h);
+  --grad-text:     var(--p-grad-h);
+  --success:       var(--p-success);
+  --warning:       #f59e0b;
+  --danger:        var(--p-danger);
+  --mono:          var(--p-font-mono);
+  --font-body:     var(--p-font-body);
+  --font-heading:  var(--p-font-body);
+  --font-display:  var(--p-font-body);
+  --radius:        10px;
+  --radius-lg:     14px;
+  --radius-xl:     var(--p-radius-card);
+  --radius-pill:   var(--p-radius-pill);
+}
+
+/* Eyebrow label — the site's H6 pattern */
+.p-eyebrow {
+  font-family: var(--p-font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: var(--p-track-mono);
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.65);
+}
+.p-eyebrow--grad {
+  background: var(--p-grad-h);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}

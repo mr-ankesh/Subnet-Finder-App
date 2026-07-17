@@ -11,12 +11,19 @@
   .deploy-opt:has(input:checked) { border-color:#00BCF2; background:rgba(0,120,212,.12); color:#fff; }
   .deploy-opt small { color:rgba(255,255,255,.45); }
 </style>
-<div class="page-hero" style="background-image: url('{{ url_for('static', filename='background.jpg') }}');">
-  <div class="hero-overlay"></div>
+<div class="page-hero" style="position:relative;overflow:hidden;">
+  <video class="p-hero-video" autoplay muted loop playsinline preload="auto"
+         poster="{{ url_for('static', filename='background.jpg') }}">
+    <source src="{{ url_for('static', filename='brand.mp4') }}" type="video/mp4">
+  </video>
+  <div class="p-hero-overlay" aria-hidden="true"></div>
+  <div class="p-hero-glow" aria-hidden="true"></div>
   <div class="hero-content">
-    <div class="hero-badge"><i class="bi bi-person-fill"></i> Requester Portal</div>
-    <h1 class="hero-title">Network Request Portal</h1>
-    <p class="hero-sub">VNETs, firewall rules, hub integration, ZPA routing, DNS and more — via form or AI assistant.</p>
+    <div class="hero-badge p-eyebrow"><i class="bi bi-person-fill"></i> Requester Portal</div>
+    <h1 class="hero-title">
+      <span class="line-mask"><span class="line">Network Request Portal</span></span>
+    </h1>
+    <p class="hero-sub anim-fade-up" style="animation-delay:.35s;">VNETs, firewall rules, hub integration, ZPA routing, DNS and more — via form or AI assistant.</p>
   </div>
 </div>
 

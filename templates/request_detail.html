@@ -10,7 +10,7 @@
       <li class="breadcrumb-item active">Request #{{ req.id }}</li>
     </ol></nav>
     <h1 class="alloc-page-title" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-      Request <span style="color:#60a5fa;">#{{ req.id }}</span>
+      Request <span style="color:#60a5fa;">#<span class="count-up" data-count="{{ req.id }}">{{ req.id }}</span></span>
       <span style="font-size:13px;color:#00BCF2;font-weight:600;border:1px solid rgba(0,188,242,.35);border-radius:20px;padding:3px 12px;">
         <i class="bi bi-{{ req.type_icon() }}"></i> {{ req.type_label() }}
       </span>
@@ -70,6 +70,7 @@
 
     <!-- Status + Admin Actions -->
     <div class="glass-card">
+      <div class="p-particles-card" aria-hidden="true"></div>
       <div class="card-header-bar"><i class="bi bi-activity"></i> Status &amp; Admin Actions</div>
       <div class="card-body-pad">
 
@@ -577,7 +578,7 @@
       {% if history %}
       <div style="display:flex;flex-direction:column;gap:0;">
         {% for e in history %}
-        <div style="display:flex;gap:14px;padding:9px 0;{% if not loop.last %}border-bottom:1px solid var(--border);{% endif %}">
+        <div class="p-history-item" style="display:flex;gap:14px;padding:9px 0;{% if not loop.last %}border-bottom:1px solid var(--border);{% endif %}">
           <div style="font-family:var(--mono);font-size:11.5px;color:var(--text-muted);white-space:nowrap;padding-top:2px;">{{ e.ts }}</div>
           <div style="flex:1;">
             <span style="font-size:13px;color:var(--text);font-weight:600;">{{ e.actor }}</span>
@@ -669,6 +670,9 @@
 </style>
 <script>
 const REQ_ID   = {{ req.id }};
+{% if req.status in (RequestStatus.COMPLETED, RequestStatus.HUB_INTEGRATED) %}
+window.__requestComplete = {{ req.id }};   // confetti-on-complete (fires once per request)
+{% endif %}
 const POOL_KEY = '{{ req.pool_key() }}';
 const PREFIX   = '{{ req.cidr_needed }}';
 

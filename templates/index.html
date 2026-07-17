@@ -3,26 +3,36 @@
 
 {% block content %}
 
-<!-- Hero -->
-<section class="hero-section">
-  <img class="hero-bg" src="{{ url_for('static', filename='background.jpg') }}" alt="">
+<!-- Hero — brand video with line-clip reveal -->
+<section class="hero-section" style="position:relative;overflow:hidden;">
+  <video class="p-hero-video" autoplay muted loop playsinline preload="auto"
+         poster="{{ url_for('static', filename='background.jpg') }}">
+    <source src="{{ url_for('static', filename='brand.mp4') }}" type="video/mp4">
+  </video>
+  <div class="p-hero-overlay" aria-hidden="true"></div>
+  <div class="p-hero-glow" aria-hidden="true"></div>
+  <div class="p-particles" id="heroParticles" aria-hidden="true"></div>
   <div class="hero-content">
-    <div class="hero-eyebrow">
+    <div class="hero-eyebrow p-eyebrow">
       <i class="bi bi-shield-check"></i>
-      Azure Network Management
+      Azure Network Operations
     </div>
     <h1 class="hero-title">
-      Manage Presight R&D Tenant<br><strong>IP Address Pools</strong>
+      <span class="line-mask"><span class="line">Manage Presight R&amp;D</span></span>
+      <span class="line-mask"><span class="line"><strong>Hub &amp; Spoke Network</strong></span></span>
     </h1>
-    <p class="hero-sub">
+    <p class="hero-sub anim-fade-up" style="animation-delay:.4s;">
       Search for available subnets, allocate new IP ranges, and manage
-      existing allocations across Azure R&D Tenant Network Infrastructure.
+      existing allocations across Azure R&amp;D Tenant Network Infrastructure.
     </p>
-    <a href="#pools" class="btn-hero">
+    <a href="#pools" class="btn-hero anim-fade-up" style="animation-delay:.55s;">
       EXPLORE POOLS
       <span class="btn-hero-dot"><i class="bi bi-arrow-down"></i></span>
     </a>
   </div>
+  <button class="p-scroll-cue" type="button" data-target="#pools" aria-label="Scroll down">
+    <i class="bi bi-arrow-down"></i>
+  </button>
 </section>
 
 <!-- Pool Cards -->
