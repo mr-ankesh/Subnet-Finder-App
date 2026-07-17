@@ -207,6 +207,38 @@
         </div>
         {% endif %}
 
+        {# ── DNS record actions (record_add) ── #}
+        {% set dnsd = req.get_details() %}
+        {% if rtype == 'dns' and dnsd.get('dns_kind') == 'record_add' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-globe2"></i> DNS Record Actions</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;font-family:var(--mono);">
+            {{ dnsd.get('record_type', 'A') }} · {{ dnsd.get('record_name') }}.{{ dnsd.get('zone') }} → {{ dnsd.get('record_value') }}
+          </div>
+          <button class="btn btn-glass w-100 mb-2" onclick="runDnsCheck(this)">
+            <i class="bi bi-clipboard-pulse me-2"></i>1 · Fetch Zone &amp; Record Status
+          </button>
+          {% if 'dns_apply' in done_actions %}
+          <button class="btn btn-glass w-100 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Record Applied — Done
+          </button>
+          {% else %}
+          <button class="btn btn-glow w-100" onclick="runDnsApply(this)">
+            <i class="bi bi-plus-circle me-2"></i>2 · Create Record &amp; Complete Request
+          </button>
+          {% endif %}
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            1 is read-only: verifies the zone in the hub and fetches the requested record.
+            If the record already exists you'll be offered <strong>edit</strong> (overwrite with the
+            requested value) or <strong>reject the request with a comment</strong>.
+          </div>
+          <div id="dnsResults" style="display:none;margin-top:10px;"></div>
+        </div>
+        {% endif %}
+
         {# ── NMO ZPA routing actions ── #}
         {% if rtype == 'zpa_nmo_routing' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
@@ -1080,6 +1112,79 @@ async function _conflictGo(mode) {
   const row = document.getElementById('conflictRow');
   if (row) row.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Working…</span>';
   if (_conflictRetry) await _conflictRetry(mode);
+}
+
+// ── DNS record steps (record_add) ──────────────────────────────────────────
+async function dnsPost(action, extra = {}) {
+  const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...extra })
+  });
+  return resp.json();
+}
+
+function renderDnsRecord(r) {
+  return `<div style="border:1px solid rgba(0,163,255,.3);background:rgba(0,163,255,.06);border-radius:8px;padding:10px;margin-top:8px;font-size:12px;line-height:1.7;">
+    <div style="font-weight:700;color:#60a5fa;"><i class="bi bi-globe2 me-1"></i>Existing record — ${r.name} (${r.type})</div>
+    <div><span style="color:var(--text-muted);">Value(s):</span> <span style="font-family:var(--mono);">${(r.values||[]).join(', ') || '—'}</span></div>
+    <div><span style="color:var(--text-muted);">TTL:</span> ${r.ttl}</div>
+  </div>`;
+}
+
+async function runDnsCheck(btn) {
+  const box = document.getElementById('dnsResults');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Fetching…';
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Fetching zone & record…</span>';
+  let d = null;
+  try { d = await dnsPost('dns_check'); } catch (e) {}
+  btn.disabled = false; btn.innerHTML = orig;
+  if (!d || d.error || !d.success) {
+    box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${(d && (d.error || d.message)) || 'Network error.'}</span>`;
+    return;
+  }
+  let html = `<div style="font-size:12px;color:var(--text-dim);">
+    ${d.zone_exists ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i> Zone exists in the hub'
+                    : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i> Zone NOT found in the hub'}
+    · ${d.record_exists ? '<span style="color:#f59e0b;">record already exists</span>' : 'record does not exist yet'}</div>`;
+  if (d.record) html += renderDnsRecord(d.record);
+  html += `<div style="font-size:12px;color:var(--text-dim);margin-top:6px;">${d.message || ''}</div>`;
+  box.innerHTML = html;
+}
+
+async function runDnsApply(btn, onConflict = '') {
+  const box = document.getElementById('dnsResults');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Applying…';
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Applying record…</span>';
+  let d = null;
+  try { d = await dnsPost('dns_apply', onConflict ? { on_conflict: onConflict } : {}); } catch (e) {}
+  btn.disabled = false; btn.innerHTML = orig;
+  if (!d) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; return; }
+  if (d.conflict) {
+    // Record exists with a different value → edit or reject-with-comment
+    box.innerHTML =
+      `<div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;padding:8px 12px;font-size:12px;color:#f59e0b;">
+         <i class="bi bi-exclamation-triangle-fill me-1"></i>${d.message} Review it below, then choose.</div>` +
+      (d.existing_record ? renderDnsRecord(d.existing_record) : '') +
+      `<div id="dnsConflictRow" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+         <button class="btn btn-glow btn-sm" style="flex:1;min-width:180px;" onclick="runDnsApply(this, 'replace')">
+           <i class="bi bi-pencil-square me-1"></i>Edit — overwrite with requested value
+         </button>
+         <button class="btn btn-sm" style="flex:1;min-width:180px;background:rgba(209,52,56,.12);border:1px solid rgba(209,52,56,.35);color:#f87171;"
+                 onclick="confirmTerminate('REJECTED')">
+           <i class="bi bi-hand-thumbs-down me-1"></i>Reject request with comment
+         </button>
+         <button class="btn btn-glass btn-sm" style="flex:0 0 auto;"
+                 onclick="document.getElementById('dnsConflictRow').remove()">Cancel</button>
+       </div>`;
+    return;
+  }
+  const color = d.error ? 'var(--danger)' : (d.success ? '#7edb56' : '#f59e0b');
+  box.innerHTML = `<span style="font-size:12px;color:${color};">${d.error || d.message}${d.success ? ' Reloading…' : ''}</span>`;
+  if (d.success) setTimeout(() => location.reload(), 2200);
 }
 
 // ── NMO ZPA routing steps ──────────────────────────────────────────────────

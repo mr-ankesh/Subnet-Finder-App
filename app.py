@@ -1723,6 +1723,39 @@ def admin_azure_action(req_id):
         _auto_advance(req)
         return jsonify(res), (200 if res.get("success") else 207)
 
+    # ── DNS record actions (dns requests, kind=record_add) ──
+    if action in ("dns_check", "dns_apply"):
+        zone = details.get("zone", "")
+        rtype = details.get("record_type", "A")
+        rname = details.get("record_name", "")
+        rvalue = details.get("record_value", "")
+        if not zone or not rname:
+            return jsonify({"error": "Request details are missing the zone/record name."}), 400
+
+        if action == "dns_check":
+            res = azure_tools.get_dns_record_status(zone, rtype, rname)
+            _audit_azure(res)
+            return jsonify(res), (200 if res.get("success") else 207)
+
+        # dns_apply — create (or, after explicit confirmation, edit) the record
+        res = azure_tools.upsert_dns_record(zone, rtype, rname, rvalue,
+                                            on_conflict=(on_conflict or None))
+        if res.get("success") and req.status in (RequestStatus.SUBMITTED,
+                                                 RequestStatus.IN_PROGRESS):
+            req.status = RequestStatus.COMPLETED
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
+            notified = False
+            try:
+                notified = bool(notifications.notify_status_changed(req))
+            except Exception:
+                pass
+            res["message"] = (str(res.get("message", "")) + " Request completed"
+                              + (" — requester notified." if notified else "."))
+        _audit_azure(res)
+        _auto_advance(req)
+        return jsonify(res), (200 if res.get("success") else 207)
+
     # ── VNET decommission actions — driven by request details ──
     if action in ("decom_check", "decom_execute", "decom_release"):
         vnet_name = details.get("vnet_name", "")

@@ -769,6 +769,162 @@ def check_private_dns_zone(zone_name: str) -> dict:
                 "message": f"Could not verify zone availability: {exc}"}
 
 
+def _privatedns_client(subscription_id: str = None):
+    from azure.mgmt.privatedns import PrivateDnsManagementClient
+    return PrivateDnsManagementClient(
+        _get_credential(),
+        subscription_id or cfg.DNS_ZONE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
+
+
+def _dns_record_dict(rs, record_type: str) -> dict:
+    if record_type == "CNAME":
+        values = [rs.cname_record.cname] if rs.cname_record and rs.cname_record.cname else []
+    else:
+        values = [a.ipv4_address for a in (rs.a_records or [])]
+    return {"name": rs.name, "type": record_type, "ttl": rs.ttl, "values": values}
+
+
+def get_dns_record_status(zone: str, record_type: str, record_name: str) -> dict:
+    """Read-only: does the zone exist in the hub, and does the record exist —
+    with its current value(s)? Never mutates anything."""
+    zone = str(zone or "").strip().lower().rstrip(".")
+    record_type = (record_type or "A").upper()
+    if record_type not in ("A", "CNAME"):
+        return {"success": False, "message": "Only A and CNAME records are supported."}
+    if not cfg.DNS_ZONE_RG:
+        return {"success": False, "message": "Hub private DNS zones resource group not "
+                                             "configured (Settings → Hub & Subscriptions)."}
+    try:
+        client = _privatedns_client()
+        try:
+            client.private_zones.get(cfg.DNS_ZONE_RG, zone)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return {"success": True, "zone_exists": False, "record_exists": False,
+                        "message": f"Zone '{zone}' does NOT exist in the hub ({cfg.DNS_ZONE_RG})."}
+            raise
+        try:
+            rs = client.record_sets.get(cfg.DNS_ZONE_RG, zone, record_type, record_name)
+            rec = _dns_record_dict(rs, record_type)
+            return {"success": True, "zone_exists": True, "record_exists": True, "record": rec,
+                    "message": f"Zone '{zone}' exists; {record_type} record '{record_name}' "
+                               f"EXISTS → {', '.join(rec['values']) or '(empty)'} (TTL {rec['ttl']})."}
+        except Exception as exc:
+            if _is_not_found(exc):
+                return {"success": True, "zone_exists": True, "record_exists": False,
+                        "message": f"Zone '{zone}' exists; {record_type} record "
+                                   f"'{record_name}' does not exist yet — clear to create."}
+            raise
+    except Exception as exc:
+        log.error("get_dns_record_status failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def upsert_dns_record(zone: str, record_type: str, record_name: str, value: str,
+                      ttl: int = 3600, on_conflict: str = None) -> dict:
+    """
+    Create an A/CNAME record in a hub private DNS zone. If a record with the
+    same name already exists with a DIFFERENT value, returns a conflict with
+    its current definition unless on_conflict='replace' (edit in place).
+    """
+    zone = str(zone or "").strip().lower().rstrip(".")
+    record_type = (record_type or "A").upper()
+    value = str(value or "").strip()
+    if record_type not in ("A", "CNAME"):
+        return {"success": False, "message": "Only A and CNAME records are supported."}
+    try:
+        client = _privatedns_client()
+        before = None
+        try:
+            rs = client.record_sets.get(cfg.DNS_ZONE_RG, zone, record_type, record_name)
+            before = _dns_record_dict(rs, record_type)
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+        if before is not None:
+            if before["values"] == [value]:
+                return {"success": True, "kept_existing": True,
+                        "message": f"{record_type} record '{record_name}' already exists with the "
+                                   f"requested value ({value}) — nothing to do."}
+            if on_conflict != "replace":
+                return {"success": False, "conflict": True, "existing_record": before,
+                        "message": f"{record_type} record '{record_name}' already exists in "
+                                   f"'{zone}' with value(s): {', '.join(before['values'])}."}
+
+        if record_type == "CNAME":
+            params = {"ttl": ttl, "cname_record": {"cname": value}}
+        else:
+            params = {"ttl": ttl, "a_records": [{"ipv4_address": value}]}
+        log.info("Upserting %s record '%s' in zone '%s' → %s", record_type, record_name, zone, value)
+        client.record_sets.create_or_update(cfg.DNS_ZONE_RG, zone, record_type, record_name, params)
+        after = {"name": record_name, "type": record_type, "ttl": ttl, "values": [value]}
+        change = {"target": f"DNS {record_type} {record_name}.{zone}",
+                  "before": before, "after": after}
+        if before:
+            change.update({"revert_op": "restore_dns_record",
+                           "revert_params": {"zone": zone, "rtype": record_type,
+                                             "name": record_name, "values": before["values"],
+                                             "ttl": before["ttl"] or 3600}})
+        else:
+            change.update({"revert_op": "delete_dns_record",
+                           "revert_params": {"zone": zone, "rtype": record_type,
+                                             "name": record_name}})
+        return {"success": True, "replaced_existing": bool(before), "change": change,
+                "message": f"{record_type} record '{record_name}.{zone}' "
+                           f"{'updated to' if before else 'created →'} {value}."}
+    except Exception as exc:
+        log.error("upsert_dns_record failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def delete_dns_record(zone: str, record_type: str, record_name: str) -> dict:
+    """Delete an A/CNAME record (snapshotted for revert; not-found = success)."""
+    try:
+        client = _privatedns_client()
+        before = None
+        try:
+            rs = client.record_sets.get(cfg.DNS_ZONE_RG, zone, record_type, record_name)
+            before = _dns_record_dict(rs, record_type)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return {"success": True,
+                        "message": f"Record '{record_name}' not found in '{zone}' (already removed)."}
+            raise
+        client.record_sets.delete(cfg.DNS_ZONE_RG, zone, record_type, record_name)
+        return {"success": True,
+                "change": {"target": f"DNS {record_type} {record_name}.{zone}",
+                           "before": before, "after": None,
+                           "revert_op": "restore_dns_record",
+                           "revert_params": {"zone": zone, "rtype": record_type,
+                                             "name": record_name, "values": before["values"],
+                                             "ttl": before["ttl"] or 3600}},
+                "message": f"{record_type} record '{record_name}.{zone}' deleted."}
+    except Exception as exc:
+        log.error("delete_dns_record failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def restore_dns_record(zone: str, record_type: str, record_name: str,
+                       values: list, ttl: int = 3600) -> dict:
+    """Recreate a record from a stored snapshot (revert engine)."""
+    try:
+        client = _privatedns_client()
+        if record_type == "CNAME":
+            params = {"ttl": ttl, "cname_record": {"cname": values[0] if values else ""}}
+        else:
+            params = {"ttl": ttl, "a_records": [{"ipv4_address": v} for v in values]}
+        client.record_sets.create_or_update(cfg.DNS_ZONE_RG, zone, record_type, record_name, params)
+        return {"success": True,
+                "message": f"{record_type} record '{record_name}.{zone}' restored → "
+                           f"{', '.join(values)}."}
+    except Exception as exc:
+        log.error("restore_dns_record failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
 # ── Revert / decommission helpers ──────────────────────────────────────────
 # Deletions treat "not found" as success so reverts are idempotent.
 
