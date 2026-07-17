@@ -31,6 +31,11 @@ app.kubernetes.io/name: {{ include "subnet-manager.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/* Truthy string when an external Postgres is configured (enables multi-replica) */}}
+{{- define "subnet-manager.usePostgres" -}}
+{{- if or .Values.database.url .Values.database.existingSecretName -}}true{{- end -}}
+{{- end -}}
+
 {{/* Name of the secret holding app credentials */}}
 {{- define "subnet-manager.secretName" -}}
 {{- if .Values.secrets.existingSecret -}}

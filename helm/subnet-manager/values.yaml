@@ -1,9 +1,21 @@
 # Default values for subnet-manager.
 #
-# IMPORTANT: replicaCount must stay 1 — the app uses SQLite (single writer).
-# The chart fails to render if you raise it. Migrate to PostgreSQL first if
-# you ever need HA.
+# replicaCount: with the default SQLite backend this MUST stay 1 (single
+# writer) — the chart fails to render otherwise. Configure `database` below
+# (external PostgreSQL) to run multiple replicas with rolling, zero-downtime
+# upgrades. The app is otherwise stateless (cookie-based sessions).
 replicaCount: 1
+
+# ── Database ─────────────────────────────────────────────────────────────────
+# Default (both blank): bundled SQLite on the PVC — single replica.
+# PostgreSQL: set ONE of the below → multi-replica, no PVC needed.
+database:
+  # Inline connection string (goes into the chart-managed secret). Format:
+  # postgresql://USER:PASSWORD@HOST:5432/DBNAME  (Azure DB for PostgreSQL works).
+  url: ""
+  # OR reference a secret you already manage (Key Vault CSI / Sealed Secrets):
+  existingSecretName: ""
+  existingSecretKey: "DATABASE_URL"
 
 image:
   repository: <YOUR_ACR>.azurecr.io/subnet-manager

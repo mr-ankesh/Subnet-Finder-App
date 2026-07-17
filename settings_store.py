@@ -13,15 +13,13 @@ import base64
 import hashlib
 import logging
 import os
-import sqlite3
 import threading
 import time
 from datetime import datetime
 
-log = logging.getLogger(__name__)
+import db_backend
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(_HERE, "data", "requests.db")
+log = logging.getLogger(__name__)
 
 _CACHE_TTL = 5.0  # seconds — keeps multi-worker deployments reasonably fresh
 
@@ -31,11 +29,7 @@ _cache_at: float = 0.0
 
 
 def _conn():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return db_backend.connect()
 
 
 def ensure_table():

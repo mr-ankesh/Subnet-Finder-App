@@ -7,24 +7,16 @@ All functions read/write the same requests.db file that Flask-SQLAlchemy uses.
 """
 import json
 import logging
-import os
-import sqlite3
 from datetime import datetime
 
+import db_backend
 from models import RequestStatus, RequestType
 
 log = logging.getLogger(__name__)
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(_HERE, "data", "requests.db")
-
 
 def _conn():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    return db_backend.connect()
 
 
 class RequestProxy:
@@ -86,18 +78,18 @@ def create_spoke_request(cidr_needed, purpose, requester_name, ip_range, hub_int
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")
     status = RequestType.initial_status(request_type)
     with _conn() as conn:
-        cur = conn.execute(
+        req_id = db_backend.insert_returning_id(
+            conn,
             """INSERT INTO spoke_requests
                (request_type, details, cidr_needed, purpose, requester_name, requester_email,
                 ip_range, hub_integration, deployment_mode, status, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (request_type, json.dumps(details) if details else None,
              str(cidr_needed or ""), purpose, requester_name, requester_email or None,
-             ip_range or "", 1 if hub_integration else 0, deployment_mode, status, now, now),
+             ip_range or "", bool(hub_integration), deployment_mode, status, now, now),
         )
         conn.commit()
-        req_id = cur.lastrowid
-    log.info("[db_utils] INSERT spoke_request #%s (%s) → %s", req_id, request_type, DB_PATH)
+    log.info("[db_utils] INSERT spoke_request #%s (%s)", req_id, request_type)
     return req_id
 
 

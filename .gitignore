@@ -35,3 +35,7 @@ data/*.db-wal
 .DS_Store
 Thumbs.db
 data/*.log
+
+# Local Helm value overrides — CONTAIN SECRETS, never commit
+helm/**/*-values.yaml
+my-values.yaml

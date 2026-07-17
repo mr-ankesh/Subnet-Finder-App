@@ -7,28 +7,22 @@ failure must never break the operation being audited.
 """
 import json
 import logging
-import os
-import sqlite3
 from datetime import datetime
+
+import db_backend
 
 log = logging.getLogger(__name__)
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(_HERE, "data", "requests.db")
-
 
 def _conn():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return db_backend.connect()
 
 
 def ensure_table():
     with _conn() as conn:
-        conn.execute("""
+        conn.execute(f"""
             CREATE TABLE IF NOT EXISTS audit_log (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id         {db_backend.AUTOINC_PK},
                 ts         TEXT NOT NULL,
                 actor      TEXT NOT NULL,
                 actor_role TEXT NOT NULL DEFAULT 'system',

@@ -108,9 +108,16 @@ by reading the hub VNET (read-only, works even in dry-run).
 
 ## 6. Data & configuration
 
-- **SQLite** (`data/requests.db`, WAL mode) holds requests, subnet
-  inventory, VNET info, settings overrides, firewall collection
-  definitions and the audit log. Single writer → single replica.
+- **Database** holds requests, subnet inventory, VNET info, settings
+  overrides, firewall collection definitions, the audit trail and the change
+  ledger. Two backends, chosen by `DATABASE_URL`:
+  - **SQLite** (default, `data/requests.db` on the PVC) — single writer, so
+    one replica.
+  - **PostgreSQL** (set `DATABASE_URL`) — the app is otherwise stateless
+    (cookie sessions, shared secret), so it scales to N replicas with rolling
+    upgrades. The ORM and the raw-SQL modules both go through a backend
+    abstraction (`db_backend.py`); migrate existing data with
+    `scripts/sqlite_to_postgres.py`.
 - **Config resolution**: every setting resolves live as
   **DB override → environment variable → default**. The Settings UI writes
   DB overrides; env vars (ConfigMap/Secret) are only bootstrap defaults.

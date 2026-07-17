@@ -36,12 +36,23 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{os.path.join(DATA_DIR, 'requests.db')}"
+# DATABASE_URL (Postgres) → multi-replica capable; unset → bundled SQLite file.
+import db_backend
+app.config["SQLALCHEMY_DATABASE_URI"] = db_backend.sqlalchemy_uri()
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "connect_args": {"timeout": 30, "check_same_thread": False},
-}
+if db_backend.IS_POSTGRES:
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True, "pool_recycle": 1800,
+    }
+else:
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "connect_args": {"timeout": 30, "check_same_thread": False},
+    }
 db.init_app(app)
+
+class _SkipMigration(Exception):
+    """Sentinel to short-circuit the SQLite-only column backfill on Postgres."""
+
 
 EXCEL_PATH = os.path.join(DATA_DIR, "subnets.xlsx")   # kept for one-time auto-migration only
 POOLS = {"10.110": "10.110.0.0/16", "10.119": "10.119.0.0/16"}
@@ -54,6 +65,10 @@ def _auto_migrate_excel():
     import 'used' and 'reserved' rows from Excel into the database.
     Runs inside an app context at startup.
     """
+    if os.environ.get("SKIP_BOOTSTRAP_MIGRATION") or db_backend.IS_POSTGRES:
+        # Postgres deployments import inventory via /admin/inventory; never
+        # auto-seed from a stray xlsx (and the SQLite→PG migration disables it).
+        return
     if not os.path.exists(EXCEL_PATH):
         return
     try:
@@ -151,8 +166,13 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
-    # Lightweight schema migration: add requester_email if an older DB predates it
+    # Lightweight schema migration for older SQLite files (adds columns that
+    # predate later features). On Postgres, create_all() already builds the
+    # full current schema, and PRAGMA table_info is SQLite-only — so skip it.
     try:
+        if db_backend.IS_POSTGRES:
+            cols = vcols = []
+            raise _SkipMigration
         cols = [r[1] for r in db.session.execute(db.text("PRAGMA table_info(spoke_requests)"))]
         if "requester_email" not in cols:
             db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN requester_email VARCHAR(200)"))
@@ -179,6 +199,8 @@ with app.app_context():
             if col not in vcols:
                 db.session.execute(db.text(f"ALTER TABLE vnet_info ADD COLUMN {col} {ddl}"))
         db.session.commit()
+    except _SkipMigration:
+        db.session.rollback()
     except Exception:
         db.session.rollback()
 
@@ -1069,7 +1091,9 @@ def health():
     try:
         db.session.execute(db.text("SELECT 1"))
         count = SpokeRequest.query.count()
-        return jsonify({"status": "ok", "db_path": app.config["SQLALCHEMY_DATABASE_URI"], "request_count": count}), 200
+        return jsonify({"status": "ok", "db": db_backend.safe_uri(),
+                        "backend": "postgres" if db_backend.IS_POSTGRES else "sqlite",
+                        "request_count": count}), 200
     except Exception as exc:
         return jsonify({"status": "error", "detail": str(exc)}), 500
 

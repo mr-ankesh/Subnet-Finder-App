@@ -1,5 +1,6 @@
-{{- if gt (int .Values.replicaCount) 1 }}
-{{- fail "replicaCount must stay 1 — the app uses SQLite (single writer). Migrate to PostgreSQL before scaling out." }}
+{{- $pg := include "subnet-manager.usePostgres" . -}}
+{{- if and (gt (int .Values.replicaCount) 1) (not $pg) }}
+{{- fail "replicaCount > 1 requires Postgres — the SQLite backend is single-writer. Set database.url (or database.existingSecretName) to an external PostgreSQL, then scale out." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -8,9 +9,10 @@ metadata:
   labels:
     {{- include "subnet-manager.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ if $pg }}{{ .Values.replicaCount }}{{ else }}1{{ end }}
   strategy:
-    type: Recreate          # not RollingUpdate — SQLite single-writer safety
+    # SQLite → Recreate (single writer). Postgres → rolling, zero-downtime.
+    type: {{ if $pg }}RollingUpdate{{ else }}Recreate{{ end }}
   selector:
     matchLabels:
       {{- include "subnet-manager.selectorLabels" . | nindent 6 }}
@@ -52,7 +54,15 @@ spec:
                 name: {{ include "subnet-manager.fullname" . }}
             - secretRef:
                 name: {{ include "subnet-manager.secretName" . }}
-          {{- if .Values.persistence.enabled }}
+          {{- if .Values.database.existingSecretName }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecretName }}
+                  key: {{ .Values.database.existingSecretKey | default "DATABASE_URL" }}
+          {{- end }}
+          {{- if and .Values.persistence.enabled (not $pg) }}
           volumeMounts:
             - name: data
               mountPath: /app/data
@@ -63,7 +73,7 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-      {{- if .Values.persistence.enabled }}
+      {{- if and .Values.persistence.enabled (not $pg) }}
       volumes:
         - name: data
           persistentVolumeClaim:

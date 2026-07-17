@@ -1,4 +1,4 @@
-{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not (include "subnet-manager.usePostgres" .)) }}
 # Azure Disk PVC — stores requests.db (SQLite). Azure Files (SMB) does NOT
 # support SQLite file locking; keep a block-storage class (managed-csi).
 apiVersion: v1

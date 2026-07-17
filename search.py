@@ -4,21 +4,16 @@ audit trail. Raw sqlite3 LIKE queries (case-insensitive) — plenty for the
 data volumes here; swap for FTS5 if the tables ever grow large.
 """
 import logging
-import os
-import sqlite3
+
+import db_backend
 
 log = logging.getLogger(__name__)
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(_HERE, "data", "requests.db")
 
 _LIMIT = 50  # per category
 
 
 def _conn():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return db_backend.connect()
 
 
 def _rows(conn, sql, params):
@@ -46,13 +41,13 @@ def global_search(q: str) -> dict:
             FROM spoke_requests
             WHERE id = ?
                OR LOWER(requester_name)   LIKE ?
-               OR LOWER(IFNULL(requester_email, ''))  LIKE ?
+               OR LOWER(COALESCE(requester_email, ''))  LIKE ?
                OR LOWER(purpose)          LIKE ?
                OR LOWER(status)           LIKE ?
-               OR LOWER(IFNULL(request_type, ''))     LIKE ?
-               OR LOWER(IFNULL(allocated_subnet, '')) LIKE ?
-               OR LOWER(IFNULL(notes, ''))            LIKE ?
-               OR LOWER(IFNULL(details, ''))          LIKE ?
+               OR LOWER(COALESCE(request_type, ''))     LIKE ?
+               OR LOWER(COALESCE(allocated_subnet, '')) LIKE ?
+               OR LOWER(COALESCE(notes, ''))            LIKE ?
+               OR LOWER(COALESCE(details, ''))          LIKE ?
             ORDER BY id DESC LIMIT {_LIMIT}""",
             (req_id, like, like, like, like, like, like, like, like))
 
@@ -60,11 +55,11 @@ def global_search(q: str) -> dict:
             SELECT request_id, vnet_name, resource_group, subscription_id, region,
                    address_space, subnet_name
             FROM vnet_info
-            WHERE LOWER(IFNULL(vnet_name, ''))       LIKE ?
-               OR LOWER(IFNULL(resource_group, ''))  LIKE ?
-               OR LOWER(IFNULL(subscription_id, '')) LIKE ?
-               OR LOWER(IFNULL(address_space, ''))   LIKE ?
-               OR LOWER(IFNULL(subnet_name, ''))     LIKE ?
+            WHERE LOWER(COALESCE(vnet_name, ''))       LIKE ?
+               OR LOWER(COALESCE(resource_group, ''))  LIKE ?
+               OR LOWER(COALESCE(subscription_id, '')) LIKE ?
+               OR LOWER(COALESCE(address_space, ''))   LIKE ?
+               OR LOWER(COALESCE(subnet_name, ''))     LIKE ?
             ORDER BY request_id DESC LIMIT {_LIMIT}""",
             (like, like, like, like, like))
 
@@ -72,9 +67,9 @@ def global_search(q: str) -> dict:
             SELECT subnet, pool, status, purpose, requested_by, allocated_by, allocated_at
             FROM subnet_records
             WHERE LOWER(subnet)                    LIKE ?
-               OR LOWER(IFNULL(purpose, ''))       LIKE ?
-               OR LOWER(IFNULL(requested_by, ''))  LIKE ?
-               OR LOWER(IFNULL(allocated_by, ''))  LIKE ?
+               OR LOWER(COALESCE(purpose, ''))       LIKE ?
+               OR LOWER(COALESCE(requested_by, ''))  LIKE ?
+               OR LOWER(COALESCE(allocated_by, ''))  LIKE ?
             ORDER BY id DESC LIMIT {_LIMIT}""",
             (like, like, like, like))
 
@@ -83,7 +78,7 @@ def global_search(q: str) -> dict:
             FROM audit_log
             WHERE LOWER(actor)              LIKE ?
                OR LOWER(action)             LIKE ?
-               OR LOWER(IFNULL(summary,'')) LIKE ?
+               OR LOWER(COALESCE(summary,'')) LIKE ?
                OR request_id = ?
             ORDER BY id DESC LIMIT {_LIMIT}""",
             (like, like, like, req_id))

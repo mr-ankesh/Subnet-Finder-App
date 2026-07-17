@@ -12,31 +12,25 @@ failure must never break the operation being recorded.
 """
 import json
 import logging
-import os
-import sqlite3
 from datetime import datetime
 
-log = logging.getLogger(__name__)
+import db_backend
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(_HERE, "data", "requests.db")
+log = logging.getLogger(__name__)
 
 STATUS_ACTIVE = "active"
 STATUS_REVERTED = "reverted"
 
 
 def _conn():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return db_backend.connect()
 
 
 def ensure_table():
     with _conn() as conn:
-        conn.execute("""
+        conn.execute(f"""
             CREATE TABLE IF NOT EXISTS change_log (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                id             {db_backend.AUTOINC_PK},
                 ts             TEXT NOT NULL,
                 actor          TEXT NOT NULL,
                 request_id     INTEGER,
@@ -64,7 +58,8 @@ def record(action: str, actor: str = "system", request_id=None, target: str = ""
     try:
         ensure_table()
         with _conn() as conn:
-            cur = conn.execute(
+            cid = db_backend.insert_returning_id(
+                conn,
                 """INSERT INTO change_log
                    (ts, actor, request_id, action, target, summary, before, after,
                     revert_op, revert_params)
@@ -76,7 +71,8 @@ def record(action: str, actor: str = "system", request_id=None, target: str = ""
                  json.dumps(before) if before is not None else None,
                  json.dumps(after) if after is not None else None,
                  revert_op, json.dumps(revert_params) if revert_params else None))
-            return cur.lastrowid
+            conn.commit()
+            return cid
     except Exception as exc:
         log.error("changes.record failed (%s): %s", action, exc)
         return None
