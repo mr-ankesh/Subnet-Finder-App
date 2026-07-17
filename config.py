@@ -128,20 +128,24 @@ SETTINGS_SPEC = {
                                  help="Used for deep-links in Teams/email notifications."),
 
     # ── AI Agent / LLM ──
-    "AGENT_PROVIDER":     _f("agent", "Provider", "anthropic", options=["anthropic", "openai"],
-                             help="'openai' also covers Azure OpenAI and OpenAI-compatible endpoints (LM Studio, Ollama, vLLM…)."),
+    "AGENT_PROVIDER":     _f("agent", "Provider", "anthropic",
+                             options=["openai", "anthropic", "byom"],
+                             help="Pick ONE — only that provider's fields below need to be filled. "
+                                  "'Bring your own model' is any on-premise / self-hosted "
+                                  "OpenAI-compatible endpoint (Ollama, vLLM, LM Studio…)."),
     "ANTHROPIC_API_KEY":  _f("agent", "Anthropic API key", secret=True,
                              help="Stored encrypted. Leave blank on save to keep the current value."),
     "ANTHROPIC_MODEL":    _f("agent", "Anthropic model", "claude-sonnet-4-6",
                              help="e.g. claude-sonnet-4-6, claude-opus-4-8, claude-haiku-4-5-20251001."),
     "OPENAI_API_KEY":     _f("agent", "OpenAI API key", secret=True,
-                             help="Stored encrypted. For local OpenAI-compatible servers it can stay empty."),
-    "OPENAI_BASE_URL":    _f("agent", "OpenAI base URL",
-                             help="Blank = api.openai.com. An *.azure.com URL switches to the Azure OpenAI client."),
+                             help="Stored encrypted. Optional for on-premise endpoints without auth."),
+    "OPENAI_BASE_URL":    _f("agent", "Endpoint / base URL",
+                             help="OpenAI: leave blank (or an *.azure.com URL for Azure OpenAI). "
+                                  "Bring your own model: REQUIRED — e.g. http://llm.internal:8000/v1."),
     "OPENAI_API_VERSION": _f("agent", "Azure OpenAI API version", "2024-02-15-preview",
-                             help="Only used with Azure OpenAI endpoints."),
-    "OPENAI_MODEL":       _f("agent", "OpenAI model / deployment", "gpt-4o",
-                             help="Model name, or the deployment name on Azure OpenAI."),
+                             help="Only used when the endpoint is Azure OpenAI (*.azure.com)."),
+    "OPENAI_MODEL":       _f("agent", "Model / deployment name", "gpt-4o",
+                             help="OpenAI model, Azure deployment name, or your on-premise model tag (e.g. qwen3:30b)."),
 
     # ── Authentication (Keycloak-ready; not enforced yet) ──
     "AUTH_PROVIDER":          _f("auth", "Auth provider", "local", options=["local", "keycloak"],

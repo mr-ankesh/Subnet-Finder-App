@@ -417,8 +417,13 @@ def _get_client():
     if provider == "anthropic":
         import anthropic
         _client = anthropic.Anthropic(api_key=cfg.ANTHROPIC_API_KEY)
-    elif provider == "openai":
+    elif provider in ("openai", "byom"):
+        # "byom" = bring your own model — any OpenAI-compatible endpoint
+        # (Ollama, vLLM, LM Studio, on-premise gateways).
         from openai import AzureOpenAI, OpenAI
+        if provider == "byom" and not cfg.OPENAI_BASE_URL:
+            raise RuntimeError("Bring-your-own-model needs an endpoint URL — "
+                               "set it in Settings → AI Agent / LLM.")
         if cfg.OPENAI_BASE_URL and "azure.com" in cfg.OPENAI_BASE_URL:
             _client = AzureOpenAI(azure_endpoint=cfg.OPENAI_BASE_URL, api_key=cfg.OPENAI_API_KEY, api_version=cfg.OPENAI_API_VERSION)
         else:

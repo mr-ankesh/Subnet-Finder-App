@@ -68,10 +68,13 @@
                        {% if f.key == 'AZURE_DRY_RUN' %}onchange="dryRunWarn(this)"{% endif %}>
               </div>
             {% elif f.options %}
+              {% set optlabels = {'openai': 'OpenAI', 'anthropic': 'Anthropic',
+                                  'byom': 'Bring your own model (on-premise)'} %}
               <select class="form-select setting-input" data-key="{{ f.key }}" id="in-{{ f.key }}"
-                      {% if f.key == 'AZURE_AUTH_MODE' %}onchange="authModeChanged(this.value)"{% endif %}>
+                      {% if f.key == 'AZURE_AUTH_MODE' %}onchange="authModeChanged(this.value)"{% endif %}
+                      {% if f.key == 'AGENT_PROVIDER' %}onchange="agentProviderChanged(this.value)"{% endif %}>
                 {% for opt in f.options %}
-                <option value="{{ opt }}" {% if f.value == opt %}selected{% endif %}>{{ opt.replace('_',' ')|title }}</option>
+                <option value="{{ opt }}" {% if f.value == opt %}selected{% endif %}>{{ optlabels.get(opt) or opt.replace('_',' ')|title }}</option>
                 {% endfor %}
               </select>
             {% elif f.secret %}
@@ -226,6 +229,25 @@
   }
   const authSel = document.getElementById('in-AZURE_AUTH_MODE');
   if (authSel) authModeChanged(authSel.value);
+
+  // ── LLM provider field visibility: only the selected provider's fields show ──
+  const AGENT_FIELDS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'OPENAI_API_KEY',
+                        'OPENAI_BASE_URL', 'OPENAI_API_VERSION', 'OPENAI_MODEL'];
+  function agentProviderChanged(p) {
+    const show = {
+      openai:    ['OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL', 'OPENAI_API_VERSION'],
+      anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL'],
+      byom:      ['OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_API_KEY'],
+    }[p] || AGENT_FIELDS;
+    AGENT_FIELDS.forEach(k => {
+      const el = document.getElementById('in-' + k);
+      if (!el) return;
+      const cell = el.closest('.settings-grid > div');
+      if (cell) cell.style.display = show.includes(k) ? '' : 'none';
+    });
+  }
+  const agentSel = document.getElementById('in-AGENT_PROVIDER');
+  if (agentSel) agentProviderChanged(agentSel.value);
 
   // ── Dry-run warning ──
   function dryRunWarn(el) {

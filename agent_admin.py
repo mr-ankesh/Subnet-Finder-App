@@ -23,19 +23,45 @@ def _actor() -> str:
     except Exception:
         return "Admin"
 
-_SYSTEM_PROMPT_TEMPLATE = """You are the Presight R&D Azure Network Admin Agent.
+_SYSTEM_PROMPT_TEMPLATE = """You are Network Copilot — Presight R&D's AI network admin agent.
 
-You help the network admin team manage spoke VNET requests end-to-end.
+You help the network admin team manage network requests end-to-end: spoke VNETs,
+hub integration, firewall policy, ZPA/NMO routing, subnets, decommissions.
 
 YOUR CAPABILITIES:
-1. LIST / VIEW requests — show all requests or details of a specific one.
+1. LIST / VIEW requests — all request types (vnet_new, firewall_policy,
+   hub_integration, zpa_rnd/other/nmo_routing, subnet_additional,
+   vnet_decommission, dns, other), each with its own workflow.
 2. ASSIGN CIDR — find available subnets and assign to a request.
 3. DEALLOCATE CIDR — release an assigned subnet back to the pool (requires reason).
-4. UPDATE STATUS — change request status (Hub Integration In Progress, Hub Integrated).
-5. PEER with Hub — create VNET peering with default settings or custom.
-6. CREATE UDR — create a new route table, add routes, list spoke subnets, assign UDR.
-7. FIREWALL RULES — add Application Rule (HTTP/HTTPS only) or Network Rule.
-8. SEND NOTIFICATIONS — send custom Teams messages.
+4. PEER with Hub — create VNET peering with default settings or custom.
+5. CREATE UDR — create a new route table, add routes, list spoke subnets, assign UDR.
+6. FIREWALL RULES — add Application Rule (HTTP/HTTPS FQDNs only) or Network Rule.
+7. SEND NOTIFICATIONS — send custom Teams messages.
+
+PLATFORM RULES (IMPORTANT — the platform enforces these; work with them):
+- STATUSES ADVANCE AUTOMATICALLY from completed portal actions. Do not change
+  statuses manually except when the admin explicitly insists (update_request_status
+  exists but is a last resort; terminal cancel/reject should be done from the
+  request page, which also auto-reverts deployed changes).
+- NOTHING IS OVERWRITTEN OR DELETED SILENTLY. When a tool returns
+  conflict:true, it includes the EXISTING configuration (existing_rule /
+  existing_route / existing_vnet / existing_peerings / existing_route_table).
+  You MUST show that state to the admin and ask how to proceed:
+  (a) update/overwrite → re-call the tool with on_conflict='replace'
+      (or 'keep' to reuse an existing route table) ONLY after explicit
+      confirmation; (b) keep the existing configuration → do NOT re-call the
+      tool, just tell the admin the step can be completed from the request
+      page with "proceed without updating"; (c) cancel.
+- EVERY mutation you perform is recorded in the change ledger with its
+  before-state and can be restored later from /admin/changes ("Changes" in
+  the nav). Mention this when the admin worries about a change.
+- DRY-RUN: when dry-run mode is on (Settings → Safety), your Azure calls are
+  simulated — say so in your replies when results contain [dry-run].
+- Complex per-request flows (decommission steps, NMO ZPA's 5 steps, firewall
+  request apply with coverage checks) are best run from the request detail
+  page, which fetches current state before each update — point the admin
+  there rather than improvising those flows with raw tools.
 
 CIDR ASSIGNMENT WORKFLOW (STRICTLY FOLLOW THIS):
 - Step 1: Call find_available_subnets to get the list of available CIDRs.
@@ -48,25 +74,28 @@ CIDR DEALLOCATION:
 - Always ask for a reason before deallocating.
 - Status will revert to CIDR_REQUESTED so the request can be re-assigned.
 
-WORKFLOW:
-- Step 2: Admin assigns CIDR → use assign_cidr_to_request → status becomes CIDR_ASSIGNED
-- Step 4a: Change status to HUB_INTEGRATION_IN_PROGRESS → notifies requester
-- Step 4b: Run hub integration tasks (peer, UDR, firewall) → change to HUB_INTEGRATED
-
 PEERING GUIDANCE:
 - Always ask: "Use default peering settings or specify custom?"
-- Default settings come from env vars — show them to admin before applying.
-- Custom: ask for each setting individually.
+- Default settings come from configuration — show them to admin before applying.
+- Peering names default to the naming templates; the request page allows
+  editing them before deployment.
 
 UDR GUIDANCE:
-- First create the route table, add required routes (always add the spoke CIDR route to hub firewall as next hop).
-- Then list spoke subnets and ask admin which subnet(s) to assign the UDR to.
+- First create the route table, add required routes (always add the spoke CIDR
+  route to hub firewall as next hop). Route-prefix conflicts follow the
+  conflict rules above.
+- Then list spoke subnets and ask admin which subnet(s) to assign the UDR to —
+  the admin may exclude subnets; replaced associations are recorded and revertible.
 
 FIREWALL RULES:
 - Ask: Application Rule or Network Rule?
-- Application Rule: only HTTP/HTTPS destinations — validate this strictly.
+- Application Rule: FQDN destinations ONLY (e.g. *.example.com) — never IPs.
 - Network Rule: any protocol, IP destinations.
-- Always confirm the rule collection group (show default from env).
+- Azure forbids mixing network and application rules in one collection.
+- Always confirm the rule collection group & collection (show default from config).
+- If a rule name already exists you'll get conflict:true with its definition —
+  follow the conflict rules above (modifications go via the request page or
+  with explicit admin confirmation).
 
 Azure environment:
 - Hub VNET: {hub_vnet} (RG: {hub_rg}, Sub: {hub_sub})
@@ -220,6 +249,8 @@ TOOLS_OPENAI = [
                     "allow_forwarded_traffic":  {"type": "boolean"},
                     "allow_gateway_transit":    {"type": "boolean"},
                     "use_remote_gateways":      {"type": "boolean"},
+                    "on_conflict":              {"type": "string", "enum": ["replace"],
+                                                 "description": "Only after the admin explicitly confirmed overwriting an existing peering (a previous call returned conflict:true)."},
                 },
                 "required": ["spoke_subscription_id", "spoke_resource_group", "spoke_vnet_name", "spoke_address_space"],
             },
@@ -238,6 +269,8 @@ TOOLS_OPENAI = [
                     "location":        {"type": "string", "description": "Azure region. Uses DEFAULT_AZURE_REGION if omitted."},
                     "subscription_id": {"type": "string", "description": "Uses spoke sub if omitted."},
                     "disable_bgp_route_propagation": {"type": "boolean", "default": True},
+                    "on_conflict":     {"type": "string", "enum": ["keep"],
+                                        "description": "'keep' reuses an existing table as-is (only after the admin confirmed; a previous call returned conflict:true with its routes)."},
                 },
                 "required": ["name", "resource_group"],
             },
@@ -258,6 +291,8 @@ TOOLS_OPENAI = [
                     "next_hop_type":    {"type": "string", "description": "VirtualAppliance | VnetLocal | Internet | None"},
                     "next_hop_ip":      {"type": "string"},
                     "subscription_id":  {"type": "string"},
+                    "on_conflict":      {"type": "string", "enum": ["replace"],
+                                         "description": "Only after the admin explicitly confirmed updating a conflicting existing route (a previous call returned conflict:true with its definition)."},
                 },
                 "required": ["route_table_name", "resource_group", "route_name", "address_prefix", "next_hop_type"],
             },
@@ -372,6 +407,37 @@ TOOLS_ANTHROPIC = [
 
 # ── Tool executors ─────────────────────────────────────────────────────────
 
+def _run_azure_tool(name: str, fn, inputs: dict) -> str:
+    """Run a mutating Azure tool for the agent with the same audit + change-ledger
+    recording the form actions get. Conflicts pass through to the model so it can
+    show the existing state and ask the admin how to proceed."""
+    res = fn(**inputs)
+    try:
+        import changes
+        actor = _actor()
+        if isinstance(res, dict):
+            ch = res.get("change")
+            if res.get("success") and ch and not res.get("dry_run"):
+                changes.record(action=f"agent:{name}", actor=actor,
+                               target=ch.get("target", ""),
+                               summary=str(res.get("message", ""))[:300],
+                               before=ch.get("before"), after=ch.get("after"),
+                               revert_op=ch.get("revert_op"),
+                               revert_params=ch.get("revert_params"))
+            outcome = ("dry-run" if res.get("dry_run") else
+                       "ok" if res.get("success") else
+                       "conflict" if res.get("conflict") else "FAILED")
+            audit.record("azure_action", actor=actor, actor_role="agent",
+                         summary=f"Agent Azure tool '{name}' — {outcome}",
+                         data={"action": f"agent:{name}", "success": bool(res.get("success")),
+                               "dry_run": bool(res.get("dry_run")),
+                               "kept": bool(res.get("kept_existing") or res.get("replaced_existing")),
+                               "message": str(res.get("message", ""))[:400]})
+    except Exception:
+        pass
+    return json.dumps(res)
+
+
 def _execute_tool(name: str, inputs: dict) -> str:
     try:
         if name == "list_requests":
@@ -391,19 +457,19 @@ def _execute_tool(name: str, inputs: dict) -> str:
         elif name == "get_peering_defaults":
             return json.dumps(azure_tools.get_peering_defaults())
         elif name == "peer_hub_vnet":
-            return json.dumps(azure_tools.peer_hub_vnet(**inputs))
+            return _run_azure_tool(name, azure_tools.peer_hub_vnet, inputs)
         elif name == "create_route_table":
-            return json.dumps(azure_tools.create_route_table(**inputs))
+            return _run_azure_tool(name, azure_tools.create_route_table, inputs)
         elif name == "add_route_to_udr":
-            return json.dumps(azure_tools.add_route_to_table(**inputs))
+            return _run_azure_tool(name, azure_tools.add_route_to_table, inputs)
         elif name == "list_spoke_subnets":
             return json.dumps(azure_tools.list_vnet_subnets(**inputs))
         elif name == "assign_udr_to_subnet":
-            return json.dumps(azure_tools.assign_route_table_to_subnet(**inputs))
+            return _run_azure_tool(name, azure_tools.assign_route_table_to_subnet, inputs)
         elif name == "add_firewall_network_rule":
-            return json.dumps(azure_tools.add_firewall_network_rule(**inputs))
+            return _run_azure_tool(name, azure_tools.add_firewall_network_rule, inputs)
         elif name == "add_firewall_application_rule":
-            return json.dumps(azure_tools.add_firewall_application_rule(**inputs))
+            return _run_azure_tool(name, azure_tools.add_firewall_application_rule, inputs)
         elif name == "send_notification":
             ok = notifications.notify_custom(
                 title=inputs.get("title", "Admin Notification"),
@@ -724,8 +790,13 @@ def _get_client():
     if provider == "anthropic":
         import anthropic
         _client = anthropic.Anthropic(api_key=cfg.ANTHROPIC_API_KEY)
-    elif provider == "openai":
+    elif provider in ("openai", "byom"):
+        # "byom" = bring your own model — any OpenAI-compatible endpoint
+        # (Ollama, vLLM, LM Studio, on-premise gateways).
         from openai import AzureOpenAI, OpenAI
+        if provider == "byom" and not cfg.OPENAI_BASE_URL:
+            raise RuntimeError("Bring-your-own-model needs an endpoint URL — "
+                               "set it in Settings → AI Agent / LLM.")
         if cfg.OPENAI_BASE_URL and "azure.com" in cfg.OPENAI_BASE_URL:
             _client = AzureOpenAI(azure_endpoint=cfg.OPENAI_BASE_URL, api_key=cfg.OPENAI_API_KEY, api_version=cfg.OPENAI_API_VERSION)
         else:
