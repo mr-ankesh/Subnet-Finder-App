@@ -3,7 +3,9 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# Generous timeout + retries: the Azure SDK / pandas wheels are large and
+# slow mirrors otherwise fail the build with read timeouts.
+RUN pip install --no-cache-dir --timeout 120 --retries 5 --prefix=/install -r requirements.txt
 
 # ── Runtime stage ─────────────────────────────────────────────────────
 FROM python:3.11-slim

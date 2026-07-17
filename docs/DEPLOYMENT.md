@@ -106,9 +106,16 @@ Log in at `/admin/login`, then:
    allocator would hand out ranges that are already in use. Imports are
    validated (CIDR, pool membership, overlaps) and audited.
 2. Open **Settings**:
-   - **Azure Credentials** → fill in / test connection.
-   - **Hub & Subscriptions, Firewall, Routing** → your hub topology.
-   - **AI Agent / LLM** → provider, model, API key (stored encrypted).
+   - **Azure Credentials** → fill in / test connection (or Managed Identity).
+   - **Hub & Subscriptions** → hub topology + the **private DNS zones
+     resource group** (needed by DNS request availability checks).
+   - **Firewall** → policy/RCG + define the rule collection groups &
+     collections the admins will pick from when processing requests.
+   - **Routing / UDRs** → hub route tables + spoke default routes.
+   - **ZPA NMO Integration** → NMO route table, connector subnet, NSG and
+     firewall allow/deny rule names (needed by NMO routing requests).
+   - **AI Agent / LLM** → pick ONE provider (OpenAI / Anthropic / bring
+     your own on-premise model) and fill only its fields.
    - **Safety** → keep **Dry-run ON** until you've verified everything.
 
 Every setting resolves live: DB override → env var → default.
