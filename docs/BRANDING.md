@@ -13,7 +13,7 @@ without copying styles.
 | `static/css/style.css` | The original component layout (untouched structure). |
 | `static/css/animations.css` | All keyframes (`image_zoom`, `infinite-rotate`, `floaty`, `fadeInUp`, `lineReveal`, `gradientFlow`, `pulseGlow`, `borderBeam`, `auroraDrift`, ripple/shake/menu-flip) + `prefers-reduced-motion` kill-switch. |
 | `static/css/brand.css` | Brand overrides per component: nav, buttons, glass cards + border-beam, status timeline, history feed, tables, forms, hero video, loader, cursor, ambience. Loaded last. |
-| `static/js/brand.js` | Runtime: page loader, custom cursor, Lenis smooth scroll, GSAP/ScrollTrigger reveals, tsParticles network ambience, animated counters, button ripple, nav 3D flip, confetti-on-complete, scroll cue. Every feature no-ops if its vendor script is missing. |
+| `static/js/brand.js` | Runtime: page loader, card hover-spotlight, Lenis smooth scroll, GSAP/ScrollTrigger reveals, tsParticles network ambience, animated counters, button ripple, nav 3D flip, confetti-on-complete, scroll cue. Every feature no-ops if its vendor script is missing. |
 | `static/brand.mp4` | Hero video (autoplay/muted/loop, poster fallback = `background.jpg`). |
 
 > Note: the brief referenced React components (`.tsx`, Framer Motion,
@@ -76,7 +76,7 @@ H5 24/700 · H6 (eyebrow) = `.p-eyebrow` class (IBM Plex Mono, uppercase,
 ## Don'ts
 
 - Don't hard-code hex colors or fonts in templates — use the tokens.
-- Don't add new full-screen loaders/cursors — they're global singletons.
+- Don't add new full-screen loaders or floating cursors — the loader is a global singleton and pointer effects live inside surfaces (hover spotlight).
 - Don't animate `width/height/top/left` — transforms only.
 - Keep functionality changes out of the brand layer: `brand.css`/`brand.js`
   must remain safe to delete without breaking any feature.

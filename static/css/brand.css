@@ -58,19 +58,20 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
   transition: transform .4s ease;
 }
 
-/* ── Custom cursor — outline ring only, never obscures content ── */
-#pCursor {
-  position: fixed; top: 0; left: 0; z-index: 99998; pointer-events: none;
-  width: 64px; height: 64px; border-radius: 50%;
-  background: rgba(21, 94, 239, 0.06);          /* barely-there tint, no blend/blur */
-  border: 1.5px solid rgba(255, 255, 255, 0.45);
-  box-shadow: 0 0 18px rgba(16, 181, 176, 0.25);
-  transform: translate(-50%, -50%) scale(0);
-  transition: transform 0.35s cubic-bezier(.22,1,.36,1);
-  will-change: transform;
+/* ── Hover spotlight — a soft gradient glow that tracks the pointer
+      INSIDE glass surfaces (replaces the floating cursor circle) ──── */
+.glass-card::after, .pool-card::after, .type-card::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  pointer-events: none; opacity: 0; z-index: 0;
+  background: radial-gradient(320px circle at var(--spot-x, 50%) var(--spot-y, 50%),
+              rgba(21, 94, 239, 0.14), rgba(16, 181, 176, 0.07) 40%, transparent 68%);
+  transition: opacity .35s ease;
 }
-#pCursor.on { transform: translate(-50%, -50%) scale(1); }
-@media (hover: none) { #pCursor { display: none; } }
+.glass-card:hover::after, .pool-card:hover::after, .type-card:hover::after { opacity: 1; }
+.pool-card, .type-card { position: relative; }
+@media (hover: none) {
+  .glass-card::after, .pool-card::after, .type-card::after { display: none; }
+}
 
 /* ── Header / nav ─────────────────────────────────────────── */
 #mainNav {

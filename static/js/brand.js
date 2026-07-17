@@ -40,25 +40,15 @@
     } catch (e) { /* non-fatal */ }
   }
 
-  /* ── Custom cursor ───────────────────────────────────────── */
-  if (!touch) {
-    var cur = document.createElement("div");
-    cur.id = "pCursor";
-    document.body.appendChild(cur);
-    var cx = -200, cy = -200, tx = cx, ty = cy;
-    document.addEventListener("mousemove", function (e) { tx = e.clientX; ty = e.clientY; });
-    (function follow() {
-      cx += (tx - cx) * 0.16; cy += (ty - cy) * 0.16;
-      cur.style.left = cx + "px"; cur.style.top = cy + "px";
-      requestAnimationFrame(follow);
-    })();
-    var HOT = "a, button, .btn, input, select, textarea, .pool-card, .type-card, .settings-tab";
-    document.addEventListener("mouseover", function (e) {
-      if (e.target.closest(HOT)) cur.classList.add("on");
-    });
-    document.addEventListener("mouseout", function (e) {
-      if (e.target.closest(HOT)) cur.classList.remove("on");
-    });
+  /* ── Hover spotlight: gradient glow tracks the pointer inside cards ── */
+  if (!touch && !reduced) {
+    document.addEventListener("mousemove", function (e) {
+      var card = e.target.closest(".glass-card, .pool-card, .type-card");
+      if (!card) return;
+      var rect = card.getBoundingClientRect();
+      card.style.setProperty("--spot-x", (e.clientX - rect.left) + "px");
+      card.style.setProperty("--spot-y", (e.clientY - rect.top) + "px");
+    }, { passive: true });
   }
 
   /* ── Nav: scrolled state + 3D label flip ─────────────────── */
