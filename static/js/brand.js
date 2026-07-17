@@ -30,15 +30,11 @@
     }
   }
 
-  /* ── Smooth scrolling (Lenis) ────────────────────────────── */
-  if (!reduced && !touch && window.Lenis) {
-    try {
-      var lenis = new Lenis({ duration: 1.1, smoothWheel: true });
-      function raf(t) { lenis.raf(t); requestAnimationFrame(raf); }
-      requestAnimationFrame(raf);
-      window.__lenis = lenis;
-    } catch (e) { /* non-fatal */ }
-  }
+  /* ── Smooth scrolling ────────────────────────────────────────
+     Lenis (JS-driven scroll) was the main cause of "heavy" scrolling,
+     especially on AKS/remote where every wheel event ran through rAF.
+     Native scrolling is smoother and free — CSS scroll-behavior handles
+     the anchor jumps. Lenis intentionally not initialised. */
 
   /* ── Hover spotlight: gradient glow tracks the pointer inside cards ── */
   if (!touch && !reduced) {
@@ -88,35 +84,24 @@
     setTimeout(function () { r.remove(); }, 650);
   });
 
-  /* ── Scroll reveals (GSAP + ScrollTrigger) ───────────────── */
-  if (!reduced && window.gsap && window.ScrollTrigger) {
-    gsap.registerPlugin(ScrollTrigger);
-    if (window.__lenis) window.__lenis.on("scroll", ScrollTrigger.update);
+  /* ── Scroll reveals (lightweight IntersectionObserver) ───────
+     Cards fade+rise once as they enter the viewport. No scroll-linked
+     animation, no GSAP ScrollTrigger tick on every scroll event, and no
+     hero parallax (scroll-linked transforms were a big jank source). */
+  if (!reduced && "IntersectionObserver" in window) {
     var cards = document.querySelectorAll(".glass-card, .pool-card, .type-card");
     cards.forEach(function (el) { el.classList.add("reveal-pending"); });
-    ScrollTrigger.batch(".reveal-pending", {
-      start: "top 92%",
-      once: true,
-      onEnter: function (batch) {
-        gsap.to(batch, {
-          opacity: 1, y: 0, duration: 0.8, stagger: 0.08,
-          ease: "power3.out", overwrite: true,
-          onComplete: function () {
-            batch.forEach(function (el) { el.classList.remove("reveal-pending");
-                                          el.style.transform = ""; });
-          }
-        });
-      }
-    });
-    // Hero parallax drift
-    document.querySelectorAll(".p-hero-video, .hero-bg").forEach(function (media) {
-      var host = media.closest("section, .page-hero, .alloc-page-header, .hero-section");
-      if (!host) return;
-      gsap.to(media, {
-        yPercent: 12, ease: "none",
-        scrollTrigger: { trigger: host, start: "top top", end: "bottom top", scrub: true }
+    var io = new IntersectionObserver(function (entries, obs) {
+      var n = 0;
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        var el = en.target;
+        el.style.transitionDelay = (n++ * 60) + "ms";
+        el.classList.add("revealed");
+        obs.unobserve(el);
       });
-    });
+    }, { rootMargin: "0px 0px -8% 0px" });
+    cards.forEach(function (el) { io.observe(el); });
   } else {
     document.querySelectorAll(".reveal-pending").forEach(function (el) {
       el.classList.remove("reveal-pending");
@@ -137,48 +122,68 @@
     requestAnimationFrame(step);
   });
 
-  /* ── tsParticles: network-node ambience ──────────────────── */
-  function particleOptions(density, opacity) {
+  /* ── tsParticles: network-node ambience ──────────────────────
+     Hero only, and only on capable devices. Light settings (low count,
+     30fps cap, no retina multiplier). The in-card particle canvas is
+     dropped — it repainted behind text and cost more than it added. */
+  function particleOptions() {
     return {
-      fpsLimit: 45,
-      detectRetina: true,
+      fpsLimit: 30,
+      detectRetina: false,
       fullScreen: { enable: false },
       particles: {
-        number: { value: density, density: { enable: true } },
-        color: { value: ["#10B5B0", "#155EEF", "#7EDB56"] },
-        links: { enable: true, color: "#10B5B0", distance: 140, opacity: opacity * 0.9, width: 1 },
-        move: { enable: true, speed: 0.55 },
-        opacity: { value: opacity },
-        size: { value: { min: 1, max: 2.4 } }
+        number: { value: 28, density: { enable: true, area: 900 } },
+        color: { value: ["#10B5B0", "#155EEF"] },
+        links: { enable: true, color: "#10B5B0", distance: 150, opacity: 0.28, width: 1 },
+        move: { enable: true, speed: 0.45 },
+        opacity: { value: 0.32 },
+        size: { value: { min: 1, max: 2 } }
       }
     };
   }
   function initParticles() {
-    if (reduced || !window.tsParticles) return;
-    document.querySelectorAll(".p-particles, .p-particles-card").forEach(function (el, i) {
-      if (!el.id) el.id = "pParticles" + i;
-      var dense = el.classList.contains("p-particles") ? 46 : 26;
-      var op = el.classList.contains("p-particles") ? 0.35 : 0.22;
-      // Lazy: only start when visible
-      var io = new IntersectionObserver(function (entries, obs) {
-        entries.forEach(function (en) {
-          if (en.isIntersecting) {
-            tsParticles.load({ id: el.id, options: particleOptions(dense, op) });
-            obs.disconnect();
-          }
-        });
-      }, { rootMargin: "120px" });
-      io.observe(el);
-    });
+    // Skip particles on low-core / small screens where they hurt most.
+    var weak = (navigator.hardwareConcurrency || 4) <= 4 || window.innerWidth < 900;
+    if (reduced || touch || weak || !window.tsParticles) return;
+    var el = document.querySelector(".p-particles");
+    if (!el) return;
+    if (!el.id) el.id = "pParticlesHero";
+    var io = new IntersectionObserver(function (entries, obs) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) {
+          tsParticles.load({ id: el.id, options: particleOptions() });
+          obs.disconnect();
+        }
+      });
+    }, { rootMargin: "80px" });
+    io.observe(el);
   }
   if (document.readyState === "complete") initParticles();
   else window.addEventListener("load", initParticles);
 
-  /* ── Hero video: light on mobile ─────────────────────────── */
-  document.querySelectorAll(".p-hero-video").forEach(function (v) {
-    if (touch) { v.preload = "metadata"; }
-    else { v.play && v.play().catch(function () {}); }
-  });
+  /* ── Hero video: play only when visible & on capable devices ──
+     A looping video is continuous GPU compositing. We pause it once it
+     scrolls out of view, and skip it entirely on touch / low-core /
+     data-saver — the poster image keeps the hero meaningful. */
+  (function () {
+    var weakVid = touch || (navigator.hardwareConcurrency || 4) <= 4 ||
+                  (navigator.connection && navigator.connection.saveData);
+    document.querySelectorAll(".p-hero-video").forEach(function (v) {
+      if (weakVid) {
+        v.removeAttribute("autoplay");
+        v.preload = "none";
+        try { v.pause(); } catch (e) {}
+        return;
+      }
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+          if (en.isIntersecting) { v.play && v.play().catch(function () {}); }
+          else { try { v.pause(); } catch (e) {} }
+        });
+      }, { threshold: 0.05 });
+      io.observe(v);
+    });
+  })();
 
   /* ── Confetti when a request lands on a completed status ─── */
   function fireConfetti() {
@@ -203,10 +208,8 @@
   document.addEventListener("click", function (e) {
     var cue = e.target.closest(".p-scroll-cue");
     if (!cue) return;
-    var target = document.querySelector(cue.dataset.target || "main, .page-wrapper");
     var y = cue.closest("section, .page-hero, .hero-section");
     var top = y ? y.offsetTop + y.offsetHeight - 60 : window.innerHeight;
-    if (window.__lenis) window.__lenis.scrollTo(top);
-    else window.scrollTo({ top: top, behavior: reduced ? "auto" : "smooth" });
+    window.scrollTo({ top: top, behavior: reduced ? "auto" : "smooth" });
   });
 })();

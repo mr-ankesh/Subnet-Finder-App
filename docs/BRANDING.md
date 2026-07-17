@@ -64,13 +64,28 @@ H5 24/700 · H6 (eyebrow) = `.p-eyebrow` class (IBM Plex Mono, uppercase,
 
 ## Performance & accessibility contract
 
-- `prefers-reduced-motion: reduce` disables parallax, zoom, smooth scroll,
-  particles, confetti and reveals — content is always reachable.
-- All motion is transform/opacity (GPU) only; `will-change` used sparingly.
-- Video: full autoplay on desktop, `preload=metadata` on touch devices;
-  poster image fallback keeps the hero meaningful without the video.
-- Particles/Lenis/GSAP/confetti load as `defer` CDN scripts; `brand.js`
-  degrades gracefully if any of them are blocked.
+Performance is a first-class constraint — the brand layer must never make
+scrolling feel heavy (it did initially on AKS; these rules are the fix):
+
+- **No per-card `backdrop-filter`.** Dozens of live blur samplers tanked
+  scroll FPS. Cards use a slightly more opaque solid fill instead. The only
+  backdrop blur is the single fixed nav bar.
+- **No animated full-viewport blur.** The aurora is a static radial-gradient
+  layer (no `filter: blur`, no keyframe) — radial falloff reads as soft glow
+  for free.
+- **Native scrolling** (CSS `scroll-behavior`), not Lenis. JS-driven scroll
+  was the biggest "slow" contributor on remote deployments.
+- **Reveals via IntersectionObserver + CSS transition**, not GSAP
+  ScrollTrigger. No scroll-linked animation, no per-scroll-event tick, no
+  hero parallax.
+- **Particles**: hero only, ≤28 nodes, 30fps cap, and skipped on
+  touch / ≤4-core / <900px devices. In-card particles removed.
+- **Hero video**: paused when scrolled out of view; skipped entirely on
+  touch / low-core / data-saver (poster keeps the hero meaningful).
+- Only two small libs load (`tsParticles slim`, `canvas-confetti`), both
+  `defer`; `brand.js` degrades gracefully if either is blocked.
+- `prefers-reduced-motion: reduce` disables the remaining looped animation.
+- All motion is transform/opacity (GPU) only; `will-change` avoided.
 - Text over video keeps WCAG AA via the dark overlay + text-shadow.
 
 ## Don'ts

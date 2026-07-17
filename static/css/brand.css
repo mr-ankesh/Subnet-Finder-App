@@ -12,27 +12,24 @@ body {
 }
 h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
 
-/* Aurora ambience (fixed, behind everything) */
+/* Aurora ambience — STATIC soft gradients (no filter blur, no animation:
+   an animated blur(120px) full-viewport layer was repainting constantly
+   and made scrolling feel heavy). Radial falloff looks blurred for free. */
 .p-aurora {
-  position: fixed; inset: -20%;
+  position: fixed; inset: 0;
   z-index: -2; pointer-events: none;
   background:
-    radial-gradient(600px 420px at 22% 30%, rgba(7, 0, 196, 0.28), transparent 60%),
-    radial-gradient(520px 380px at 75% 18%, rgba(16, 181, 176, 0.16), transparent 60%),
-    radial-gradient(640px 460px at 62% 82%, rgba(21, 94, 239, 0.14), transparent 65%);
-  filter: blur(120px);
-  animation: auroraDrift 20s ease-in-out infinite;
-  will-change: transform;
+    radial-gradient(55% 40% at 20% 25%, rgba(7, 0, 196, 0.16), transparent 70%),
+    radial-gradient(45% 35% at 78% 15%, rgba(16, 181, 176, 0.10), transparent 70%),
+    radial-gradient(60% 45% at 60% 85%, rgba(21, 94, 239, 0.09), transparent 72%);
 }
-/* Faint procedural data-pixel texture */
+/* Faint procedural data-pixel texture (static, cheap) */
 .p-noise {
-  position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.05;
+  position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.04;
   background-image:
     repeating-linear-gradient(0deg,  transparent 0 7px, rgba(126, 219, 86, .5) 7px 8px),
     repeating-linear-gradient(90deg, transparent 0 7px, rgba(16, 181, 176, .5) 7px 8px);
   background-size: 160px 160px;
-  mask-image: radial-gradient(80% 60% at 50% 30%, black, transparent);
-  -webkit-mask-image: radial-gradient(80% 60% at 50% 30%, black, transparent);
 }
 
 /* ── Page loader ──────────────────────────────────────────── */
@@ -74,12 +71,13 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
 }
 
 /* ── Header / nav ─────────────────────────────────────────── */
+/* One backdrop-filter here is affordable (single fixed element); it stays. */
 #mainNav {
-  background: rgba(11, 15, 20, 0.35);
+  background: rgba(11, 15, 20, 0.72);
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   transition: background .4s ease;
 }
-#mainNav.scrolled { background: rgba(0, 0, 0, 0.6); }
+#mainNav.scrolled { background: rgba(8, 11, 15, 0.9); }
 .nav-link {
   font-family: var(--p-font-body);
   text-transform: uppercase;
@@ -157,24 +155,24 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
   border-color: var(--border) !important; letter-spacing: 1.4px; }
 
 /* ── Glass cards + border-beam hover ──────────────────────── */
+/* No per-card backdrop-filter: dozens of blur samplers killed scroll
+   performance. A slightly more opaque fill keeps the glass look. */
 .glass-card {
-  background: var(--p-glass-dark) !important;
+  background: rgba(17, 21, 28, 0.85) !important;
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
   border-radius: var(--p-radius-card) !important;
-  backdrop-filter: blur(var(--p-blur)); -webkit-backdrop-filter: blur(var(--p-blur));
   box-shadow: var(--p-shadow-card-dark) !important;
   position: relative;
 }
-.glass-card::before {           /* border-beam, revealed on hover */
+.glass-card::before {           /* gradient border, revealed on hover (static — no per-frame repaint) */
   content: ""; position: absolute; inset: -1px; border-radius: inherit;
   padding: 1px; pointer-events: none; opacity: 0;
-  background: conic-gradient(from var(--p-beam-angle, 0deg),
-              transparent 0 70%, #10B5B0 82%, #7EDB56 92%, transparent 100%);
+  background: linear-gradient(135deg, #155EEF, #10B5B0 55%, #7EDB56);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude;
   transition: opacity .4s ease;
 }
-.glass-card:hover::before { opacity: 1; animation: borderBeam 4s linear infinite; }
+.glass-card:hover::before { opacity: .8; }
 .card-header-bar {
   font-family: var(--p-font-mono) !important;
   text-transform: uppercase; letter-spacing: 2.6px !important;
@@ -203,14 +201,12 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
 .timeline-step.current .timeline-dot {
   background: var(--p-grad-v) !important;
   border-color: transparent !important; color: #fff !important;
-  animation: pulseGlow 2.2s ease-in-out infinite;
+  box-shadow: 0 0 0 4px rgba(21, 94, 239, 0.18), 0 0 22px rgba(16, 181, 176, 0.55);
 }
 .timeline-step.current .timeline-dot i { animation: fadeInUp .5s cubic-bezier(.34,1.56,.64,1) both; }
 .timeline-line { background: rgba(255,255,255,.10) !important; }
 .timeline-line.done {
-  background: linear-gradient(90deg, #0700C4, #10B5B0, #7EDB56, #0700C4) !important;
-  background-size: 200% 100% !important;
-  animation: gradientFlow 3s linear infinite;
+  background: linear-gradient(90deg, #0700C4, #10B5B0, #7EDB56) !important;
 }
 .timeline-label { font-family: var(--p-font-mono) !important; letter-spacing: 1.6px !important; }
 
@@ -250,10 +246,8 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
 }
 
 /* ── Hero (video variant) ─────────────────────────────────── */
-.p-hero-video, .hero-bg, .alloc-page-bg {
-  animation: image_zoom 30s ease-in-out infinite;
-  will-change: transform;
-}
+/* (No continuous zoom on hero media — transforming a playing video every
+   frame is expensive compositing; the video provides the motion itself.) */
 .p-hero-video {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: cover; z-index: 0;
@@ -287,23 +281,14 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
 }
 .p-scroll-cue:hover { transform: scale(1.1); }
 
-/* Particles containers */
-.p-particles { position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: .8; }
-.p-particles-card { position: absolute; inset: 0; z-index: 0; pointer-events: none;
-  border-radius: inherit; overflow: hidden; }
-.glass-card > .card-header-bar, .glass-card > .card-body-pad,
-.glass-card > .card-header-custom, .glass-card > .card-body-custom {
-  position: relative; z-index: 1;
-}
+/* Particles container (hero only) */
+.p-particles { position: absolute; inset: 0; z-index: 1; pointer-events: none; opacity: .7; }
 
 /* Footer eyebrow-ify */
 .footer-copy { font-family: var(--p-font-mono); letter-spacing: 1.6px; font-size: 10.5px;
   text-transform: uppercase; }
 
-/* Reduced motion: stop ambience & zooms */
+/* Reduced motion: stop the remaining looped animation (scroll cue bob) */
 @media (prefers-reduced-motion: reduce) {
-  .p-aurora, .p-hero-video, .hero-bg, .alloc-page-bg,
-  .timeline-line.done, .timeline-step.current .timeline-dot,
   .p-scroll-cue { animation: none !important; }
-  .glass-card:hover::before { animation: none !important; }
 }
