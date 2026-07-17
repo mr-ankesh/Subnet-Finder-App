@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Admin Guide | Network Copilot{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <div class="p-eyebrow" style="margin-bottom:10px;">Admin Guide</div>
+    <h1 class="alloc-page-title">Operating Network Copilot</h1>
+    <p class="alloc-page-sub">How requests are processed, the safety model, and what every screen does — for the network operations team.</p>
+  </div>
+</div>
+
+<div style="max-width:960px;margin:0 auto;padding:28px 24px 60px;">
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-diagram-2"></i> How it works, in one paragraph</div>
+    <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
+      Every Azure change is an <strong>imperative Azure SDK call</strong> driven by a request's data — no templates or Terraform state. You review a request, click the action(s) it needs, and the tool builds the parameters and calls Azure. Everything is <strong>guarded, audited and reversible</strong>: dry-run simulates changes, nothing is overwritten or deleted without showing you the current state first, and every mutation is recorded in the change ledger so it can be restored.
+    </div>
+  </div>
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-list-check"></i> First-time setup (in order)</div>
+    <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
+      <ol style="margin:0;padding-left:20px;">
+        <li><strong>Import the subnet inventory</strong> (<a href="{{ url_for('admin_inventory') }}" style="color:#60a5fa;">Import Inventory</a>) — load your current allocations first, or the allocator may hand out ranges already in use.</li>
+        <li><strong>Settings → Azure Credentials</strong> — service principal or managed identity; use <em>Test Connection</em>.</li>
+        <li><strong>Settings → Hub, Firewall, Routing, ZPA NMO, DNS zones RG</strong> — your topology and the rule collection groups/collections admins will pick from.</li>
+        <li><strong>Settings → AI Agent / LLM</strong> — choose one provider (OpenAI / Anthropic / on-prem) and fill only its fields.</li>
+        <li><strong>Settings → Safety</strong> — keep <strong>Dry-run ON</strong> until you've verified everything end-to-end.</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-gear-wide-connected"></i> Processing requests</div>
+    <div class="card-body-pad" style="font-size:13.5px;color:var(--text-dim);line-height:1.7;">
+      <p style="margin:0 0 10px;">Open a request to see a panel with exactly the actions that request needs. Key behaviours:</p>
+      <ul style="margin:0;padding-left:20px;">
+        <li><strong>Status advances automatically</strong> from the actions you complete — there's no manual status dropdown. A "Mark Completed — done manually" escape hatch exists (with a required note) for work done outside the portal.</li>
+        <li><strong>Done actions</strong> show as disabled "✓ Done" buttons and can't be re-clicked.</li>
+        <li><strong>New VNET / Hub Integration</strong> — assign a CIDR, deploy the VNET (carves the requested subnets), peer to hub (peering names are shown and editable), add gateway/ZPA routes, apply the requested internet action, and optionally create a spoke route table (default routes + your extras) assigned to chosen subnets.</li>
+        <li><strong>Firewall requests</strong> — check the policy/rule first (a content-based coverage check tells you if the traffic is already allowed), pick the rule collection group &amp; collection, then apply add/modify/delete. Modify/delete always fetch and show the current rule before you confirm.</li>
+        <li><strong>NMO ZPA</strong> — five steps (NMO route, spoke route, NSG allow, firewall allow, firewall deny); steps 3–5 fetch and show current state before updating.</li>
+        <li><strong>DNS</strong> — fetch zone/record state, then create; if the target already exists you get edit / proceed / reject-with-comment.</li>
+        <li><strong>Decommission</strong> — a read-only Azure status check (peerings, subnets, attached devices), then remove resources, then release the CIDR.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-shield-check"></i> Safety model</div>
+    <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
+      <ul style="margin:0;padding-left:20px;">
+        <li><strong>Dry-run</strong> (Settings → Safety) simulates every mutating call — a badge shows on action panels when it's on.</li>
+        <li><strong>No silent overwrite/delete</strong> — when a rule, route, VNET, peering, zone or record already exists, you see its current state and choose to update, proceed as-is, or reject.</li>
+        <li><strong>Change ledger</strong> (<a href="{{ url_for('admin_changes') }}" style="color:#60a5fa;">Changes</a>) records every mutation with its before/after state and a revert plan — restore any change from there.</li>
+        <li><strong>Cancel / Reject</strong> shows the deployed changes it will automatically revert, and takes a comment.</li>
+        <li><strong>Audit trail</strong> (<a href="{{ url_for('admin_audit') }}" style="color:#60a5fa;">Audit</a>) records who did what, when, on which request.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <div class="card-header-bar"><i class="bi bi-compass"></i> The screens</div>
+    <div class="card-body-pad" style="font-size:13.5px;color:var(--text-dim);line-height:1.7;">
+      <ul style="margin:0;padding-left:20px;">
+        <li><strong>Home</strong> — IP pools and the allocator; import inventory.</li>
+        <li><strong>Requests</strong> — every request, filterable by type and status; open one to process it.</li>
+        <li><strong>Admin Agent</strong> — an AI assistant that can run the same operations conversationally (audited and reversible like the buttons).</li>
+        <li><strong>Audit</strong> — the who/what/when trail. <strong>Changes</strong> — the before/after ledger with per-change revert.</li>
+        <li><strong>Settings</strong> — all live config (credentials, hub, firewall, routing, DNS, ZPA NMO, LLM, notifications, authentication, safety). Changes apply immediately.</li>
+        <li><strong>Search</strong> — keyword search across requests, VNETs, subnets and the audit trail.</li>
+      </ul>
+      <div style="margin-top:16px;">
+        <a href="{{ url_for('requests_list') }}" class="btn btn-glow"><i class="bi bi-list-task me-2"></i>Go to Requests</a>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

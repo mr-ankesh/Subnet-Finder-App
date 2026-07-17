@@ -306,7 +306,8 @@ def admin_logout():
 def auth_login():
     if not oidc.enabled():
         return redirect(url_for("admin_login", local=1))
-    session["auth_next"] = request.args.get("next") or ""
+    if "next" in request.args:
+        session["auth_next"] = request.args.get("next") or ""
     try:
         return oidc.client().authorize_redirect(url_for("auth_callback", _external=True))
     except Exception as exc:
@@ -323,12 +324,22 @@ def auth_callback():
     try:
         token = oidc.client().authorize_access_token()
     except Exception as exc:
+        msg = str(exc)
+        # Stale/duplicate OAuth state (refreshed callback, a second login tab,
+        # or an expired state) surfaces as "mismatching_state / CSRF". Restart
+        # the flow once with a fresh state instead of dead-ending on the error.
+        stale_state = "state" in msg.lower() or "csrf" in msg.lower()
+        if stale_state and session.get("oidc_retries", 0) < 1:
+            session["oidc_retries"] = session.get("oidc_retries", 0) + 1
+            return redirect(url_for("auth_login"))
+        session.pop("oidc_retries", None)
         log.error("OIDC callback failed: %s", exc)
         audit.record("sso_login_failed", actor="unknown", actor_role="system",
-                     summary=f"SSO sign-in failed from {request.remote_addr}: {str(exc)[:150]}")
+                     summary=f"SSO sign-in failed from {request.remote_addr}: {msg[:150]}")
         return render_template("admin_login.html",
-                               error="SSO sign-in failed. Please try again.",
+                               error="SSO sign-in failed — please try signing in again.",
                                break_glass=True), 400
+    session.pop("oidc_retries", None)
 
     info = token.get("userinfo") or {}
     roles = oidc.roles_from_token(token)
@@ -1101,6 +1112,18 @@ def health():
 # ═══════════════════════════════════════════════════════════════════════════
 # Requester Agent (public)
 # ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/help/requester")
+@require_login
+def help_requester():
+    return render_template("help_requester.html")
+
+
+@app.route("/help/admin")
+@require_admin
+def help_admin():
+    return render_template("help_admin.html")
+
 
 @app.route("/requester")
 @require_login

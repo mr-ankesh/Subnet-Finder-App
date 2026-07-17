@@ -78,20 +78,45 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
   transition: background .4s ease;
 }
 #mainNav.scrolled { background: rgba(8, 11, 15, 0.9); }
+/* Wider container + tighter items so the admin nav (many links) fits. */
+.nav-inner { max-width: 1660px; padding: 0 26px; }
+.nav-right { gap: 10px; }
+.nav-links { gap: 1px; margin-right: .4rem; }
 .nav-link {
   font-family: var(--p-font-body);
   text-transform: uppercase;
-  font-size: 12.5px !important;
-  letter-spacing: 1.2px;
+  font-size: 11px !important;
+  letter-spacing: .35px;
+  padding: .32rem .56rem !important;
   position: relative;
   perspective: 400px;
 }
+.nav-link i { font-size: .95em; }
+.nav-search { padding: 3px 8px !important; }
+.nav-search input { width: 92px !important; font-size: .72rem !important; }
 .nav-link::after {
-  content: ""; position: absolute; left: 12px; right: 100%; bottom: 4px; height: 2px;
+  content: ""; position: absolute; left: 10px; right: 100%; bottom: 3px; height: 2px;
   background: var(--p-grad-h); background-size: 200% 100%;
   transition: right .35s cubic-bezier(.22,1,.36,1);
 }
-.nav-link:hover::after, .nav-link.active::after { right: 12px; }
+.nav-link:hover::after, .nav-link.active::after { right: 10px; }
+/* Free up width progressively before collapsing to the hamburger. */
+@media (max-width: 1420px) { .nav-clock { display: none; } }
+@media (max-width: 1200px) { .brand-sub { display: none; } }
+@media (min-width: 769px) and (max-width: 1160px) {
+  .nav-toggle { display: inline-flex; }
+  .nav-links {
+    display: none; position: absolute; top: 64px; left: 0; right: 0;
+    flex-direction: column; align-items: stretch; gap: 4px;
+    margin: 0; padding: 12px 22px 16px;
+    background: rgba(8, 11, 15, 0.97);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-links.open { display: flex; }
+  .nav-search { margin: 4px 0; }
+  .nav-search input { width: 100% !important; }
+}
 /* 3D label flip (front = white, back = brand blue) */
 .menu-3d { display: inline-block; position: relative;
   transform-style: preserve-3d; transition: transform .45s cubic-bezier(.22,1,.36,1); }

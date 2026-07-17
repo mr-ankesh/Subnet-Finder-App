@@ -30,7 +30,7 @@
 
   <nav id="mainNav">
     <div class="nav-inner">
-      <a class="brand" href="/">
+      <a class="brand" href="{{ url_for('segment_select') if is_admin else url_for('requester_page') }}">
         <img class="brand-logo"
              src="{{ url_for('static', filename='logo2.svg') }}"
              alt="Presight">
@@ -46,13 +46,14 @@
           <i class="bi bi-list"></i>
         </button>
         <nav class="nav-links" id="navLinks">
-          <a href="/" class="nav-link {% if request.endpoint == 'index' %}active{% endif %}">
+          {% if is_admin %}
+          {# Admin landing = pools/home #}
+          <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint == 'segment_select' %}active{% endif %}">
             <i class="bi bi-house"></i> Home
           </a>
           <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
-            <i class="bi bi-person"></i> Requester Portal
+            <i class="bi bi-person"></i> Portal
           </a>
-          {% if is_admin %}
           <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint and 'request' in request.endpoint %}active{% endif %}">
             <i class="bi bi-list-task"></i> Requests
           </a>
@@ -68,6 +69,9 @@
           <a href="{{ url_for('admin_settings') }}" class="nav-link {% if request.endpoint == 'admin_settings' %}active{% endif %}">
             <i class="bi bi-gear"></i> Settings
           </a>
+          <a href="{{ url_for('help_admin') }}" class="nav-link {% if request.endpoint == 'help_admin' %}active{% endif %}">
+            <i class="bi bi-book"></i> Guide
+          </a>
           <form action="{{ url_for('admin_search') }}" method="GET" class="nav-search">
             <i class="bi bi-search"></i>
             <input type="search" name="q" placeholder="Search…" value="{{ request.args.get('q', '') if request.endpoint == 'admin_search' else '' }}">
@@ -77,6 +81,10 @@
             <i class="bi bi-box-arrow-right"></i> Logout
           </a>
           {% else %}
+          {# Requester view — no Home/admin links (avoids admin-only redirects) #}
+          <a href="{{ url_for('help_requester') }}" class="nav-link {% if request.endpoint == 'help_requester' %}active{% endif %}">
+            <i class="bi bi-book"></i> Guide
+          </a>
           {% if is_authed %}
           {# SSO requester (not admin) — show identity + logout #}
           {% if sso_name %}<span class="nav-link" style="color:var(--text-muted);cursor:default;"><i class="bi bi-person-circle"></i> {{ sso_name }}</span>{% endif %}

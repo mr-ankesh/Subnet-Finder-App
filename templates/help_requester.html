@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Requester Guide | Network Copilot{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <div class="p-eyebrow" style="margin-bottom:10px;">Requester Guide</div>
+    <h1 class="alloc-page-title">How to raise a network request</h1>
+    <p class="alloc-page-sub">Everything you can ask for, what to prepare, and how to track it — via the form or the AI assistant.</p>
+  </div>
+</div>
+
+<div style="max-width:940px;margin:0 auto;padding:28px 24px 60px;">
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-info-circle"></i> The basics</div>
+    <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
+      <p style="margin:0 0 10px;">The <strong>Requester Portal</strong> is where you ask the network team for anything on the Azure hub-and-spoke network. Two ways to submit:</p>
+      <ul style="margin:0 0 10px;padding-left:20px;">
+        <li><strong>Form</strong> — pick a request type and fill the fields. Best when you know exactly what you need.</li>
+        <li><strong>AI Assistant</strong> — describe what you want in plain language; it asks for anything missing and files the request for you.</li>
+      </ul>
+      <p style="margin:0;">Every request gets a <strong>Request ID</strong> — note it down. You can check its status any time with that ID (no login needed for status lookup unless SSO is enabled).</p>
+    </div>
+  </div>
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-collection"></i> Request types &amp; what to prepare</div>
+    <div class="card-body-pad" style="font-size:13.5px;color:var(--text-dim);line-height:1.7;">
+      <dl style="display:grid;grid-template-columns:1fr;gap:14px;margin:0;">
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-diagram-3 me-1"></i>New VNET</dt>
+          <dd style="margin:4px 0 0;">A new spoke VNET / CIDR. Pick a size (/21–/28), the pool, and whether you'll deploy it yourself (we just allocate the CIDR) or the admin deploys it for you. If it needs hub integration, you'll also choose the internet access it needs (none / fully allowed / a specific network rule / a specific application rule) and how many subnets to carve.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-bricks me-1"></i>Firewall Policy</dt>
+          <dd style="margin:4px 0 0;">Add, modify or delete a firewall rule. Network rules take IP/CIDR destinations + ports (e.g. <code>TCP/443</code>); application rules take FQDNs only (e.g. <code>*.example.com</code>) with protocols like <code>https:443</code>.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-sign-turn-right me-1"></i>Hub Integration</dt>
+          <dd style="margin:4px 0 0;">Your VNET already exists and only needs hub peering. Provide its subscription, resource group, name, region and address space.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-shield-lock me-1"></i>ZPA Routing (R&amp;D / Other / NMO)</dt>
+          <dd style="margin:4px 0 0;">Make your spoke reachable via a ZPA connector. Provide your spoke VNET name, CIDR and route-table details. NMO routing also updates the NSG and firewall allow/deny lists — the admin handles all the steps.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-grid-1x2 me-1"></i>New Subnet in Existing VNET</dt>
+          <dd style="margin:4px 0 0;">Carve an additional subnet in an already-onboarded VNET — give the VNET name and the subnet size/purpose.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-globe2 me-1"></i>DNS</dt>
+          <dd style="margin:4px 0 0;">Three kinds: <strong>Add an A/CNAME record</strong> in a private zone (needs a description for the audit trail); <strong>Link your zone to the Hub</strong> (checks the hub doesn't already have it); <strong>Link a Hub zone to your VNET</strong> (checks the zone exists in the hub, then takes your VNET details). The availability check is mandatory for the link kinds.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-trash3 me-1"></i>VNET Decommission</dt>
+          <dd style="margin:4px 0 0;">Retire a spoke. You'll confirm whether it was created via this portal and whether you made manual changes — if you did, remove them first (extra subnets, NSGs, private endpoints, attached devices, peerings). The admin verifies in Azure before deleting anything.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-chat-square-text me-1"></i>Other</dt>
+          <dd style="margin:4px 0 0;">Anything that doesn't fit the above — describe it and set a priority.</dd></div>
+      </dl>
+    </div>
+  </div>
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-signpost-2"></i> After you submit</div>
+    <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
+      <ul style="margin:0;padding-left:20px;">
+        <li><strong>Track it</strong> — use <em>Check Status</em> with your Request ID. The status advances automatically as the admin completes each step.</li>
+        <li><strong>New VNET, self-deploy</strong> — once the CIDR is assigned, deploy your VNET, then mark it <em>VNET Created</em> with the details so the admin can peer it to the hub.</li>
+        <li><strong>Reminders</strong> — if a request is waiting, you can send the admin a reminder from the status view.</li>
+        <li><strong>Notifications</strong> — if you gave an email, you'll be notified on key status changes (and via Teams if configured).</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <div class="card-header-bar"><i class="bi bi-lightbulb"></i> Tips</div>
+    <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
+      <ul style="margin:0;padding-left:20px;">
+        <li>Have the Azure identifiers ready (subscription ID, resource group, VNET name) for anything the admin deploys or integrates.</li>
+        <li>Application firewall rules can only target <strong>FQDNs</strong> — use a network rule for IP destinations.</li>
+        <li>For DNS zone links, run the <strong>availability check</strong> first — the request can't be submitted until it passes.</li>
+        <li>Not sure which type? Use the <strong>AI Assistant</strong> and just describe the outcome you want.</li>
+      </ul>
+      <div style="margin-top:16px;">
+        <a href="{{ url_for('requester_page') }}" class="btn btn-glow"><i class="bi bi-arrow-right me-2"></i>Go to the Requester Portal</a>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
