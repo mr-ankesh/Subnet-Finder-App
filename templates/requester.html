@@ -528,31 +528,74 @@
                   <div class="row g-3">
                     <div class="col-md-6">
                       <label class="form-label-custom">Request Kind *</label>
-                      <select class="form-input-custom" data-detail="dns_kind">
-                        <option value="record">DNS record</option>
-                        <option value="private_zone_link">Private DNS zone link (to my VNET)</option>
+                      <select class="form-input-custom" data-detail="dns_kind" id="dns_kind" onchange="onDnsKindChange()">
+                        <option value="">— select —</option>
+                        <option value="record_add">Add A/CNAME record in a private DNS zone</option>
+                        <option value="zone_link_to_hub">Link my private DNS zone to the Hub</option>
+                        <option value="hub_zone_link_to_vnet">Link a Hub DNS zone to my VNET</option>
                       </select>
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label-custom">Zone *</label>
-                      <input type="text" class="form-input-custom" data-detail="zone" placeholder="e.g. privatelink.blob.core.windows.net">
+                      <label class="form-label-custom">Private DNS Zone *</label>
+                      <input type="text" class="form-input-custom" data-detail="zone" id="dns_zone"
+                             placeholder="e.g. contoso.internal" oninput="dnsZoneChanged()">
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label-custom">Record Type</label>
-                      <select class="form-input-custom" data-detail="record_type">
-                        <option value="A">A</option>
-                        <option value="CNAME">CNAME</option>
-                        <option value="TXT">TXT</option>
-                        <option value="other">Other</option>
-                      </select>
+
+                    <!-- kind 1: add record -->
+                    <div class="col-12" id="dnsRecordFields" style="display:none;">
+                      <div class="row g-3">
+                        <div class="col-md-3">
+                          <label class="form-label-custom">Record Type *</label>
+                          <select class="form-input-custom" data-detail="record_type">
+                            <option value="A">A (name → IP)</option>
+                            <option value="CNAME">CNAME (alias → name)</option>
+                          </select>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label-custom">Record Name *</label>
+                          <input type="text" class="form-input-custom" data-detail="record_name" placeholder="e.g. mystorage">
+                        </div>
+                        <div class="col-md-5">
+                          <label class="form-label-custom">Record Value *</label>
+                          <input type="text" class="form-input-custom" data-detail="record_value"
+                                 placeholder="A: e.g. 10.110.51.10 · CNAME: e.g. app.contoso.internal">
+                        </div>
+                        <div class="col-12">
+                          <label class="form-label-custom">Description *</label>
+                          <input type="text" class="form-input-custom" data-detail="record_description"
+                                 placeholder="What is this record for? (kept for trace/audit)">
+                        </div>
+                      </div>
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label-custom">Record Name</label>
-                      <input type="text" class="form-input-custom" data-detail="record_name" placeholder="e.g. mystorage">
+
+                    <!-- kinds 2 & 3: mandatory hub availability check -->
+                    <div class="col-12" id="dnsCheckBlock" style="display:none;">
+                      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                        <button type="button" class="btn-secondary-custom" onclick="dnsZoneCheck()" id="dnsCheckBtn"
+                                style="white-space:nowrap;">
+                          <i class="bi bi-search"></i> Check availability in Hub *
+                        </button>
+                        <span id="dnsCheckMsg" style="font-size:.82rem;"></span>
+                      </div>
+                      <div style="font-size:.75rem;color:rgba(255,255,255,.5);margin-top:6px;" id="dnsCheckHint"></div>
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label-custom">Record Value</label>
-                      <input type="text" class="form-input-custom" data-detail="record_value" placeholder="e.g. 10.110.51.10">
+
+                    <!-- kind 3: VNET details, revealed after a successful check -->
+                    <div class="col-12" id="dnsVnetFields" style="display:none;">
+                      <div class="row g-3">
+                        <div class="col-md-4">
+                          <label class="form-label-custom">Subscription ID *</label>
+                          <input type="text" class="form-input-custom" data-detail="subscription_id" placeholder="00000000-0000-…">
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label-custom">Resource Group *</label>
+                          <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-…">
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label-custom">VNET Name *</label>
+                          <input type="text" class="form-input-custom" data-detail="vnet_name" placeholder="vnet-…">
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -862,6 +905,10 @@ async function submitServiceRequest() {
         `Application rules only accept FQDN destinations (e.g. *.presight.ai) — these are IPs: ${ips.join(', ')}. Choose a network rule for IP destinations.`));
     }
   }
+  if (currentType === 'dns') {
+    const dnsErr = dnsValidate(details);
+    if (dnsErr) return showResult('newReqResult', resultBox('error', dnsErr));
+  }
   if (currentType === 'vnet_decommission') {
     if (!details.created_by_admin || !details.manual_changes) {
       return showResult('newReqResult', resultBox('error', 'Please answer both questions: was the VNET created via this portal, and were manual changes made.'));
@@ -1007,6 +1054,94 @@ function onFwKindChange() {
 
 function looksLikeIp(s) {
   return /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(s.trim());
+}
+
+// ── DNS request kinds ──────────────────────────────────────────────────────
+let dnsCheck = { zone: '', exists: null };   // last verified zone + result
+
+function onDnsKindChange() {
+  const kind = document.getElementById('dns_kind').value;
+  document.getElementById('dnsRecordFields').style.display = (kind === 'record_add') ? '' : 'none';
+  document.getElementById('dnsCheckBlock').style.display =
+    (kind === 'zone_link_to_hub' || kind === 'hub_zone_link_to_vnet') ? '' : 'none';
+  document.getElementById('dnsVnetFields').style.display = 'none';
+  document.getElementById('dnsCheckHint').textContent =
+    kind === 'zone_link_to_hub'
+      ? 'Required: your zone can only be linked if the hub does NOT already have it.'
+      : kind === 'hub_zone_link_to_vnet'
+        ? 'Required: the zone must already EXIST in the hub to be linked to your VNET.'
+        : '';
+  dnsZoneChanged();
+}
+
+function dnsZoneChanged() {
+  // Any zone edit invalidates the previous availability check
+  dnsCheck = { zone: '', exists: null };
+  const msg = document.getElementById('dnsCheckMsg');
+  if (msg) msg.textContent = '';
+  const vf = document.getElementById('dnsVnetFields');
+  if (vf) vf.style.display = 'none';
+}
+
+async function dnsZoneCheck() {
+  const kind = document.getElementById('dns_kind').value;
+  const zone = document.getElementById('dns_zone').value.trim();
+  const msg = document.getElementById('dnsCheckMsg');
+  const btn = document.getElementById('dnsCheckBtn');
+  if (!zone) { msg.style.color = '#f87171'; msg.textContent = 'Enter the zone name first.'; return; }
+  btn.disabled = true;
+  msg.style.color = 'rgba(255,255,255,.6)'; msg.textContent = 'Checking hub…';
+  try {
+    const d = await apiPost('/api/requester/dns-zone-check', { zone });
+    if (!d.success) {
+      msg.style.color = '#f87171'; msg.textContent = d.message || 'Check failed.';
+      btn.disabled = false; return;
+    }
+    dnsCheck = { zone: d.zone, exists: d.exists };
+    if (kind === 'zone_link_to_hub') {
+      if (d.exists) {
+        msg.style.color = '#f87171';
+        msg.textContent = `Unavailable — '${d.zone}' already exists in the hub. A duplicate zone cannot be linked; raise an "Add A/CNAME record" request instead if you need records in it.`;
+      } else {
+        msg.style.color = '#7edb56';
+        msg.textContent = `Available — '${d.zone}' is not in the hub. You can proceed.`;
+      }
+    } else {   // hub_zone_link_to_vnet
+      if (d.exists) {
+        msg.style.color = '#7edb56';
+        msg.textContent = `Found — '${d.zone}' exists in the hub. Fill in your VNET details below.`;
+        document.getElementById('dnsVnetFields').style.display = '';
+      } else {
+        msg.style.color = '#f87171';
+        msg.textContent = `Not found — '${d.zone}' is not a hub zone. Check the name, or raise a "Link my private DNS zone to the Hub" request.`;
+      }
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Network error.'; }
+  btn.disabled = false;
+}
+
+function dnsValidate(details) {
+  const kind = details.dns_kind || '';
+  if (!kind) return 'Pick a DNS request kind.';
+  const zone = (details.zone || '').trim().toLowerCase().replace(/\.$/, '');
+  if (kind === 'record_add') {
+    for (const k of ['record_type', 'record_name', 'record_value', 'record_description'])
+      if (!details[k]) return 'A record request needs type, name, value and a description (for trace/audit).';
+    if (details.record_type === 'A' && !looksLikeIp(details.record_value || ''))
+      return 'An A record needs an IP address as its value.';
+    return null;
+  }
+  // link kinds: the availability check is mandatory and must match the current zone
+  if (dnsCheck.zone !== zone || dnsCheck.exists === null)
+    return 'Run "Check availability in Hub" for this zone first — it is required.';
+  if (kind === 'zone_link_to_hub' && dnsCheck.exists)
+    return `'${zone}' already exists in the hub — a duplicate zone cannot be linked. Raise an "Add A/CNAME record" request instead.`;
+  if (kind === 'hub_zone_link_to_vnet') {
+    if (!dnsCheck.exists) return `'${zone}' is not a hub zone — it cannot be linked to your VNET.`;
+    for (const k of ['subscription_id', 'resource_group', 'vnet_name'])
+      if (!details[k]) return 'Hub-zone link needs your Subscription ID, Resource Group and VNET name.';
+  }
+  return null;
 }
 
 async function submitNewRequest() {

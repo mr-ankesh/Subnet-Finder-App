@@ -738,6 +738,37 @@ def assign_route_table_to_subnet(
         return {"success": False, "message": str(exc)}
 
 
+# ── Private DNS zones (hub) ─────────────────────────────────────────────────
+
+def check_private_dns_zone(zone_name: str) -> dict:
+    """
+    Read-only: does the hub own this private DNS zone? Uses the generic
+    resource listing (no extra SDK needed). Never mutates anything.
+    """
+    zone_name = str(zone_name or "").strip().lower().rstrip(".")
+    if not zone_name or "." not in zone_name:
+        return {"success": False, "message": "Enter a valid DNS zone name, e.g. contoso.internal."}
+    rg = cfg.DNS_ZONE_RG
+    if not rg:
+        return {"success": False,
+                "message": "Hub private DNS zones resource group not configured "
+                           "(Settings → Hub & Subscriptions)."}
+    try:
+        sub = cfg.DNS_ZONE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID
+        client = _resource_client(sub)
+        zones = [r.name for r in client.resources.list_by_resource_group(
+            rg, filter="resourceType eq 'Microsoft.Network/privateDnsZones'")]
+        exists = zone_name in {z.lower() for z in zones}
+        return {"success": True, "exists": exists, "zone": zone_name,
+                "message": (f"Zone '{zone_name}' EXISTS in the hub ({rg})."
+                            if exists else
+                            f"Zone '{zone_name}' is NOT present in the hub ({rg}).")}
+    except Exception as exc:
+        log.error("check_private_dns_zone failed: %s", exc)
+        return {"success": False, "exists": None,
+                "message": f"Could not verify zone availability: {exc}"}
+
+
 # ── Revert / decommission helpers ──────────────────────────────────────────
 # Deletions treat "not found" as success so reverts are idempotent.
 

@@ -60,6 +60,11 @@ SETTINGS_SPEC = {
     "SPOKE_SUBSCRIPTION_ID": _f("hub", "Default spoke subscription ID",
                                 help="Used when a request doesn't specify its own subscription."),
     "DEFAULT_AZURE_REGION":  _f("hub", "Default region", "uaenorth"),
+    "DNS_ZONE_RG":           _f("hub", "Private DNS zones resource group",
+                                help="Hub resource group holding the private DNS zones — used by DNS "
+                                     "requests to check zone availability."),
+    "DNS_ZONE_SUBSCRIPTION_ID": _f("hub", "Private DNS zones subscription ID",
+                                   help="Blank = hub subscription."),
 
     # ── Firewall ──
     "FIREWALL_POLICY_NAME":           _f("firewall", "Firewall policy name"),

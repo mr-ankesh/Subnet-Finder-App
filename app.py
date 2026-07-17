@@ -1016,6 +1016,39 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
                                  "(e.g. *.example.com, *.presight.ai) — these are IP addresses: "
                                  + ", ".join(bad) + ". Choose a network rule for IP destinations."}, 400
 
+    # DNS guard: kind-specific required fields, and the hub-availability rules
+    # are re-verified server-side (the form's check button is mandatory, but
+    # never trust the client).
+    if request_type == RequestType.DNS:
+        import azure_tools
+        kind = details.get("dns_kind", "")
+        if kind == "record_add":
+            missing = [k for k in ("record_type", "record_name", "record_value",
+                                   "record_description") if not details.get(k)]
+            if missing:
+                return {"error": "A record request needs: " + ", ".join(missing)}, 400
+        elif kind == "zone_link_to_hub":
+            chk = azure_tools.check_private_dns_zone(details.get("zone", ""))
+            if not chk.get("success"):
+                return {"error": "Could not verify zone availability — " + chk.get("message", "")}, 400
+            if chk.get("exists"):
+                return {"error": f"Zone '{details.get('zone')}' already exists in the hub — "
+                                 f"a duplicate zone cannot be linked. If you need records in it, "
+                                 f"raise an 'Add A/CNAME record' DNS request instead."}, 400
+        elif kind == "hub_zone_link_to_vnet":
+            chk = azure_tools.check_private_dns_zone(details.get("zone", ""))
+            if not chk.get("success"):
+                return {"error": "Could not verify zone availability — " + chk.get("message", "")}, 400
+            if not chk.get("exists"):
+                return {"error": f"Zone '{details.get('zone')}' was not found in the hub — check the "
+                                 f"name, or raise a 'Link my private DNS zone to the Hub' request."}, 400
+            missing = [k for k in ("subscription_id", "resource_group", "vnet_name")
+                       if not details.get(k)]
+            if missing:
+                return {"error": "Hub-zone link needs your VNET details: " + ", ".join(missing)}, 400
+        else:
+            return {"error": "Pick a DNS request kind."}, 400
+
     # Decommission guard: manual changes made outside the portal must be removed
     # by the requester before the admin will decommission the VNET.
     if (request_type == RequestType.VNET_DECOMMISSION
@@ -1209,6 +1242,16 @@ def requester_new_request():
     except Exception as exc:
         log.exception("Form: error creating request")
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/requester/dns-zone-check", methods=["POST"])
+def requester_dns_zone_check():
+    """Availability check for DNS requests: is the zone already in the hub?
+    Read-only; used (mandatorily) by the DNS link request kinds."""
+    import azure_tools
+    zone = str((request.get_json(force=True) or {}).get("zone", "")).strip()
+    res = azure_tools.check_private_dns_zone(zone)
+    return jsonify(res), (200 if res.get("success") else 400)
 
 
 @app.route("/api/requester/status/<int:request_id>")

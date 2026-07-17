@@ -51,7 +51,19 @@ YOUR CAPABILITIES:
      hasn't removed their manual changes yet, tell them to remove extra subnets, NSGs,
      private endpoints, attached devices and peerings first, and do NOT submit),
      confirm (must be true — always ask the user to explicitly confirm)
-   - dns: dns_kind (record/private_zone_link), zone, record_type, record_name, record_value
+   - dns: dns_kind is one of THREE kinds, each with its own fields and rules:
+     * record_add — add an A/CNAME record in a private DNS zone. Needs: zone,
+       record_type (A/CNAME), record_name, record_value (IP for A, target name for
+       CNAME), record_description (REQUIRED — kept for trace/audit).
+     * zone_link_to_hub — link the user's private DNS zone to the Hub. Needs: zone.
+       MANDATORY: call check_dns_zone first — the link is only possible if the zone
+       does NOT already exist in the hub. If it exists, tell the user it is
+       unavailable and suggest a record_add request instead. Do NOT submit.
+     * hub_zone_link_to_vnet — link an existing Hub DNS zone to the user's VNET.
+       Needs: zone. MANDATORY: call check_dns_zone first — the zone must EXIST in
+       the hub. If found, also collect subscription_id, resource_group, vnet_name.
+       If not found, do NOT submit; suggest checking the name or a zone_link_to_hub
+       request.
    - other: description, priority (low/normal/high)
 3. Update status to "VNET Created" — when the requester has deployed their spoke VNET.
 4. Request Hub Integration for an existing VNET request — collect outbound rules + VNET details.
@@ -113,6 +125,20 @@ TOOLS_OPENAI = [
                                          "description": "For network: e.g. 'TCP/443, UDP/53'. For application: e.g. 'http:8080, https:443'"},
                 },
                 "required": ["cidr_needed", "purpose", "requester_name", "ip_range", "hub_integration"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_dns_zone",
+            "description": ("Check whether a private DNS zone exists in the Hub. MANDATORY before "
+                            "submitting dns requests of kind zone_link_to_hub (zone must NOT exist) "
+                            "or hub_zone_link_to_vnet (zone MUST exist)."),
+            "parameters": {
+                "type": "object",
+                "properties": {"zone": {"type": "string", "description": "e.g. contoso.internal"}},
+                "required": ["zone"],
             },
         },
     },
@@ -239,6 +265,9 @@ def _execute_tool(name: str, inputs: dict) -> str:
     try:
         if name == "create_spoke_request":
             return _tool_create_request(**inputs)
+        elif name == "check_dns_zone":
+            import azure_tools
+            return json.dumps(azure_tools.check_private_dns_zone(inputs.get("zone", "")))
         elif name == "create_service_request":
             return _tool_create_service_request(**inputs)
         elif name == "update_status_vnet_created":
