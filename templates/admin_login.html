@@ -10,8 +10,19 @@
         <i class="bi bi-shield-lock-fill"></i>
       </div>
       <h1 style="font-family:var(--font-heading);font-size:1.4rem;font-weight:700;color:var(--text);margin:0 0 6px;">Admin Access</h1>
-      <p style="font-size:13px;color:var(--text-muted);margin:0;">Enter your admin password to continue.</p>
+      <p style="font-size:13px;color:var(--text-muted);margin:0;">
+        {% if break_glass %}Local break-glass login — use only if SSO is unavailable.{% else %}Enter your admin password to continue.{% endif %}
+      </p>
     </div>
+
+    {% if break_glass %}
+    <div style="margin-bottom:18px;">
+      <a href="{{ url_for('auth_login') }}" class="btn-hero" style="justify-content:center;font-size:13px;width:100%;">
+        <i class="bi bi-shield-check me-2"></i>Sign in with Keycloak SSO
+      </a>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:10px;letter-spacing:.5px;text-align:center;">— or use the local admin password —</div>
+    </div>
+    {% endif %}
 
     <div class="glass-card" style="padding:28px;">
       {% if error %}

@@ -8,6 +8,7 @@ from datetime import datetime
 log = logging.getLogger(__name__)
 
 import audit
+import auth_oidc as oidc
 import changes
 import search
 import settings_store
@@ -193,8 +194,18 @@ with app.app_context():
     # Change ledger (undo history)
     changes.ensure_table()
 
+# Keycloak OIDC — registers the app; the client is built lazily from live
+# settings, so enabling/configuring SSO in the portal needs no restart.
+oidc.init_oidc(app)
+
 
 # ── Admin auth ──────────────────────────────────────────────────────────────
+
+def _login_endpoint():
+    """Where unauthenticated users are sent — Keycloak when enabled, else the
+    local password form."""
+    return "auth_login" if oidc.enabled() else "admin_login"
+
 
 def require_admin(f):
     @wraps(f)
@@ -203,7 +214,20 @@ def require_admin(f):
             # Return JSON for API routes, redirect for page routes
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Authentication required"}), 401
-            return redirect(url_for("admin_login", next=request.url))
+            return redirect(url_for(_login_endpoint(), next=request.url))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def require_login(f):
+    """Requester-portal guard. Open when SSO is off (legacy behaviour); when
+    Keycloak is on, requires an authenticated requester (or admin)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if oidc.enabled() and not (session.get("is_requester") or session.get("is_admin")):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Authentication required"}), 401
+            return redirect(url_for("auth_login", next=request.url))
         return f(*args, **kwargs)
     return decorated
 
@@ -211,7 +235,12 @@ def require_admin(f):
 @app.context_processor
 def inject_globals():
     return {"is_admin": session.get("is_admin", False), "RequestStatus": RequestStatus,
-            "RequestType": RequestType, "AZURE_DRY_RUN": cfg.AZURE_DRY_RUN}
+            "RequestType": RequestType, "AZURE_DRY_RUN": cfg.AZURE_DRY_RUN,
+            "sso_enabled": oidc.enabled(),
+            "sso_user": session.get("sso_user"),
+            "sso_email": session.get("sso_email"),
+            "sso_name": session.get("admin_name") if session.get("sso") else None,
+            "is_authed": bool(session.get("is_admin") or session.get("is_requester"))}
 
 
 def current_actor() -> str:
@@ -221,6 +250,10 @@ def current_actor() -> str:
 
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
+    # When Keycloak is on, a plain GET goes to SSO. '?local=1' is the
+    # break-glass path that still shows the password form (SSO outage / setup).
+    if request.method == "GET" and oidc.enabled() and request.args.get("local") != "1":
+        return redirect(url_for("auth_login", next=request.args.get("next")))
     error = None
     if request.method == "POST":
         name = (request.form.get("admin_name") or "").strip()[:100]
@@ -228,17 +261,95 @@ def admin_login():
             session["is_admin"] = True
             session["admin_name"] = name or "Admin"
             audit.record("admin_login", actor=session["admin_name"], actor_role="admin",
-                         summary=f"Admin login from {request.remote_addr}")
+                         summary=f"Local admin login from {request.remote_addr}")
             return redirect(request.form.get("next") or url_for("requests_list"))
         error = "Incorrect password."
         audit.record("admin_login_failed", actor=name or "unknown", actor_role="system",
-                     summary=f"Failed admin login from {request.remote_addr}")
-    return render_template("admin_login.html", error=error)
+                     summary=f"Failed local admin login from {request.remote_addr}")
+    return render_template("admin_login.html", error=error, break_glass=oidc.enabled())
 
 
 @app.route("/admin/logout")
 def admin_logout():
-    session.pop("is_admin", None)
+    was_sso = bool(session.get("sso"))
+    session.clear()
+    if was_sso and oidc.enabled():
+        return redirect(url_for("auth_logout"))
+    return redirect(url_for("requester_page"))
+
+
+# ── Keycloak OIDC flow ──────────────────────────────────────────────────────
+
+@app.route("/auth/login")
+def auth_login():
+    if not oidc.enabled():
+        return redirect(url_for("admin_login", local=1))
+    session["auth_next"] = request.args.get("next") or ""
+    try:
+        return oidc.client().authorize_redirect(url_for("auth_callback", _external=True))
+    except Exception as exc:
+        log.error("OIDC redirect failed: %s", exc)
+        return render_template("admin_login.html",
+                               error="Could not reach the SSO provider. Use local login if you are an admin.",
+                               break_glass=True), 502
+
+
+@app.route("/auth/callback")
+def auth_callback():
+    if not oidc.enabled():
+        return redirect(url_for("admin_login"))
+    try:
+        token = oidc.client().authorize_access_token()
+    except Exception as exc:
+        log.error("OIDC callback failed: %s", exc)
+        audit.record("sso_login_failed", actor="unknown", actor_role="system",
+                     summary=f"SSO sign-in failed from {request.remote_addr}: {str(exc)[:150]}")
+        return render_template("admin_login.html",
+                               error="SSO sign-in failed. Please try again.",
+                               break_glass=True), 400
+
+    info = token.get("userinfo") or {}
+    roles = oidc.roles_from_token(token)
+    is_admin = cfg.KEYCLOAK_ADMIN_ROLE in roles
+    req_role = cfg.KEYCLOAK_REQUESTER_ROLE
+    is_requester = is_admin or (not req_role) or (req_role in roles)
+
+    username = info.get("preferred_username") or info.get("email") or "user"
+    display = info.get("name") or username
+
+    if not is_admin and not is_requester:
+        audit.record("sso_denied", actor=display, actor_role="system",
+                     summary=f"SSO login denied for {username} — missing "
+                             f"'{req_role or cfg.KEYCLOAK_ADMIN_ROLE}' role")
+        return render_template("sso_denied.html", username=username,
+                               admin_role=cfg.KEYCLOAK_ADMIN_ROLE,
+                               requester_role=req_role), 403
+
+    session["sso"] = True
+    session["is_admin"] = is_admin
+    session["is_requester"] = is_requester
+    session["sso_user"] = username
+    session["sso_email"] = info.get("email") or ""
+    session["admin_name"] = display               # audit actor
+    if token.get("id_token"):
+        session["sso_id_token"] = token["id_token"]
+
+    audit.record("admin_login" if is_admin else "sso_login",
+                 actor=display, actor_role="admin" if is_admin else "requester",
+                 summary=f"Keycloak SSO login ({username}, "
+                         f"role: {'admin' if is_admin else 'requester'})")
+    dest = session.pop("auth_next", "") or (url_for("requests_list") if is_admin
+                                            else url_for("requester_page"))
+    return redirect(dest)
+
+
+@app.route("/auth/logout")
+def auth_logout():
+    id_token = session.get("sso_id_token")
+    session.clear()
+    if oidc.enabled():
+        post = url_for("requester_page", _external=True)
+        return redirect(oidc.end_session_url(post, id_token))
     return redirect(url_for("requester_page"))
 
 
@@ -958,12 +1069,14 @@ def health():
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.route("/requester")
+@require_login
 def requester_page():
     session.setdefault("requester_history", [])
     return render_template("requester.html")
 
 
 @app.route("/requester/clear", methods=["POST"])
+@require_login
 def requester_clear():
     session.pop("requester_history", None)
     return jsonify({"message": "Conversation cleared."})
@@ -1217,6 +1330,7 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
 
 
 @app.route("/api/requester/new-request", methods=["POST"])
+@require_login
 def requester_new_request():
     data = request.get_json(force=True)
 
@@ -1245,6 +1359,7 @@ def requester_new_request():
 
 
 @app.route("/api/requester/dns-zone-check", methods=["POST"])
+@require_login
 def requester_dns_zone_check():
     """Availability check for DNS requests: is the zone already in the hub?
     Read-only; used (mandatorily) by the DNS link request kinds."""
@@ -1255,6 +1370,7 @@ def requester_dns_zone_check():
 
 
 @app.route("/api/requester/status/<int:request_id>")
+@require_login
 def requester_get_status(request_id):
     from db_utils import get_spoke_request
     req = get_spoke_request(request_id)
@@ -1264,6 +1380,7 @@ def requester_get_status(request_id):
 
 
 @app.route("/api/requester/vnet-created", methods=["POST"])
+@require_login
 def requester_vnet_created():
     from db_utils import get_spoke_request, update_spoke_request, upsert_vnet_info
     data = request.get_json(force=True)
@@ -1299,6 +1416,7 @@ def requester_vnet_created():
 
 
 @app.route("/api/requester/reminder", methods=["POST"])
+@require_login
 def requester_send_reminder():
     from db_utils import get_spoke_request
     data = request.get_json(force=True)
@@ -1317,6 +1435,7 @@ def requester_send_reminder():
 
 
 @app.route("/api/requester/chat", methods=["POST"])
+@require_login
 def requester_chat():
     data = request.get_json(force=True)
     user_msg = (data.get("message") or "").strip()

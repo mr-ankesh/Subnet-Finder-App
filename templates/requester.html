@@ -784,6 +784,20 @@
 {% endblock %}
 
 {% block scripts %}
+{% if sso_name %}
+<script>
+// SSO is on — prefill and lock the requester's identity from the Keycloak token.
+(function () {
+  var name = {{ sso_name | tojson }}, email = {{ (sso_email or '') | tojson }};
+  ['f_name', 'g_name'].forEach(function (id) {
+    var el = document.getElementById(id); if (el && name) { el.value = name; el.readOnly = true; }
+  });
+  ['f_email', 'g_email'].forEach(function (id) {
+    var el = document.getElementById(id); if (el && email) { el.value = email; el.readOnly = true; }
+  });
+})();
+</script>
+{% endif %}
 <script>
 // ── Mode toggle ────────────────────────────────────────────────────────────
 function switchMode(mode) {

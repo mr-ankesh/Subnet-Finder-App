@@ -72,13 +72,22 @@
             <i class="bi bi-search"></i>
             <input type="search" name="q" placeholder="Search…" value="{{ request.args.get('q', '') if request.endpoint == 'admin_search' else '' }}">
           </form>
+          {% if sso_name %}<span class="nav-link" style="color:var(--text-muted);cursor:default;"><i class="bi bi-person-circle"></i> {{ sso_name }}</span>{% endif %}
           <a href="{{ url_for('admin_logout') }}" class="nav-link" style="color:var(--text-muted);">
             <i class="bi bi-box-arrow-right"></i> Logout
           </a>
           {% else %}
-          <a href="{{ url_for('admin_login') }}" class="nav-link {% if request.endpoint == 'admin_login' %}active{% endif %}">
-            <i class="bi bi-shield-lock"></i> Admin Login
+          {% if is_authed %}
+          {# SSO requester (not admin) — show identity + logout #}
+          {% if sso_name %}<span class="nav-link" style="color:var(--text-muted);cursor:default;"><i class="bi bi-person-circle"></i> {{ sso_name }}</span>{% endif %}
+          <a href="{{ url_for('auth_logout') }}" class="nav-link" style="color:var(--text-muted);">
+            <i class="bi bi-box-arrow-right"></i> Logout
           </a>
+          {% else %}
+          <a href="{{ url_for('admin_login') }}" class="nav-link {% if request.endpoint == 'admin_login' %}active{% endif %}">
+            <i class="bi bi-shield-lock"></i> {% if sso_enabled %}Sign In{% else %}Admin Login{% endif %}
+          </a>
+          {% endif %}
           {% endif %}
         </nav>
         <div class="nav-clock">
