@@ -1031,9 +1031,9 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
             chk = azure_tools.check_private_dns_zone(details.get("zone", ""))
             if not chk.get("success"):
                 return {"error": "Could not verify zone availability — " + chk.get("message", "")}, 400
-            if chk.get("exists"):
-                return {"error": f"Zone '{details.get('zone')}' already exists in the hub — "
-                                 f"a duplicate zone cannot be linked. If you need records in it, "
+            if chk.get("hub_linked"):
+                return {"error": f"Zone '{details.get('zone')}' is already linked to the hub — "
+                                 f"a duplicate link isn't possible. If you need records in it, "
                                  f"raise an 'Add A/CNAME record' DNS request instead."}, 400
         elif kind == "hub_zone_link_to_vnet":
             chk = azure_tools.check_private_dns_zone(details.get("zone", ""))

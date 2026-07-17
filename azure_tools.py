@@ -740,10 +740,19 @@ def assign_route_table_to_subnet(
 
 # ── Private DNS zones (hub) ─────────────────────────────────────────────────
 
+def _hub_vnet_id() -> str:
+    return (f"/subscriptions/{cfg.HUB_SUBSCRIPTION_ID}"
+            f"/resourceGroups/{cfg.HUB_RESOURCE_GROUP}"
+            f"/providers/Microsoft.Network/virtualNetworks/{cfg.HUB_VNET_NAME}")
+
+
 def check_private_dns_zone(zone_name: str) -> dict:
     """
-    Read-only: does the hub own this private DNS zone? Uses the generic
-    resource listing (no extra SDK needed). Never mutates anything.
+    Read-only availability check for DNS requests. Two distinct facts:
+      exists     — the zone resource is present in the hub's DNS zone RG
+      hub_linked — the zone has a virtual-network link to the HUB VNET
+                   (this is what "integrated with the hub" means)
+    Never mutates anything.
     """
     zone_name = str(zone_name or "").strip().lower().rstrip(".")
     if not zone_name or "." not in zone_name:
@@ -754,18 +763,25 @@ def check_private_dns_zone(zone_name: str) -> dict:
                 "message": "Hub private DNS zones resource group not configured "
                            "(Settings → Hub & Subscriptions)."}
     try:
-        sub = cfg.DNS_ZONE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID
-        client = _resource_client(sub)
-        zones = [r.name for r in client.resources.list_by_resource_group(
-            rg, filter="resourceType eq 'Microsoft.Network/privateDnsZones'")]
-        exists = zone_name in {z.lower() for z in zones}
-        return {"success": True, "exists": exists, "zone": zone_name,
-                "message": (f"Zone '{zone_name}' EXISTS in the hub ({rg})."
-                            if exists else
-                            f"Zone '{zone_name}' is NOT present in the hub ({rg}).")}
+        client = _privatedns_client()
+        try:
+            client.private_zones.get(rg, zone_name)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return {"success": True, "exists": False, "hub_linked": False, "zone": zone_name,
+                        "message": f"Zone '{zone_name}' is NOT present in the hub ({rg})."}
+            raise
+        hub_id = _hub_vnet_id().lower()
+        hub_linked = any(
+            l.virtual_network and (l.virtual_network.id or "").lower() == hub_id
+            for l in client.virtual_network_links.list(rg, zone_name))
+        return {"success": True, "exists": True, "hub_linked": hub_linked, "zone": zone_name,
+                "message": (f"Zone '{zone_name}' exists and IS linked to the hub VNET."
+                            if hub_linked else
+                            f"Zone '{zone_name}' exists in {rg} but is NOT linked to the hub VNET.")}
     except Exception as exc:
         log.error("check_private_dns_zone failed: %s", exc)
-        return {"success": False, "exists": None,
+        return {"success": False, "exists": None, "hub_linked": None,
                 "message": f"Could not verify zone availability: {exc}"}
 
 
@@ -942,8 +958,12 @@ def get_dns_zone_link_status(zone: str, vnet_name: str = None) -> dict:
 
 @_guard
 def create_dns_zone_in_hub(zone: str) -> dict:
-    """Create a private DNS zone in the hub and link it to the hub VNET.
-    An already-existing zone is a conflict — never recreated silently."""
+    """
+    Make a private DNS zone hub-integrated:
+      - zone missing            → create it + link to the hub VNET
+      - zone exists, not linked → just add the hub VNET link
+      - zone already hub-linked → conflict (never silently touched)
+    """
     from naming import sanitize
     zone = str(zone or "").strip().lower().rstrip(".")
     if not cfg.DNS_ZONE_RG:
@@ -951,30 +971,47 @@ def create_dns_zone_in_hub(zone: str) -> dict:
                                              "configured (Settings → Hub & Subscriptions)."}
     try:
         client = _privatedns_client()
+        hub_vnet_id = _hub_vnet_id()
+        zone_exists = True
         try:
             client.private_zones.get(cfg.DNS_ZONE_RG, zone)
-            links = [{"name": l.name,
-                      "vnet": (l.virtual_network.id.split("/")[-1]
-                               if l.virtual_network and l.virtual_network.id else "")}
-                     for l in client.virtual_network_links.list(cfg.DNS_ZONE_RG, zone)]
-            return {"success": False, "conflict": True,
-                    "existing_zone": {"name": zone, "links": links},
-                    "message": f"Zone '{zone}' already exists in the hub "
-                               f"({len(links)} VNET link(s))."}
         except Exception as exc:
             if not _is_not_found(exc):
                 raise
-        log.info("Creating private DNS zone '%s' in %s", zone, cfg.DNS_ZONE_RG)
-        client.private_zones.begin_create_or_update(
-            cfg.DNS_ZONE_RG, zone, {"location": "global"}).result()
-        hub_vnet_id = (f"/subscriptions/{cfg.HUB_SUBSCRIPTION_ID}"
-                       f"/resourceGroups/{cfg.HUB_RESOURCE_GROUP}"
-                       f"/providers/Microsoft.Network/virtualNetworks/{cfg.HUB_VNET_NAME}")
+            zone_exists = False
+        if zone_exists:
+            links = [{"name": l.name,
+                      "vnet": (l.virtual_network.id.split("/")[-1]
+                               if l.virtual_network and l.virtual_network.id else ""),
+                      "_id": (l.virtual_network.id or "").lower() if l.virtual_network else ""}
+                     for l in client.virtual_network_links.list(cfg.DNS_ZONE_RG, zone)]
+            if any(l["_id"] == hub_vnet_id.lower() for l in links):
+                for l in links:
+                    l.pop("_id", None)
+                return {"success": False, "conflict": True,
+                        "existing_zone": {"name": zone, "links": links},
+                        "message": f"Zone '{zone}' is already linked to the hub VNET "
+                                   f"({len(links)} link(s) total)."}
         link_name = sanitize(f"link-{cfg.HUB_VNET_NAME}")
+        if not zone_exists:
+            log.info("Creating private DNS zone '%s' in %s", zone, cfg.DNS_ZONE_RG)
+            client.private_zones.begin_create_or_update(
+                cfg.DNS_ZONE_RG, zone, {"location": "global"}).result()
+        log.info("Linking DNS zone '%s' to hub VNET", zone)
         client.virtual_network_links.begin_create_or_update(
             cfg.DNS_ZONE_RG, zone, link_name,
             {"location": "global", "virtual_network": {"id": hub_vnet_id},
              "registration_enabled": False}).result()
+        if zone_exists:
+            # Only the link was added — revert must remove just the link.
+            return {"success": True,
+                    "change": {"target": f"DNS zone {zone} hub link",
+                               "before": None,
+                               "after": {"zone": zone, "hub_link": link_name},
+                               "revert_op": "delete_dns_zone_link",
+                               "revert_params": {"zone": zone, "link": link_name}},
+                    "message": f"Zone '{zone}' already existed (not hub-linked) — linked it to "
+                               f"'{cfg.HUB_VNET_NAME}' (link '{link_name}')."}
         return {"success": True,
                 "change": {"target": f"DNS zone {zone} @ hub",
                            "before": None,

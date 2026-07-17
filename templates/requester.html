@@ -1057,7 +1057,7 @@ function looksLikeIp(s) {
 }
 
 // ── DNS request kinds ──────────────────────────────────────────────────────
-let dnsCheck = { zone: '', exists: null };   // last verified zone + result
+let dnsCheck = { zone: '', exists: null, hubLinked: null };   // last verified zone + result
 
 function onDnsKindChange() {
   const kind = document.getElementById('dns_kind').value;
@@ -1076,7 +1076,7 @@ function onDnsKindChange() {
 
 function dnsZoneChanged() {
   // Any zone edit invalidates the previous availability check
-  dnsCheck = { zone: '', exists: null };
+  dnsCheck = { zone: '', exists: null, hubLinked: null };
   const msg = document.getElementById('dnsCheckMsg');
   if (msg) msg.textContent = '';
   const vf = document.getElementById('dnsVnetFields');
@@ -1097,14 +1097,18 @@ async function dnsZoneCheck() {
       msg.style.color = '#f87171'; msg.textContent = d.message || 'Check failed.';
       btn.disabled = false; return;
     }
-    dnsCheck = { zone: d.zone, exists: d.exists };
+    dnsCheck = { zone: d.zone, exists: d.exists, hubLinked: d.hub_linked };
     if (kind === 'zone_link_to_hub') {
-      if (d.exists) {
+      // "In the hub" = LINKED to the hub VNET — a zone resource merely existing
+      // in the subscription/RG without a hub link is still available.
+      if (d.hub_linked) {
         msg.style.color = '#f87171';
-        msg.textContent = `Unavailable — '${d.zone}' already exists in the hub. A duplicate zone cannot be linked; raise an "Add A/CNAME record" request instead if you need records in it.`;
+        msg.textContent = `Unavailable — '${d.zone}' is already linked to the hub. A duplicate link isn't possible; raise an "Add A/CNAME record" request instead if you need records in it.`;
       } else {
         msg.style.color = '#7edb56';
-        msg.textContent = `Available — '${d.zone}' is not in the hub. You can proceed.`;
+        msg.textContent = d.exists
+          ? `Available — '${d.zone}' exists but is not linked to the hub yet. You can proceed (the admin will add the hub link).`
+          : `Available — '${d.zone}' is not in the hub. You can proceed.`;
       }
     } else {   // hub_zone_link_to_vnet
       if (d.exists) {
@@ -1134,8 +1138,8 @@ function dnsValidate(details) {
   // link kinds: the availability check is mandatory and must match the current zone
   if (dnsCheck.zone !== zone || dnsCheck.exists === null)
     return 'Run "Check availability in Hub" for this zone first — it is required.';
-  if (kind === 'zone_link_to_hub' && dnsCheck.exists)
-    return `'${zone}' already exists in the hub — a duplicate zone cannot be linked. Raise an "Add A/CNAME record" request instead.`;
+  if (kind === 'zone_link_to_hub' && dnsCheck.hubLinked)
+    return `'${zone}' is already linked to the hub — a duplicate link isn't possible. Raise an "Add A/CNAME record" request instead.`;
   if (kind === 'hub_zone_link_to_vnet') {
     if (!dnsCheck.exists) return `'${zone}' is not a hub zone — it cannot be linked to your VNET.`;
     for (const k of ['subscription_id', 'resource_group', 'vnet_name'])
