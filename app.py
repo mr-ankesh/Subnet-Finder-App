@@ -1723,23 +1723,54 @@ def admin_azure_action(req_id):
         _auto_advance(req)
         return jsonify(res), (200 if res.get("success") else 207)
 
-    # ── DNS record actions (dns requests, kind=record_add) ──
+    # ── DNS actions (all three kinds share the fetch → act → complete flow) ──
     if action in ("dns_check", "dns_apply"):
+        kind = details.get("dns_kind", "record_add")
         zone = details.get("zone", "")
         rtype = details.get("record_type", "A")
         rname = details.get("record_name", "")
         rvalue = details.get("record_value", "")
-        if not zone or not rname:
-            return jsonify({"error": "Request details are missing the zone/record name."}), 400
+        if not zone:
+            return jsonify({"error": "Request details are missing the DNS zone."}), 400
+        if kind == "record_add" and not rname:
+            return jsonify({"error": "Request details are missing the record name."}), 400
 
         if action == "dns_check":
-            res = azure_tools.get_dns_record_status(zone, rtype, rname)
+            if kind == "record_add":
+                res = azure_tools.get_dns_record_status(zone, rtype, rname)
+            elif kind == "hub_zone_link_to_vnet":
+                res = azure_tools.get_dns_zone_link_status(zone, vnet_name=details.get("vnet_name"))
+            else:                                     # zone_link_to_hub
+                res = azure_tools.get_dns_zone_link_status(zone)
             _audit_azure(res)
             return jsonify(res), (200 if res.get("success") else 207)
 
-        # dns_apply — create (or, after explicit confirmation, edit) the record
-        res = azure_tools.upsert_dns_record(zone, rtype, rname, rvalue,
-                                            on_conflict=(on_conflict or None))
+        # dns_apply — perform the kind's operation (with view/edit-or-reject conflicts)
+        if kind == "record_add":
+            res = azure_tools.upsert_dns_record(zone, rtype, rname, rvalue,
+                                                on_conflict=(on_conflict or None))
+        elif kind == "zone_link_to_hub":
+            if on_conflict == "keep":
+                res = {"success": True, "kept_existing": True,
+                       "message": f"Zone '{zone}' already exists in the hub — request marked "
+                                  f"complete without Azure changes."}
+            else:
+                res = azure_tools.create_dns_zone_in_hub(zone)
+        elif kind == "hub_zone_link_to_vnet":
+            missing = [k for k in ("subscription_id", "resource_group", "vnet_name")
+                       if not details.get(k)]
+            if missing:
+                return jsonify({"error": "Request details are missing: " + ", ".join(missing)}), 400
+            if on_conflict == "keep":
+                res = {"success": True, "kept_existing": True,
+                       "message": f"Existing link on '{zone}' kept as-is — request marked "
+                                  f"complete without Azure changes."}
+            else:
+                res = azure_tools.link_dns_zone_to_vnet(
+                    zone, details["subscription_id"], details["resource_group"],
+                    details["vnet_name"], on_conflict=(on_conflict or None))
+        else:
+            return jsonify({"error": f"Unknown DNS request kind '{kind}'."}), 400
         if res.get("success") and req.status in (RequestStatus.SUBMITTED,
                                                  RequestStatus.IN_PROGRESS):
             req.status = RequestStatus.COMPLETED

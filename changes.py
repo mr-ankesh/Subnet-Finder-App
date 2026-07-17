@@ -198,6 +198,10 @@ def _revert_dispatch(op: str, p: dict) -> dict:
     if op == "restore_dns_record":
         return azure_tools.restore_dns_record(p["zone"], p["rtype"], p["name"],
                                               p.get("values", []), p.get("ttl", 3600))
+    if op == "delete_dns_zone":
+        return azure_tools.delete_dns_zone(p["zone"])
+    if op == "delete_dns_zone_link":
+        return azure_tools.delete_dns_zone_link(p["zone"], p["link"])
     if op == "release_cidr":
         from db_utils import deallocate_subnet_db
         ok, msg = deallocate_subnet_db(p["subnet"])
