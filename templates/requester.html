@@ -75,6 +75,9 @@
         <!-- Action Tabs -->
         <div class="action-tabs mb-3">
           <button class="action-tab active" onclick="showAction('new-request')"><i class="bi bi-plus-circle"></i> New Request</button>
+          {% if sso %}
+          <button class="action-tab" onclick="showAction('my-requests'); loadMyRequests();"><i class="bi bi-list-check"></i> My Requests</button>
+          {% endif %}
           <button class="action-tab" onclick="showAction('check-status')"><i class="bi bi-search"></i> Check Status</button>
           <button class="action-tab" onclick="showAction('vnet-created')"><i class="bi bi-cloud-upload"></i> VNET Created</button>
           <button class="action-tab" onclick="showAction('reminder')"><i class="bi bi-bell"></i> Send Reminder</button>
@@ -641,6 +644,23 @@
           </div>
         </div>
 
+        {% if sso %}
+        <!-- My Requests (authenticated requester — own requests only) -->
+        <div class="glass-card action-panel" id="panel-my-requests" style="display:none;">
+          <div class="card-header-custom" style="display:flex;align-items:center;justify-content:space-between;">
+            <span><i class="bi bi-list-check text-info"></i> My Requests</span>
+            <button class="btn btn-glass btn-sm" style="font-size:11px;" onclick="loadMyRequests()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+          </div>
+          <div class="card-body-custom">
+            <div style="font-size:12.5px;color:rgba(255,255,255,.55);margin-bottom:12px;">
+              Signed in as <strong style="color:#fff;">{{ sso_name }}</strong>{% if sso_email %} · {{ sso_email }}{% endif %} — you see only your own requests.
+            </div>
+            <div id="myRequestsList"><div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div></div>
+            <div id="myStatusResult" style="margin-top:14px;"></div>
+          </div>
+        </div>
+        {% endif %}
+
         <!-- Check Status Form -->
         <div class="glass-card action-panel" id="panel-check-status" style="display:none;">
           <div class="card-header-custom"><i class="bi bi-search text-info"></i> Check Request Status</div>
@@ -784,16 +804,24 @@
 {% endblock %}
 
 {% block scripts %}
-{% if sso_name %}
+{% if sso %}
 <script>
-// SSO is on — prefill and lock the requester's identity from the Keycloak token.
+// SSO is on — prefill the requester's identity from the Keycloak token.
+// Lock a field ONLY when Keycloak actually supplied that value; otherwise
+// prefill as a hint but let the user edit it (e.g. no name/email in Keycloak).
 (function () {
   var name = {{ sso_name | tojson }}, email = {{ (sso_email or '') | tojson }};
+  var lockName = {{ 'true' if sso_lock_name else 'false' }};
+  var lockEmail = {{ 'true' if sso_lock_email else 'false' }};
   ['f_name', 'g_name'].forEach(function (id) {
-    var el = document.getElementById(id); if (el && name) { el.value = name; el.readOnly = true; }
+    var el = document.getElementById(id); if (!el) return;
+    if (name) el.value = name;
+    if (lockName) el.readOnly = true;
   });
   ['f_email', 'g_email'].forEach(function (id) {
-    var el = document.getElementById(id); if (el && email) { el.value = email; el.readOnly = true; }
+    var el = document.getElementById(id); if (!el) return;
+    if (email) el.value = email;
+    if (lockEmail) el.readOnly = true;
   });
 })();
 </script>
@@ -1239,6 +1267,51 @@ async function checkStatus() {
   const d = await r.json();
   if (d.error) return showResult('statusResult', resultBox('error', d.error));
   showResult('statusResult', statusCard(d));
+}
+
+// ── My Requests (authenticated requester) ──────────────────────────────────
+async function loadMyRequests() {
+  const box = document.getElementById('myRequestsList');
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div>';
+  try {
+    const d = await (await fetch('/api/requester/my-requests')).json();
+    const reqs = d.requests || [];
+    if (!reqs.length) {
+      box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.55);padding:8px 0;">You haven\'t raised any requests yet.</div>';
+      return;
+    }
+    box.innerHTML =
+      '<div style="overflow-x:auto;"><table class="gls-table" style="width:100%;"><thead><tr>' +
+      '<th>#</th><th>Type</th><th>Purpose</th><th>Status</th><th>Raised</th><th></th></tr></thead><tbody>' +
+      reqs.map(r => `<tr>
+        <td style="color:rgba(255,255,255,.6);">#${r.id}</td>
+        <td style="font-size:12px;color:#00BCF2;white-space:nowrap;">${r.type_label || r.request_type}</td>
+        <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(r.purpose||'').replace(/</g,'&lt;')}</td>
+        <td><span class="status-badge status-${statusColor(r.status)}">${r.status_label || r.status}</span></td>
+        <td style="font-size:11.5px;color:rgba(255,255,255,.5);white-space:nowrap;">${r.created_at || ''}</td>
+        <td><button class="btn btn-glass btn-sm" style="font-size:11px;" onclick="viewMyStatus(${r.id})"><i class="bi bi-eye"></i> View</button></td>
+      </tr>`).join('') +
+      '</tbody></table></div>';
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:13px;color:#f87171;">Could not load your requests.</div>';
+  }
+}
+
+function statusColor(s) {
+  const ok = ['COMPLETED','HUB_INTEGRATED'], bad = ['CANCELLED','REJECTED'];
+  if (ok.includes(s)) return 'success';
+  if (bad.includes(s)) return 'danger';
+  return 'info';
+}
+
+async function viewMyStatus(id) {
+  const out = document.getElementById('myStatusResult');
+  out.innerHTML = resultBox('info', 'Loading request #' + id + '…');
+  const d = await (await fetch(`/api/requester/status/${id}`)).json();
+  if (d.error) { out.innerHTML = resultBox('error', d.error); return; }
+  out.innerHTML = statusCard(d);
+  out.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function markVnetCreated() {

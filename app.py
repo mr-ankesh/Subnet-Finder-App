@@ -233,7 +233,14 @@ def require_admin(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("is_admin"):
-            # Return JSON for API routes, redirect for page routes
+            # Already signed in but NOT an admin (e.g. a requester who hit an
+            # admin URL like '/'): send them to their portal — never back to
+            # login, or SSO bounces forever (redirect loop).
+            if session.get("is_requester") or session.get("sso"):
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "Admin access required"}), 403
+                return redirect(url_for("requester_page"))
+            # Not authenticated at all → login.
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for(_login_endpoint(), next=request.url))
@@ -259,15 +266,55 @@ def inject_globals():
     return {"is_admin": session.get("is_admin", False), "RequestStatus": RequestStatus,
             "RequestType": RequestType, "AZURE_DRY_RUN": cfg.AZURE_DRY_RUN,
             "sso_enabled": oidc.enabled(),
+            "sso": bool(session.get("sso")),
             "sso_user": session.get("sso_user"),
             "sso_email": session.get("sso_email"),
             "sso_name": session.get("admin_name") if session.get("sso") else None,
+            # Only lock a form field when Keycloak actually supplied that value.
+            "sso_lock_name": bool(session.get("sso") and session.get("sso_has_name")),
+            "sso_lock_email": bool(session.get("sso") and session.get("sso_email")),
             "is_authed": bool(session.get("is_admin") or session.get("is_requester"))}
 
 
 def current_actor() -> str:
     """Display name for the audit trail: admin's login name, or 'Admin'."""
     return session.get("admin_name") or "Admin"
+
+
+def _sso_identity(client_name: str = "", client_email: str = ""):
+    """
+    Effective (name, email) for a request. When signed in via Keycloak, its
+    values win — but if Keycloak lacks a name/email, keep what the user typed.
+    """
+    if session.get("sso"):
+        name = session.get("admin_name") if session.get("sso_has_name") else (client_name or session.get("admin_name") or "")
+        email = session.get("sso_email") or client_email or ""
+        return (name or client_name or "user"), (email or None)
+    return client_name, (client_email or None)
+
+
+def _requester_owner():
+    """(name, email) identifying the signed-in requester's requests, or None
+    when SSO is off (open mode — no per-user ownership)."""
+    if session.get("sso"):
+        return session.get("admin_name"), (session.get("sso_email") or None)
+    return None, None
+
+
+def _owns_request(req) -> bool:
+    """True if the current user may view this request. Admins: all. SSO
+    requesters: only theirs. Open mode (no SSO): unrestricted (legacy)."""
+    if session.get("is_admin"):
+        return True
+    if not session.get("sso"):
+        return True
+    name, email = _requester_owner()
+    rmail = (getattr(req, "requester_email", None) or "").lower()
+    if email and rmail == email.lower():
+        return True
+    if not email and name and (getattr(req, "requester_name", None) or "") == name:
+        return True
+    return False
 
 
 @app.route("/admin/login", methods=["GET", "POST"])
@@ -324,22 +371,14 @@ def auth_callback():
     try:
         token = oidc.client().authorize_access_token()
     except Exception as exc:
-        msg = str(exc)
-        # Stale/duplicate OAuth state (refreshed callback, a second login tab,
-        # or an expired state) surfaces as "mismatching_state / CSRF". Restart
-        # the flow once with a fresh state instead of dead-ending on the error.
-        stale_state = "state" in msg.lower() or "csrf" in msg.lower()
-        if stale_state and session.get("oidc_retries", 0) < 1:
-            session["oidc_retries"] = session.get("oidc_retries", 0) + 1
-            return redirect(url_for("auth_login"))
-        session.pop("oidc_retries", None)
+        # Show the error page (NEVER auto-redirect back to login — that turns a
+        # session/state hiccup into an infinite redirect loop).
         log.error("OIDC callback failed: %s", exc)
         audit.record("sso_login_failed", actor="unknown", actor_role="system",
-                     summary=f"SSO sign-in failed from {request.remote_addr}: {msg[:150]}")
+                     summary=f"SSO sign-in failed from {request.remote_addr}: {str(exc)[:150]}")
         return render_template("admin_login.html",
                                error="SSO sign-in failed — please try signing in again.",
                                break_glass=True), 400
-    session.pop("oidc_retries", None)
 
     info = token.get("userinfo") or {}
     roles = oidc.roles_from_token(token)
@@ -348,7 +387,9 @@ def auth_callback():
     is_requester = is_admin or (not req_role) or (req_role in roles)
 
     username = info.get("preferred_username") or info.get("email") or "user"
-    display = info.get("name") or username
+    # Name from Keycloak: 'name', else given+family, else the username.
+    full = (((info.get("given_name") or "") + " " + (info.get("family_name") or "")).strip())
+    display = info.get("name") or full or username
 
     if not is_admin and not is_requester:
         audit.record("sso_denied", actor=display, actor_role="system",
@@ -363,6 +404,7 @@ def auth_callback():
     session["is_requester"] = is_requester
     session["sso_user"] = username
     session["sso_email"] = info.get("email") or ""
+    session["sso_has_name"] = bool(info.get("name") or full)   # real name vs username fallback
     session["admin_name"] = display               # audit actor
     if token.get("id_token"):
         session["sso_id_token"] = token["id_token"]
@@ -1165,6 +1207,8 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     from db_utils import create_spoke_request, get_spoke_request, upsert_vnet_info
     if request_type not in RequestType.ALL or request_type == RequestType.VNET_NEW:
         return {"error": f"Unknown request type '{request_type}'."}, 400
+    # Keycloak identity wins (and ties the request to the signed-in requester).
+    requester_name, requester_email = _sso_identity(requester_name, requester_email)
     if not purpose or not requester_name:
         return {"error": "Name and a short summary/purpose are required."}, 400
 
@@ -1278,6 +1322,9 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
     purpose       = str(data.get("purpose", "")).strip()
     requester_name = str(data.get("requester_name", "")).strip()
     requester_email = str(data.get("requester_email", "")).strip()
+    # Keycloak identity wins (ties the request to the signed-in requester).
+    requester_name, requester_email = _sso_identity(requester_name, requester_email)
+    requester_email = requester_email or ""
     ip_range      = str(data.get("ip_range", "")).strip()
     hub_integration = bool(data.get("hub_integration", False))
     deployment_mode = str(data.get("deployment_mode", "self")).strip().lower()
@@ -1433,7 +1480,28 @@ def requester_get_status(request_id):
     req = get_spoke_request(request_id)
     if not req:
         return jsonify({"error": f"Request #{request_id} not found."}), 404
+    if not _owns_request(req):
+        # Don't reveal existence of others' requests.
+        return jsonify({"error": f"Request #{request_id} not found."}), 404
     return jsonify(req.to_dict())
+
+
+@app.route("/api/requester/my-requests")
+@require_login
+def requester_my_requests():
+    """The signed-in requester's own requests (SSO only). Empty in open mode."""
+    if not session.get("sso"):
+        return jsonify({"sso": False, "requests": []})
+    name, email = _requester_owner()
+    q = SpokeRequest.query
+    if email:
+        q = q.filter(db.func.lower(SpokeRequest.requester_email) == email.lower())
+    elif name:
+        q = q.filter(SpokeRequest.requester_name == name)
+    else:
+        return jsonify({"sso": True, "requests": []})
+    rows = q.order_by(SpokeRequest.created_at.desc()).limit(200).all()
+    return jsonify({"sso": True, "requests": [r.to_dict() for r in rows]})
 
 
 @app.route("/api/requester/vnet-created", methods=["POST"])
