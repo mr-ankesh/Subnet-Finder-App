@@ -166,6 +166,18 @@
             <span><i class="bi bi-bricks"></i> Firewall Policy Actions — {{ (fwd.get('action') or 'add') | upper }} {{ (fwd.get('rule_kind') or 'network') | title }} Rule</span>
             {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
           </div>
+          {% if (fwd.get('action') or 'add') == 'delete' %}
+          <div style="border:2px solid #d13438;background:rgba(209,52,56,.12);border-radius:8px;padding:11px 13px;margin-bottom:12px;">
+            <div style="font-size:12px;font-weight:800;color:#f87171;text-transform:uppercase;letter-spacing:.5px;">
+              <i class="bi bi-exclamation-octagon-fill me-1"></i>Destructive · rule deletion
+            </div>
+            <div style="font-size:12px;color:#f87171;margin-top:6px;line-height:1.65;">
+              Applying this request will <strong>permanently DELETE</strong> firewall rule
+              <strong>{{ fwd.get('rule_name') or '(unnamed)' }}</strong> from the policy. Step 1 fetches and shows the rule's
+              current definition first; the deletion is snapshotted to <strong>Changes</strong> and can be reverted there.
+            </div>
+          </div>
+          {% endif %}
           <button class="btn btn-glass w-100 mb-2" onclick="runFwCheck(this)">
             <i class="bi bi-clipboard-pulse me-2"></i>1 · Check Policy &amp; Rule Status
           </button>
@@ -349,6 +361,17 @@
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
             <span><i class="bi bi-trash3"></i> Decommission Steps</span>
             {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <div style="border:2px solid #d13438;background:rgba(209,52,56,.12);border-radius:8px;padding:11px 13px;margin-bottom:12px;">
+            <div style="font-size:12px;font-weight:800;color:#f87171;text-transform:uppercase;letter-spacing:.5px;">
+              <i class="bi bi-exclamation-octagon-fill me-1"></i>Destructive · permanent deletion
+            </div>
+            <div style="font-size:12px;color:#f87171;margin-top:6px;line-height:1.65;">
+              <strong>Step 2 permanently DELETES</strong> in Azure: the hub&nbsp;↔&nbsp;spoke <strong>peerings</strong>,
+              the spoke's <strong>routes</strong> in the hub routing tables, its <strong>internet-egress firewall rule</strong>,
+              and the <strong>VNET and all its subnets</strong>. Run <em>Check VNET Status</em> first. Deletions are
+              snapshotted to <strong>Changes</strong> and can be reverted there. Step 3 then releases the CIDR back to the pool.
+            </div>
           </div>
           <button class="btn btn-glass w-100 mb-2" onclick="runDecomCheck(this)">
             <i class="bi bi-clipboard-pulse me-2"></i>1 · Check VNET Status in Azure
@@ -1124,7 +1147,8 @@ function renderExistingRouteTable(rt) {
 function renderConflict(box, d, retry) {
   _conflictRetry = retry;
   let stateHtml = '', replaceLabel = 'Update to requested definition',
-      keepLabel = 'Proceed without updating — keep existing', showReplace = true, kind = 'configuration';
+      keepLabel = 'Proceed without updating — keep existing', showReplace = true, kind = 'configuration',
+      dangerReplace = false, dangerNote = '';
   if (d.existing_rule) {
     stateHtml = fwRenderRule(d.existing_rule); kind = 'rule';
     replaceLabel = 'Update rule to requested definition';
@@ -1137,6 +1161,9 @@ function renderConflict(box, d, retry) {
     stateHtml = renderExistingVnet(d.existing_vnet); kind = 'VNET';
     replaceLabel = 'OVERWRITE VNET — replaces address space & subnets';
     keepLabel = 'Proceed — treat the existing VNET as deployed';
+    dangerReplace = true;
+    dangerNote = 'Overwriting replaces the address space and <strong>removes subnets not in the new definition</strong> — '
+               + 'attached devices in those subnets would be orphaned. This cannot be undone from here.';
   } else if (d.existing_peerings) {
     stateHtml = renderExistingPeerings(d.existing_peerings); kind = 'peering';
     replaceLabel = 'Overwrite peering settings with requested values';
@@ -1161,9 +1188,12 @@ function renderConflict(box, d, retry) {
        <i class="bi bi-exclamation-triangle-fill me-1"></i>${d.message || 'This configuration already exists.'}
        Review the current ${kind} below, then choose how to proceed — nothing is changed without your confirmation.</div>` +
     stateHtml +
+    (dangerReplace ? `<div style="border:2px solid #d13438;background:rgba(209,52,56,.12);border-radius:8px;padding:9px 12px;margin-top:8px;font-size:12px;color:#f87171;">
+       <span style="font-weight:800;text-transform:uppercase;letter-spacing:.5px;"><i class="bi bi-exclamation-octagon-fill me-1"></i>Destructive overwrite</span>
+       <div style="margin-top:4px;line-height:1.6;">${dangerNote}</div></div>` : '') +
     `<div id="conflictRow" style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-       ${showReplace ? `<button class="btn btn-glow btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('replace')">
-         <i class="bi bi-pencil-square me-1"></i>${replaceLabel}
+       ${showReplace ? `<button class="btn btn-sm ${dangerReplace ? '' : 'btn-glow'}" style="flex:1;min-width:200px;${dangerReplace ? 'background:rgba(209,52,56,.15);border:1px solid #d13438;color:#f87171;' : ''}" onclick="_conflictGo('replace')">
+         <i class="bi bi-${dangerReplace ? 'exclamation-octagon' : 'pencil-square'} me-1"></i>${replaceLabel}
        </button>` : ''}
        <button class="btn btn-glass btn-sm" style="flex:1;min-width:200px;" onclick="_conflictGo('keep')">
          <i class="bi bi-check2-circle me-1"></i>${keepLabel}

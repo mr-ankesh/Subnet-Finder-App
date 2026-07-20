@@ -66,10 +66,19 @@
         </button>
         <span id="revmsg-{{ e.id }}" style="font-size:12px;margin-left:10px;"></span>
       </div>
-      <div id="revconfirm-{{ e.id }}" style="display:none;margin-top:10px;border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:8px;padding:10px 12px;">
-        <div style="font-size:12.5px;color:#f59e0b;margin-bottom:8px;">
-          <i class="bi bi-exclamation-triangle-fill me-1"></i>
-          This will restore the <strong>Before</strong> state shown above ({{ e.revert_op.replace('_', ' ') }}).
+      {% set rev_deletes = e.revert_op.startswith('delete') or e.revert_op.startswith('remove') or e.revert_op == 'release_cidr' %}
+      <div id="revconfirm-{{ e.id }}" style="display:none;margin-top:10px;border:2px solid #d13438;background:rgba(209,52,56,.12);border-radius:8px;padding:11px 13px;">
+        <div style="font-size:12px;font-weight:800;color:#f87171;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">
+          <i class="bi bi-exclamation-octagon-fill me-1"></i>Destructive · changes Azure for real
+        </div>
+        <div style="font-size:12.5px;color:#f87171;margin-bottom:8px;line-height:1.6;">
+          {% if rev_deletes %}
+          This revert will <strong>DELETE</strong> the resource this change created
+          ({{ e.revert_op.replace('_', ' ') }}), returning Azure to its <strong>Before</strong> state.
+          {% else %}
+          This revert will <strong>restore / re-create</strong> the <strong>Before</strong> state shown above
+          ({{ e.revert_op.replace('_', ' ') }}), overwriting the current definition in Azure.
+          {% endif %}
           Azure is updated for real{% if AZURE_DRY_RUN %} — but DRY-RUN is currently ON, so it will be simulated{% endif %}. Continue?
         </div>
         <button class="btn btn-glow btn-sm" onclick="doRevert({{ e.id }}, this)"><i class="bi bi-check2 me-1"></i>Yes, revert</button>
