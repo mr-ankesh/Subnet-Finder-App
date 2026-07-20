@@ -12,6 +12,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Network diagnostics tools — so you can ping/curl/telnet/tracepath from the
+# pod itself (kubectl exec) as well as from the connector VMs.
+#   iputils-ping → ping ;  iputils-tracepath → tracepath ;
+#   inetutils-telnet → telnet ;  iproute2 → ss ;  curl ;
+#   dnsutils → dig/nslookup ;  netcat-openbsd → nc ;  traceroute
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        iputils-ping iputils-tracepath inetutils-telnet iproute2 curl dnsutils \
+        netcat-openbsd traceroute \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 

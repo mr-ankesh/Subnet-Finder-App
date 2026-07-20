@@ -57,6 +57,11 @@
           <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint and 'request' in request.endpoint %}active{% endif %}">
             <i class="bi bi-list-task"></i> Requests
           </a>
+          {% if is_superadmin or is_itadmin %}
+          <a href="{{ url_for('it_reachability') }}" class="nav-link {% if request.endpoint == 'it_reachability' %}active{% endif %}">
+            <i class="bi bi-hdd-network"></i> Reachability
+          </a>
+          {% endif %}
           <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}">
             <i class="bi bi-robot"></i> Admin Agent
           </a>
@@ -71,11 +76,6 @@
           {% if is_superadmin %}
           <a href="{{ url_for('admin_settings') }}" class="nav-link {% if request.endpoint == 'admin_settings' %}active{% endif %}">
             <i class="bi bi-gear"></i> Settings
-          </a>
-          {% endif %}
-          {% if is_superadmin or is_itadmin %}
-          <a href="{{ url_for('it_reachability') }}" class="nav-link {% if request.endpoint == 'it_reachability' %}active{% endif %}">
-            <i class="bi bi-hdd-network"></i> Reachability
           </a>
           {% endif %}
           <a href="{{ url_for('help_admin') }}" class="nav-link {% if request.endpoint == 'help_admin' %}active{% endif %}">
