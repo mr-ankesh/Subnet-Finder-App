@@ -835,7 +835,7 @@ def _import_inventory(rows):
 
 
 @app.route("/admin/inventory", methods=["GET", "POST"])
-@require_subnet_access
+@require_admin
 def admin_inventory():
     """
     Post-deployment onboarding: the app ships with an EMPTY inventory — the

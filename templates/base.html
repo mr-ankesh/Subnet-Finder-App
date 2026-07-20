@@ -91,9 +91,6 @@
           <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint in ('segment_select', 'allocator') %}active{% endif %}">
             <i class="bi bi-hdd-network"></i> Subnet Allocator
           </a>
-          <a href="{{ url_for('admin_inventory') }}" class="nav-link {% if request.endpoint == 'admin_inventory' %}active{% endif %}">
-            <i class="bi bi-box-arrow-in-down"></i> Import Inventory
-          </a>
           {% endif %}
           {% if is_requester or not sso %}
           <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
