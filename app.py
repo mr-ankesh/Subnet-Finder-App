@@ -2882,11 +2882,95 @@ def request_spoke_subnets(req_id):
     return jsonify({"source": "declared", "subnets": declared})
 
 
+def _run_reverts(req, changes_list, tag):
+    """Undo a list of deployed changes in the given (Azure-dependency-safe) order.
+    Records each revert in the change ledger + audit trail. Returns (steps, all_ok)."""
+    steps, all_ok = [], True
+    for ch in changes_list:
+        res = _revert_change(req, ch["key"])
+        ok = bool(res.get("success"))
+        all_ok = all_ok and ok
+        if ok and res.get("change") and not res.get("dry_run"):
+            c = res["change"]
+            changes.record(action=f"{tag}:{ch['key']}", actor=current_actor(),
+                           request_id=req.id, target=c.get("target", ""),
+                           summary=str(res.get("message", ""))[:300],
+                           before=c.get("before"), after=c.get("after"),
+                           revert_op=c.get("revert_op"), revert_params=c.get("revert_params"))
+        steps.append({"key": ch["key"], "label": ch["label"], "success": ok,
+                      "dry_run": bool(res.get("dry_run")), "message": str(res.get("message", ""))})
+        audit.record("azure_revert", actor=current_actor(), actor_role="admin", request_id=req.id,
+                     summary=f"Revert '{ch['key']}' — "
+                             f"{'dry-run' if res.get('dry_run') else ('ok' if ok else 'FAILED')}: "
+                             f"{str(res.get('message', ''))[:200]}",
+                     data={"action": ch["key"], "success": ok,
+                           "dry_run": bool(res.get("dry_run")),
+                           "message": str(res.get("message", ""))[:400]})
+    return steps, all_ok
+
+
 @app.route("/api/admin/requests/<int:req_id>/deployed-changes")
 @require_admin
 def request_deployed_changes(req_id):
     req = SpokeRequest.query.get_or_404(req_id)
     return jsonify({"changes": _deployed_changes(req), "dry_run_mode": cfg.AZURE_DRY_RUN})
+
+
+@app.route("/api/admin/requests/<int:req_id>/revert-deployment", methods=["POST"])
+@require_admin
+def request_revert_deployment(req_id):
+    """
+    Aggregated revert for a VNET request: tear down EVERYTHING deployed for it —
+    firewall rule, hub routes, spoke UDR/route table, peering, then the VNET —
+    in the order Azure requires (_REVERT_ORDER), optionally releasing the CIDR.
+    The request stays open and resets to its pre-deployment status so it can be
+    redeployed; use Cancel/Reject instead to also close it.
+    """
+    req = SpokeRequest.query.get_or_404(req_id)
+    t = req.request_type or RequestType.VNET_NEW
+    if t not in (RequestType.VNET_NEW, RequestType.HUB_INTEGRATION):
+        return jsonify({"error": "Aggregated deployment revert is only available for VNET requests."}), 400
+    if req.status in RequestType.TERMINALS:
+        return jsonify({"error": f"Request is already {req.status_label()}."}), 400
+
+    data = request.get_json(force=True) or {}
+    release_cidr = bool(data.get("release_cidr", True))
+    comment = str(data.get("comment", "")).strip()[:500]
+
+    changes_list = _deployed_changes(req)
+    if not release_cidr:
+        changes_list = [ch for ch in changes_list if ch["key"] != "cidr"]
+    if not changes_list:
+        return jsonify({"error": "Nothing deployed to revert for this request."}), 400
+
+    steps, all_ok = _run_reverts(req, changes_list, tag="revert_deploy")
+    reverted = sum(1 for s in steps if s["success"])
+
+    # Reset to the pre-deployment state (request stays open).
+    cidr_gone = any(s["key"] == "cidr" and s["success"] for s in steps)
+    if t == RequestType.HUB_INTEGRATION:
+        new_status = RequestStatus.SUBMITTED
+    else:                                    # VNET_NEW
+        new_status = RequestStatus.CIDR_REQUESTED if cidr_gone else RequestStatus.CIDR_ASSIGNED
+    old_status = req.status
+    req.status = new_status
+    req.updated_at = datetime.utcnow()
+    stamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+    note = (f"[{stamp} UTC] Full deployment revert by {current_actor()}: "
+            f"{reverted}/{len(steps)} change(s) undone.")
+    if comment:
+        note += f" — {comment}"
+    req.notes = f"{req.notes}\n{note}" if req.notes else note
+    db.session.commit()
+    audit.record("status_changed", actor=current_actor(), actor_role="admin", request_id=req.id,
+                 summary=f"Full deployment revert: {RequestStatus.label(old_status)} → "
+                         f"{RequestStatus.label(new_status)} (reverted {reverted}/{len(steps)} change(s))"
+                         + (f' — "{comment[:150]}"' if comment else ""),
+                 data={"old": old_status, "new": new_status, "reverted": reverted,
+                       "revert_steps": len(steps), "aggregated": True, "comment": comment or None})
+    return jsonify({"success": all_ok, "status": new_status, "steps": steps,
+                    "message": f"Deployment reverted — {reverted}/{len(steps)} change(s) undone. "
+                               f"Request reset to {RequestStatus.label(new_status)}."})
 
 
 @app.route("/api/admin/requests/<int:req_id>/terminate", methods=["POST"])
@@ -2908,26 +2992,7 @@ def request_terminate(req_id):
 
     steps, all_ok = [], True
     if do_revert:
-        for ch in _deployed_changes(req):
-            res = _revert_change(req, ch["key"])
-            ok = bool(res.get("success"))
-            all_ok = all_ok and ok
-            if ok and res.get("change") and not res.get("dry_run"):
-                c = res["change"]
-                changes.record(action=f"cancel_revert:{ch['key']}", actor=current_actor(),
-                               request_id=req.id, target=c.get("target", ""),
-                               summary=str(res.get("message", ""))[:300],
-                               before=c.get("before"), after=c.get("after"),
-                               revert_op=c.get("revert_op"), revert_params=c.get("revert_params"))
-            steps.append({"key": ch["key"], "label": ch["label"], "success": ok,
-                          "dry_run": bool(res.get("dry_run")), "message": str(res.get("message", ""))})
-            audit.record("azure_revert", actor=current_actor(), actor_role="admin", request_id=req.id,
-                         summary=f"Revert '{ch['key']}' — "
-                                 f"{'dry-run' if res.get('dry_run') else ('ok' if ok else 'FAILED')}: "
-                                 f"{str(res.get('message', ''))[:200]}",
-                         data={"action": ch["key"], "success": ok,
-                               "dry_run": bool(res.get("dry_run")),
-                               "message": str(res.get("message", ""))[:400]})
+        steps, all_ok = _run_reverts(req, _deployed_changes(req), tag="cancel_revert")
 
     old_status = req.status
     req.status = target

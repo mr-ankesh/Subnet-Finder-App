@@ -608,6 +608,14 @@
           <i class="bi bi-check2-square me-2"></i>Mark Completed — done manually outside the portal
         </button>
         {% endif %}
+        {% if rtype in ('vnet_new', 'hub_integration') and done_actions and req.status not in terminals %}
+        <button class="btn btn-sm w-100" style="margin-top:12px;background:rgba(209,52,56,.12);border:2px solid #d13438;color:#f87171;padding:8px;font-weight:700;"
+                onclick="confirmRevertDeployment()">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Revert Entire VNET Deployment
+        </button>
+        <div id="revertDeployPanel" style="display:none;margin-top:12px;border:2px solid #d13438;background:rgba(209,52,56,.08);border-radius:10px;padding:14px;"></div>
+        {% endif %}
+
         {% if req.status not in [RequestStatus.HUB_INTEGRATED, RequestStatus.COMPLETED, RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
         <div style="margin-top:12px;display:flex;gap:8px;">
           <button class="btn btn-sm" style="background:rgba(209,52,56,.1);border:1px solid rgba(209,52,56,.3);color:#f87171;flex:1;padding:6px;"
@@ -1022,6 +1030,81 @@ async function doTerminate(status) {
     html += `<div style="font-size:12.5px;color:${d.success ? '#7edb56' : '#f59e0b'};margin-top:8px;">${d.message} Reloading…</div>`;
     panel.innerHTML = html;
     setTimeout(() => location.reload(), (d.steps || []).length ? 3000 : 1200);
+  } catch (e) {
+    panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+  }
+}
+
+// ── Aggregated "revert entire VNET deployment" (keeps the request open) ─────
+async function confirmRevertDeployment() {
+  const panel = document.getElementById('revertDeployPanel');
+  panel.style.display = 'block';
+  panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Checking deployed changes…</span>';
+  let d;
+  try {
+    d = await (await fetch(`/api/admin/requests/${REQ_ID}/deployed-changes`)).json();
+  } catch (e) {
+    panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Could not load deployed changes.</span>';
+    return;
+  }
+  const changes = d.changes || [];
+  if (!changes.length) {
+    panel.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">Nothing deployed to revert for this request.</span>';
+    return;
+  }
+  const hasCidr = changes.some(c => c.key === 'cidr');
+  const infra = changes.filter(c => c.key !== 'cidr');
+  let body = `<div style="font-size:12px;font-weight:800;color:#f87171;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">
+                <i class="bi bi-exclamation-octagon-fill me-1"></i>Destructive · full deployment revert</div>
+              <div style="font-size:12px;color:#f87171;margin-bottom:8px;line-height:1.6;">
+                This tears down <strong>everything deployed for request #${REQ_ID}</strong> in Azure, in the order Azure
+                requires (rules &amp; routes first, VNET last). The request stays open and resets to its pre-deployment
+                status so it can be redeployed. To also close it, use Cancel/Reject instead.</div>
+              <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">Steps, in revert order:</div>
+              <ol style="font-size:12px;color:var(--text-dim);margin:0 0 10px;padding-left:20px;line-height:1.7;">` +
+    infra.map(c => `<li>${c.label}${c.dry_run ? ' <span style="color:#f59e0b;">(was dry-run)</span>' : ''}</li>`).join('') +
+    `</ol>`;
+  if (hasCidr) {
+    body += `<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);margin-bottom:10px;cursor:pointer;">
+               <input type="checkbox" id="revDeployCidr" checked style="accent-color:#f87171;">
+               Also release the CIDR back to the pool (untick to keep it assigned for redeploy)
+             </label>`;
+  }
+  body += `<label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Comment / reason</label>
+           <textarea id="revDeployComment" rows="2" placeholder="Why is the deployment being reverted? (recorded in notes &amp; history)"
+             style="width:100%;font-size:12.5px;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 10px;margin:4px 0 10px;resize:vertical;"></textarea>
+           <div style="display:flex;gap:8px;">
+             <button class="btn btn-sm" style="flex:1;background:rgba(209,52,56,.2);border:1px solid #d13438;color:#f87171;font-weight:700;"
+               onclick="doRevertDeployment()"><i class="bi bi-arrow-counterclockwise me-1"></i>Yes, revert everything</button>
+             <button class="btn btn-glass btn-sm" style="flex:1;" onclick="document.getElementById('revertDeployPanel').style.display='none'">Keep deployment</button>
+           </div>`;
+  panel.innerHTML = body;
+}
+
+async function doRevertDeployment() {
+  const panel = document.getElementById('revertDeployPanel');
+  const cidrChk = document.getElementById('revDeployCidr');
+  const release_cidr = cidrChk ? cidrChk.checked : false;
+  const comment = ((document.getElementById('revDeployComment') || {}).value || '').trim();
+  panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Reverting deployment in Azure…</span>';
+  try {
+    const resp = await fetch(`/api/admin/requests/${REQ_ID}/revert-deployment`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ release_cidr, comment })
+    });
+    const d = await resp.json();
+    if (d.error) { panel.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; return; }
+    let html = '';
+    (d.steps || []).forEach(s => {
+      const icon = s.success ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i>'
+                             : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i>';
+      html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">${icon} ${s.label}
+                 ${s.dry_run ? '<span style="color:#f59e0b;">(dry-run)</span>' : ''}
+                 <div style="font-size:11px;color:var(--text-muted);margin-left:20px;">${s.message}</div></div>`;
+    });
+    html += `<div style="font-size:12.5px;color:${d.success ? '#7edb56' : '#f59e0b'};margin-top:8px;">${d.message} Reloading…</div>`;
+    panel.innerHTML = html;
+    setTimeout(() => location.reload(), 3000);
   } catch (e) {
     panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
   }
