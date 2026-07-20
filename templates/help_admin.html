@@ -21,7 +21,18 @@
   </div>
 
   <div class="glass-card" style="margin-bottom:18px;">
-    <div class="card-header-bar"><i class="bi bi-list-check"></i> First-time setup (in order)</div>
+    <div class="card-header-bar"><i class="bi bi-person-badge"></i> Roles</div>
+    <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
+      <ul style="margin:0;padding-left:20px;">
+        <li><strong>Requester</strong> — raises and tracks their own requests in the portal.</li>
+        <li><strong>Admin</strong> — processes requests: CIDR assignment, Azure actions, routing, DNS, decommission, and reverting changes.</li>
+        <li><strong>Super Admin</strong> — everything an admin can do, <em>plus</em> <strong>Settings</strong> (all configuration) and the <strong>Audit trail</strong>. First-time setup below is a super-admin task.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-list-check"></i> First-time setup (super-admin, in order)</div>
     <div class="card-body-pad" style="font-size:14px;color:var(--text-dim);line-height:1.75;">
       <ol style="margin:0;padding-left:20px;">
         <li><strong>Import the subnet inventory</strong> (<a href="{{ url_for('admin_inventory') }}" style="color:#60a5fa;">Import Inventory</a>) — load your current allocations first, or the allocator may hand out ranges already in use.</li>
@@ -57,7 +68,7 @@
         <li><strong>No silent overwrite/delete</strong> — when a rule, route, VNET, peering, zone or record already exists, you see its current state and choose to update, proceed as-is, or reject.</li>
         <li><strong>Change ledger</strong> (<a href="{{ url_for('admin_changes') }}" style="color:#60a5fa;">Changes</a>) records every mutation with its before/after state and a revert plan — restore any change from there.</li>
         <li><strong>Cancel / Reject</strong> shows the deployed changes it will automatically revert, and takes a comment.</li>
-        <li><strong>Audit trail</strong> (<a href="{{ url_for('admin_audit') }}" style="color:#60a5fa;">Audit</a>) records who did what, when, on which request.</li>
+        <li><strong>Audit trail</strong> {% if is_superadmin %}(<a href="{{ url_for('admin_audit') }}" style="color:#60a5fa;">Audit</a>){% else %}<span style="color:var(--text-muted);">(super-admin only)</span>{% endif %} records who did what, when, on which request.</li>
       </ul>
     </div>
   </div>

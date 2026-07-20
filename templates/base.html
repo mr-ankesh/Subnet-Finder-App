@@ -60,15 +60,19 @@
           <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}">
             <i class="bi bi-robot"></i> Admin Agent
           </a>
+          {% if is_superadmin %}
           <a href="{{ url_for('admin_audit') }}" class="nav-link {% if request.endpoint == 'admin_audit' %}active{% endif %}">
             <i class="bi bi-journal-text"></i> Audit
           </a>
+          {% endif %}
           <a href="{{ url_for('admin_changes') }}" class="nav-link {% if request.endpoint == 'admin_changes' %}active{% endif %}">
             <i class="bi bi-arrow-counterclockwise"></i> Changes
           </a>
+          {% if is_superadmin %}
           <a href="{{ url_for('admin_settings') }}" class="nav-link {% if request.endpoint == 'admin_settings' %}active{% endif %}">
             <i class="bi bi-gear"></i> Settings
           </a>
+          {% endif %}
           <a href="{{ url_for('help_admin') }}" class="nav-link {% if request.endpoint == 'help_admin' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide
           </a>

@@ -587,9 +587,11 @@
         </div>
         {% endfor %}
       </div>
+      {% if is_superadmin %}
       <div style="margin-top:12px;">
         <a href="{{ url_for('admin_audit') }}?request_id={{ req.id }}" style="font-size:12px;color:#60a5fa;text-decoration:none;">Full audit trail for this request →</a>
       </div>
+      {% endif %}
       {% else %}
       <p style="font-size:13px;color:var(--text-muted);margin:0;">No recorded history yet — events are tracked from now on.</p>
       {% endif %}

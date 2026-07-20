@@ -160,8 +160,10 @@ SETTINGS_SPEC = {
     "KEYCLOAK_CLIENT_ID":     _f("auth", "Client ID", help="Confidential client for this app, e.g. subnet-manager"),
     "KEYCLOAK_CLIENT_SECRET": _f("auth", "Client secret", secret=True,
                                  help="Stored encrypted. Leave blank on save to keep the current value."),
+    "KEYCLOAK_SUPERADMIN_ROLE": _f("auth", "Super-admin role", "subnet-superadmin",
+                                   help="Full portal access, including Settings and the Audit trail. Super-admins are also admins."),
     "KEYCLOAK_ADMIN_ROLE":    _f("auth", "Admin role", "subnet-admin",
-                                 help="Realm/client role that maps to admin access."),
+                                 help="Operational admin — process requests, run Azure actions, revert changes. NO access to Settings or Audit (those need the super-admin role)."),
     "KEYCLOAK_REQUESTER_ROLE": _f("auth", "Requester role", "subnet-requester",
                                   help="Role for the requester portal (or leave open to all authenticated users)."),
 

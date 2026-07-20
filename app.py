@@ -248,6 +248,26 @@ def require_admin(f):
     return decorated
 
 
+def require_superadmin(f):
+    """Guards Settings and the Audit trail — super-admins only. A signed-in
+    admin without the super-admin role gets 403 (not a login bounce)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if session.get("is_superadmin"):
+            return f(*args, **kwargs)
+        if session.get("is_admin") or session.get("is_requester") or session.get("sso"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Super-admin access required"}), 403
+            return render_template("forbidden.html",
+                                   need="Super Admin",
+                                   detail="Settings and the Audit trail are restricted to "
+                                          "super-admins."), 403
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Authentication required"}), 401
+        return redirect(url_for(_login_endpoint(), next=request.url))
+    return decorated
+
+
 def require_login(f):
     """Requester-portal guard. Open when SSO is off (legacy behaviour); when
     Keycloak is on, requires an authenticated requester (or admin)."""
@@ -273,6 +293,7 @@ def inject_globals():
             # Only lock a form field when Keycloak actually supplied that value.
             "sso_lock_name": bool(session.get("sso") and session.get("sso_has_name")),
             "sso_lock_email": bool(session.get("sso") and session.get("sso_email")),
+            "is_superadmin": session.get("is_superadmin", False),
             "is_authed": bool(session.get("is_admin") or session.get("is_requester"))}
 
 
@@ -327,10 +348,13 @@ def admin_login():
     if request.method == "POST":
         name = (request.form.get("admin_name") or "").strip()[:100]
         if request.form.get("password") == cfg.ADMIN_PASSWORD:
+            # The local break-glass account is the master account → super-admin
+            # (full portal access, so it can reach Settings during an SSO outage).
             session["is_admin"] = True
+            session["is_superadmin"] = True
             session["admin_name"] = name or "Admin"
             audit.record("admin_login", actor=session["admin_name"], actor_role="admin",
-                         summary=f"Local admin login from {request.remote_addr}")
+                         summary=f"Local break-glass (super-admin) login from {request.remote_addr}")
             return redirect(request.form.get("next") or url_for("requests_list"))
         error = "Incorrect password."
         audit.record("admin_login_failed", actor=name or "unknown", actor_role="system",
@@ -382,7 +406,8 @@ def auth_callback():
 
     info = token.get("userinfo") or {}
     roles = oidc.roles_from_token(token)
-    is_admin = cfg.KEYCLOAK_ADMIN_ROLE in roles
+    is_superadmin = bool(cfg.KEYCLOAK_SUPERADMIN_ROLE) and cfg.KEYCLOAK_SUPERADMIN_ROLE in roles
+    is_admin = is_superadmin or (cfg.KEYCLOAK_ADMIN_ROLE in roles)
     req_role = cfg.KEYCLOAK_REQUESTER_ROLE
     is_requester = is_admin or (not req_role) or (req_role in roles)
 
@@ -401,6 +426,7 @@ def auth_callback():
 
     session["sso"] = True
     session["is_admin"] = is_admin
+    session["is_superadmin"] = is_superadmin
     session["is_requester"] = is_requester
     session["sso_user"] = username
     session["sso_email"] = info.get("email") or ""
@@ -450,7 +476,7 @@ def _validate_setting(key: str, spec: dict, value: str):
 
 
 @app.route("/admin/settings")
-@require_admin
+@require_superadmin
 def admin_settings():
     return render_template(
         "settings.html",
@@ -460,7 +486,7 @@ def admin_settings():
 
 
 @app.route("/api/admin/settings", methods=["POST"])
-@require_admin
+@require_superadmin
 def admin_settings_save():
     data = request.get_json(force=True) or {}
     to_save, errors = [], {}
@@ -496,7 +522,7 @@ def admin_settings_save():
 
 
 @app.route("/api/admin/settings/reset", methods=["POST"])
-@require_admin
+@require_superadmin
 def admin_settings_reset():
     key = (request.get_json(force=True) or {}).get("key", "")
     if key not in SETTINGS_SPEC:
@@ -518,6 +544,10 @@ def admin_settings_reset():
 @require_admin
 def fw_collections():
     if request.method == "POST":
+        # Defining collections is a Settings-tab action → super-admin only.
+        # (GET stays open to admins — it feeds the request-processing dropdowns.)
+        if not session.get("is_superadmin"):
+            return jsonify({"error": "Super-admin access required"}), 403
         data = request.get_json(force=True) or {}
         rcg = str(data.get("rcg", "")).strip()
         col = str(data.get("collection", "")).strip()
@@ -562,7 +592,7 @@ def fw_collections():
 
 
 @app.route("/api/admin/firewall/collections/<int:cid>/delete", methods=["POST"])
-@require_admin
+@require_superadmin
 def fw_collections_delete(cid):
     row = FwCollection.query.get_or_404(cid)
     info = row.to_dict()
@@ -575,7 +605,7 @@ def fw_collections_delete(cid):
 
 
 @app.route("/api/admin/settings/test-azure", methods=["POST"])
-@require_admin
+@require_superadmin
 def admin_settings_test_azure():
     import azure_tools
     res = azure_tools.test_connection()
@@ -583,7 +613,7 @@ def admin_settings_test_azure():
 
 
 @app.route("/api/admin/settings/test-keycloak", methods=["POST"])
-@require_admin
+@require_superadmin
 def admin_settings_test_keycloak():
     # Rebuild the OIDC client so the test reflects just-saved settings.
     oidc._oauth = None
@@ -593,7 +623,7 @@ def admin_settings_test_keycloak():
 
 
 @app.route("/api/admin/settings/preview-name", methods=["POST"])
-@require_admin
+@require_superadmin
 def admin_settings_preview_name():
     """Live preview for the naming tab — renders a template with sample values."""
     data = request.get_json(force=True) or {}
@@ -1028,7 +1058,7 @@ def request_complete_manual(req_id):
 
 
 @app.route("/admin/audit")
-@require_admin
+@require_superadmin
 def admin_audit():
     f_actor  = request.args.get("actor", "").strip()
     f_action = request.args.get("action", "").strip()
@@ -1067,6 +1097,9 @@ def admin_change_revert(cid):
 def admin_search():
     q = request.args.get("q", "").strip()
     results = search.global_search(q) if q else {}
+    # Audit results are super-admin-only (mirrors the Audit trail restriction).
+    if results and not session.get("is_superadmin"):
+        results["audit"] = []
     total = sum(len(v) for v in results.values())
     return render_template("search_results.html", q=q, results=results, total=total)
 
