@@ -166,6 +166,8 @@ SETTINGS_SPEC = {
                                  help="Operational admin — process requests, run Azure actions, revert changes. NO access to Settings or Audit (those need the super-admin role)."),
     "KEYCLOAK_REQUESTER_ROLE": _f("auth", "Requester role", "subnet-requester",
                                   help="Role for the requester portal (or leave open to all authenticated users)."),
+    "KEYCLOAK_ALLOCATOR_ROLE": _f("auth", "Subnet-allocator role", "subnet-allocator",
+                                  help="Access to the subnet allocator ONLY — find/allocate/release subnets and manage the inventory. No request processing, Azure actions, Settings or Audit. Admins already have this."),
 
     # ── Safety ──
     "AZURE_DRY_RUN": _f("safety", "Dry-run mode (simulate Azure changes)", "true", type="bool",

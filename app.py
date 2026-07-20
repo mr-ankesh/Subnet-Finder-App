@@ -229,22 +229,46 @@ def _login_endpoint():
     return "auth_login" if oidc.enabled() else "admin_login"
 
 
+def _home_endpoint() -> str:
+    """The landing page for the signed-in user, by highest capability."""
+    if session.get("is_admin"):
+        return "requests_list"
+    if session.get("is_allocator"):
+        return "segment_select"
+    if session.get("is_requester"):
+        return "requester_page"
+    return "requester_page"
+
+
 def require_admin(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("is_admin"):
-            # Already signed in but NOT an admin (e.g. a requester who hit an
-            # admin URL like '/'): send them to their portal — never back to
+            # Already signed in but NOT an admin (a requester or allocator who
+            # hit an admin URL): send them to their own home — never back to
             # login, or SSO bounces forever (redirect loop).
-            if session.get("is_requester") or session.get("sso"):
+            if session.get("is_requester") or session.get("is_allocator") or session.get("sso"):
                 if request.path.startswith("/api/"):
                     return jsonify({"error": "Admin access required"}), 403
-                return redirect(url_for("requester_page"))
+                return redirect(url_for(_home_endpoint()))
             # Not authenticated at all → login.
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for(_login_endpoint(), next=request.url))
         return f(*args, **kwargs)
+    return decorated
+
+
+def require_subnet_access(f):
+    """Guards the subnet allocator — admins OR subnet-allocators. Open when SSO
+    is off (legacy). A signed-in user without either role is sent to their home."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if session.get("is_admin") or session.get("is_allocator") or not session.get("sso"):
+            return f(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Subnet-allocator access required"}), 403
+        return redirect(url_for(_home_endpoint()))
     return decorated
 
 
@@ -274,6 +298,12 @@ def require_login(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if oidc.enabled() and not (session.get("is_requester") or session.get("is_admin")):
+            # Signed in but without portal access (e.g. a pure subnet-allocator)
+            # → their own home, not a login bounce. Truly anonymous → login.
+            if session.get("sso"):
+                if request.path.startswith("/api/"):
+                    return jsonify({"error": "Requester access required"}), 403
+                return redirect(url_for(_home_endpoint()))
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Authentication required"}), 401
             return redirect(url_for("auth_login", next=request.url))
@@ -294,7 +324,9 @@ def inject_globals():
             "sso_lock_name": bool(session.get("sso") and session.get("sso_has_name")),
             "sso_lock_email": bool(session.get("sso") and session.get("sso_email")),
             "is_superadmin": session.get("is_superadmin", False),
-            "is_authed": bool(session.get("is_admin") or session.get("is_requester"))}
+            "is_allocator": session.get("is_allocator", False),
+            "is_authed": bool(session.get("is_admin") or session.get("is_requester")
+                              or session.get("is_allocator"))}
 
 
 def current_actor() -> str:
@@ -408,6 +440,7 @@ def auth_callback():
     roles = oidc.roles_from_token(token)
     is_superadmin = bool(cfg.KEYCLOAK_SUPERADMIN_ROLE) and cfg.KEYCLOAK_SUPERADMIN_ROLE in roles
     is_admin = is_superadmin or (cfg.KEYCLOAK_ADMIN_ROLE in roles)
+    is_allocator = is_admin or (bool(cfg.KEYCLOAK_ALLOCATOR_ROLE) and cfg.KEYCLOAK_ALLOCATOR_ROLE in roles)
     req_role = cfg.KEYCLOAK_REQUESTER_ROLE
     is_requester = is_admin or (not req_role) or (req_role in roles)
 
@@ -416,10 +449,9 @@ def auth_callback():
     full = (((info.get("given_name") or "") + " " + (info.get("family_name") or "")).strip())
     display = info.get("name") or full or username
 
-    if not is_admin and not is_requester:
+    if not (is_admin or is_requester or is_allocator):
         audit.record("sso_denied", actor=display, actor_role="system",
-                     summary=f"SSO login denied for {username} — missing "
-                             f"'{req_role or cfg.KEYCLOAK_ADMIN_ROLE}' role")
+                     summary=f"SSO login denied for {username} — no recognised role")
         return render_template("sso_denied.html", username=username,
                                admin_role=cfg.KEYCLOAK_ADMIN_ROLE,
                                requester_role=req_role), 403
@@ -427,6 +459,7 @@ def auth_callback():
     session["sso"] = True
     session["is_admin"] = is_admin
     session["is_superadmin"] = is_superadmin
+    session["is_allocator"] = is_allocator
     session["is_requester"] = is_requester
     session["sso_user"] = username
     session["sso_email"] = info.get("email") or ""
@@ -435,12 +468,13 @@ def auth_callback():
     if token.get("id_token"):
         session["sso_id_token"] = token["id_token"]
 
+    role = "admin" if is_admin else ("allocator" if is_allocator and not is_requester else "requester")
     audit.record("admin_login" if is_admin else "sso_login",
                  actor=display, actor_role="admin" if is_admin else "requester",
-                 summary=f"Keycloak SSO login ({username}, "
-                         f"role: {'admin' if is_admin else 'requester'})")
-    dest = session.pop("auth_next", "") or (url_for("requests_list") if is_admin
-                                            else url_for("requester_page"))
+                 summary=f"Keycloak SSO login ({username}, role: {role})")
+    landing = "requests_list" if is_admin else ("segment_select" if is_allocator and not is_requester
+                                                else "requester_page")
+    dest = session.pop("auth_next", "") or url_for(landing)
     return redirect(dest)
 
 
@@ -736,7 +770,7 @@ def deallocate_subnet(selected_cidr, base_net):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.route("/")
-@require_admin
+@require_subnet_access
 def segment_select():
     pools = [{"key": k, "cidr": v} for k, v in POOLS.items()]
     inventory_empty = SubnetRecord.query.count() == 0
@@ -797,7 +831,7 @@ def _import_inventory(rows):
 
 
 @app.route("/admin/inventory", methods=["GET", "POST"])
-@require_admin
+@require_subnet_access
 def admin_inventory():
     """
     Post-deployment onboarding: the app ships with an EMPTY inventory — the
@@ -840,7 +874,7 @@ def admin_inventory():
 
 
 @app.route("/allocator/<pool_key>")
-@require_admin
+@require_subnet_access
 def allocator(pool_key):
     if pool_key not in POOLS:
         pool_key = DEFAULT_POOL
@@ -852,7 +886,7 @@ def allocator(pool_key):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.route("/pool_stats")
-@require_admin
+@require_subnet_access
 def pool_stats():
     from db_utils import count_used_subnets_db
     pool, base_net = get_pool_from_request()
@@ -865,7 +899,7 @@ def pool_stats():
 
 
 @app.route("/get_subnet", methods=["POST"])
-@require_admin
+@require_subnet_access
 def get_subnet():
     pool, base_net = get_pool_from_request()
     cidr_input = request.form.get("cidr", "").strip()
@@ -885,7 +919,7 @@ def get_subnet():
 
 
 @app.route("/allocate", methods=["POST"])
-@require_admin
+@require_subnet_access
 def allocate():
     pool, base_net = get_pool_from_request()
     selected     = request.form.get("selected")
@@ -907,7 +941,7 @@ def allocate():
 
 
 @app.route("/deallocate", methods=["POST"])
-@require_admin
+@require_subnet_access
 def deallocate():
     pool, base_net = get_pool_from_request()
     selected = request.form.get("selected")
@@ -930,7 +964,7 @@ def deallocate():
 
 
 @app.route("/all_available")
-@require_admin
+@require_subnet_access
 def all_available():
     pool, base_net = get_pool_from_request()
     free_blocks = compute_free_blocks(pool, base_net)
@@ -938,14 +972,14 @@ def all_available():
 
 
 @app.route("/available_base")
-@require_admin
+@require_subnet_access
 def available_base_route():
     pool, base_net = get_pool_from_request()
     return jsonify({"available": [str(n) for n in compute_free_blocks(pool, base_net)]})
 
 
 @app.route("/allocated")
-@require_admin
+@require_subnet_access
 def allocated():
     from db_utils import get_allocated_subnets_db
     pool, base_net = get_pool_from_request()
@@ -966,7 +1000,7 @@ def allocated():
 
 
 @app.route("/summary_unused")
-@require_admin
+@require_subnet_access
 def summary_unused_route():
     pool, base_net = get_pool_from_request()
     free_blocks = compute_free_blocks(pool, base_net)
@@ -977,7 +1011,7 @@ def summary_unused_route():
 
 
 @app.route("/free_summary")
-@require_admin
+@require_subnet_access
 def free_summary():
     pool, base_net = get_pool_from_request()
     free_blocks = compute_free_blocks(pool, base_net)

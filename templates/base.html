@@ -30,7 +30,7 @@
 
   <nav id="mainNav">
     <div class="nav-inner">
-      <a class="brand" href="{{ url_for('segment_select') if is_admin else url_for('requester_page') }}">
+      <a class="brand" href="{{ url_for('segment_select') if (is_admin or is_allocator) else url_for('requester_page') }}">
         <img class="brand-logo"
              src="{{ url_for('static', filename='logo2.svg') }}"
              alt="Presight">
@@ -82,6 +82,18 @@
           </form>
           {% if sso_name %}<span class="nav-link" style="color:var(--text-muted);cursor:default;"><i class="bi bi-person-circle"></i> {{ sso_name }}</span>{% endif %}
           <a href="{{ url_for('admin_logout') }}" class="nav-link" style="color:var(--text-muted);">
+            <i class="bi bi-box-arrow-right"></i> Logout
+          </a>
+          {% elif is_allocator %}
+          {# Subnet-allocator view — allocator only #}
+          <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint in ('segment_select', 'allocator') %}active{% endif %}">
+            <i class="bi bi-hdd-network"></i> Subnet Allocator
+          </a>
+          <a href="{{ url_for('admin_inventory') }}" class="nav-link {% if request.endpoint == 'admin_inventory' %}active{% endif %}">
+            <i class="bi bi-box-arrow-in-down"></i> Import Inventory
+          </a>
+          {% if sso_name %}<span class="nav-link" style="color:var(--text-muted);cursor:default;"><i class="bi bi-person-circle"></i> {{ sso_name }}</span>{% endif %}
+          <a href="{{ url_for('auth_logout') if sso else url_for('admin_logout') }}" class="nav-link" style="color:var(--text-muted);">
             <i class="bi bi-box-arrow-right"></i> Logout
           </a>
           {% else %}
