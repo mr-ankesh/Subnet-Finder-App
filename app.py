@@ -1284,16 +1284,14 @@ def it_reachability_run():
     data = request.get_json(force=True) or {}
     res = reachability.run_check(
         source=str(data.get("source", "")).strip(),
-        dest=str(data.get("dest", "")).strip(),
-        port=data.get("port"),
         method=str(data.get("method", "")).strip(),
+        target=str(data.get("target", "")).strip(),
+        port=data.get("port"),
     )
     if res.get("success"):
         audit.record("reachability_check", actor=current_actor(), actor_role="admin",
-                     summary=f"{reachability.source_label(str(data.get('source','')))} → "
-                             f"{res.get('method')} {res.get('dest')}"
-                             f"{(':' + str(res.get('port'))) if res.get('port') else ''} "
-                             f"(exit {res.get('exit_code')})")
+                     summary=f"{res.get('source')} → {res.get('method')} {res.get('target')} "
+                             f"→ {res.get('verdict')} (exit {res.get('exit_code')})")
     return jsonify(res), (200 if res.get("success") else 400)
 
 

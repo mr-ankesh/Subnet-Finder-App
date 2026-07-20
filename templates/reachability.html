@@ -34,20 +34,21 @@
         <div class="col-md-4">
           <label class="form-label-custom">2 · Check type *</label>
           <select class="form-input-custom" id="r_method" onchange="onMethodChange()">
-            <option value="ping">Ping (ICMP)</option>
-            <option value="tcp">TCP port (telnet-style)</option>
-            <option value="curl">Curl (HTTP/HTTPS)</option>
+            <option value="ping">Ping (is the host reachable)</option>
+            <option value="telnet">Telnet (is a TCP port open)</option>
+            <option value="curl">Curl (reach a URL / endpoint)</option>
           </select>
         </div>
-        <div class="col-md-5">
-          <label class="form-label-custom">3 · Destination *</label>
-          <input type="text" class="form-input-custom" id="r_dest" placeholder="IP or FQDN — e.g. 10.20.30.40 or api.example.com">
+        <div class="col-md-6" id="targetCol">
+          <label class="form-label-custom" id="r_target_label">3 · Destination *</label>
+          <input type="text" class="form-input-custom" id="r_target" placeholder="IP or FQDN — e.g. 10.20.30.40 or api.example.com">
         </div>
-        <div class="col-md-3">
-          <label class="form-label-custom" id="r_port_label">Port <span id="r_port_req" style="color:#f87171;">*</span></label>
+        <div class="col-md-2" id="portCol">
+          <label class="form-label-custom">Port *</label>
           <input type="number" class="form-input-custom" id="r_port" min="1" max="65535" placeholder="e.g. 443">
         </div>
       </div>
+      <div id="r_hint" style="font-size:11.5px;color:var(--text-muted);margin-top:8px;"></div>
 
       <div style="margin-top:18px;">
         <button class="btn-primary-custom" id="runBtn" onclick="runCheck()">
@@ -90,12 +91,24 @@ function pickSource(s, btn) {
   btn.classList.add('active');
 }
 
+const METHOD_UI = {
+  ping:   { label: '3 · Destination *', ph: 'IP or FQDN — e.g. 10.20.30.40 or api.example.com',
+            port: false, hint: 'Checks whether the host answers ICMP echo from the connector.' },
+  telnet: { label: '3 · Destination *', ph: 'IP or FQDN — e.g. 10.20.30.40 or api.example.com',
+            port: true,  hint: 'Checks whether a TCP port is open on the destination (telnet-style).' },
+  curl:   { label: '3 · URL / endpoint to curl *', ph: 'e.g. https://api.example.com  or  https://host:8443/health',
+            port: false, hint: 'Paste the full URL to reach. No port needed — include it in the URL if non-standard.' },
+};
+
 function onMethodChange() {
   const m = document.getElementById('r_method').value;
-  const needsPort = (m !== 'ping');
-  document.getElementById('r_port').disabled = !needsPort;
-  document.getElementById('r_port_req').style.display = needsPort ? '' : 'none';
-  if (!needsPort) document.getElementById('r_port').value = '';
+  const ui = METHOD_UI[m] || METHOD_UI.ping;
+  document.getElementById('r_target_label').textContent = ui.label;
+  document.getElementById('r_target').placeholder = ui.ph;
+  document.getElementById('portCol').style.display = ui.port ? '' : 'none';
+  document.getElementById('targetCol').className = ui.port ? 'col-md-6' : 'col-md-8';
+  document.getElementById('r_hint').textContent = ui.hint;
+  if (!ui.port) document.getElementById('r_port').value = '';
 }
 
 function box(kind, html) {
@@ -103,33 +116,49 @@ function box(kind, html) {
   return `<div style="font-size:13px;color:${c};margin-bottom:8px;">${html}</div>`;
 }
 
+const VERDICT = {
+  reachable: { color: '#7edb56', bg: 'rgba(126,219,86,.10)', bd: 'rgba(126,219,86,.4)', icon: 'check-circle-fill' },
+  dns:       { color: '#f59e0b', bg: 'rgba(245,158,11,.10)', bd: 'rgba(245,158,11,.4)', icon: 'exclamation-triangle-fill' },
+  unreachable:{color: '#f87171', bg: 'rgba(248,113,113,.10)', bd: 'rgba(248,113,113,.4)', icon: 'x-circle-fill' },
+};
+
 async function runCheck() {
   const method = document.getElementById('r_method').value;
-  const dest = document.getElementById('r_dest').value.trim();
+  const target = document.getElementById('r_target').value.trim();
   const port = document.getElementById('r_port').value.trim();
   const out = document.getElementById('rResult');
-  if (!dest) { out.innerHTML = box('error', 'Enter a destination (IP or FQDN).'); return; }
-  if (method !== 'ping' && !port) { out.innerHTML = box('error', 'Enter a port for this check.'); return; }
+  const ui = METHOD_UI[method];
+  if (!target) { out.innerHTML = box('error', method === 'curl' ? 'Enter a URL to curl.' : 'Enter a destination.'); return; }
+  if (ui.port && !port) { out.innerHTML = box('error', 'Enter a port for the telnet check.'); return; }
 
   const btn = document.getElementById('runBtn');
   const orig = btn.innerHTML;
-  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Running…';
-  out.innerHTML = box('info', 'Running on the ' + (R_SOURCE === 'rnd' ? 'R&D' : 'NMO') + ' ZPA connector…');
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Checking…';
+  out.innerHTML = box('info', 'Running from the ' + (R_SOURCE === 'rnd' ? 'R&D' : 'NMO') + ' ZPA connector…');
   try {
     const r = await fetch('/api/it/reachability', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: R_SOURCE, dest, port: port || null, method })
+      body: JSON.stringify({ source: R_SOURCE, method, target, port: port || null })
     });
     const d = await r.json();
     if (!d.success) { out.innerHTML = box('error', '<i class="bi bi-x-circle-fill me-1"></i>' + (d.message || 'Check failed.')); }
     else {
-      const ok = d.exit_code === 0;
-      const head = `<i class="bi bi-${ok ? 'check-circle-fill' : 'exclamation-triangle-fill'} me-1"></i>` +
-        `${d.source} → <strong>${d.dest}</strong>${d.port ? ':' + d.port : ''} · ${d.method.toUpperCase()} · exit ${d.exit_code}`;
-      const body = (d.stdout || '') + (d.stderr ? '\n' + d.stderr : '') || '(no output)';
-      out.innerHTML = box(ok ? 'ok' : 'error', head) +
-        `<div style="font-size:10.5px;color:var(--text-muted);margin-bottom:6px;font-family:var(--mono,monospace);">$ ${d.command.replace(/</g,'&lt;')}</div>` +
-        `<div class="r-out">${body.replace(/</g,'&lt;')}</div>`;
+      const v = VERDICT[d.verdict] || VERDICT.unreachable;
+      let html =
+        `<div style="border:1px solid ${v.bd};background:${v.bg};border-radius:12px;padding:16px 18px;">
+           <div style="font-size:15px;font-weight:700;color:${v.color};display:flex;align-items:center;gap:10px;">
+             <i class="bi bi-${v.icon}"></i><span>${(d.headline||'').replace(/</g,'&lt;')}</span>
+           </div>
+           ${d.guidance ? `<div style="font-size:13px;color:var(--text-dim);margin-top:8px;line-height:1.6;">${d.guidance.replace(/</g,'&lt;')}</div>` : ''}
+           <div style="font-size:11px;color:var(--text-muted);margin-top:10px;">${d.source} · ${d.method.toUpperCase()} · ${(d.target||'').replace(/</g,'&lt;')}</div>
+         </div>`;
+      if (d.details) {
+        html += `<details style="margin-top:10px;">
+                   <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;">Show technical details</summary>
+                   <div class="r-out" style="margin-top:8px;">${d.details.replace(/</g,'&lt;')}</div>
+                 </details>`;
+      }
+      out.innerHTML = html;
     }
   } catch (e) { out.innerHTML = box('error', 'Network error.'); }
   btn.disabled = false; btn.innerHTML = orig;
