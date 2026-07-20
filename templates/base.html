@@ -84,27 +84,28 @@
           <a href="{{ url_for('admin_logout') }}" class="nav-link" style="color:var(--text-muted);">
             <i class="bi bi-box-arrow-right"></i> Logout
           </a>
-          {% elif is_allocator %}
-          {# Subnet-allocator view — allocator only #}
+          {% else %}
+          {# Non-admin: additive links per capability, so a user with several
+             roles (e.g. requester + allocator) can reach every area they own. #}
+          {% if is_allocator %}
           <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint in ('segment_select', 'allocator') %}active{% endif %}">
             <i class="bi bi-hdd-network"></i> Subnet Allocator
           </a>
           <a href="{{ url_for('admin_inventory') }}" class="nav-link {% if request.endpoint == 'admin_inventory' %}active{% endif %}">
             <i class="bi bi-box-arrow-in-down"></i> Import Inventory
           </a>
-          {% if sso_name %}<span class="nav-link" style="color:var(--text-muted);cursor:default;"><i class="bi bi-person-circle"></i> {{ sso_name }}</span>{% endif %}
-          <a href="{{ url_for('auth_logout') if sso else url_for('admin_logout') }}" class="nav-link" style="color:var(--text-muted);">
-            <i class="bi bi-box-arrow-right"></i> Logout
+          {% endif %}
+          {% if is_requester or not sso %}
+          <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
+            <i class="bi bi-person"></i> Requester Portal
           </a>
-          {% else %}
-          {# Requester view — no Home/admin links (avoids admin-only redirects) #}
           <a href="{{ url_for('help_requester') }}" class="nav-link {% if request.endpoint == 'help_requester' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide
           </a>
+          {% endif %}
           {% if is_authed %}
-          {# SSO requester (not admin) — show identity + logout #}
           {% if sso_name %}<span class="nav-link" style="color:var(--text-muted);cursor:default;"><i class="bi bi-person-circle"></i> {{ sso_name }}</span>{% endif %}
-          <a href="{{ url_for('auth_logout') }}" class="nav-link" style="color:var(--text-muted);">
+          <a href="{{ url_for('auth_logout') if sso else url_for('admin_logout') }}" class="nav-link" style="color:var(--text-muted);">
             <i class="bi bi-box-arrow-right"></i> Logout
           </a>
           {% else %}

@@ -325,6 +325,7 @@ def inject_globals():
             "sso_lock_email": bool(session.get("sso") and session.get("sso_email")),
             "is_superadmin": session.get("is_superadmin", False),
             "is_allocator": session.get("is_allocator", False),
+            "is_requester": session.get("is_requester", False),
             "is_authed": bool(session.get("is_admin") or session.get("is_requester")
                               or session.get("is_allocator"))}
 
@@ -468,13 +469,16 @@ def auth_callback():
     if token.get("id_token"):
         session["sso_id_token"] = token["id_token"]
 
-    role = "admin" if is_admin else ("allocator" if is_allocator and not is_requester else "requester")
+    granted = [r for r, ok in (("super-admin", is_superadmin),
+                               ("admin", is_admin and not is_superadmin),
+                               ("allocator", is_allocator and not is_admin),
+                               ("requester", is_requester and not is_admin)) if ok]
     audit.record("admin_login" if is_admin else "sso_login",
                  actor=display, actor_role="admin" if is_admin else "requester",
-                 summary=f"Keycloak SSO login ({username}, role: {role})")
-    landing = "requests_list" if is_admin else ("segment_select" if is_allocator and not is_requester
-                                                else "requester_page")
-    dest = session.pop("auth_next", "") or url_for(landing)
+                 summary=f"Keycloak SSO login ({username}, roles: {', '.join(granted) or 'none'})")
+    # Land on the highest-capability home (session is set → _home_endpoint is
+    # the single source of truth; the nav offers the other areas they can reach).
+    dest = session.pop("auth_next", "") or url_for(_home_endpoint())
     return redirect(dest)
 
 
