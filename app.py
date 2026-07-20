@@ -235,6 +235,8 @@ def _home_endpoint() -> str:
         return "requests_list"
     if session.get("is_allocator"):
         return "segment_select"
+    if session.get("is_itadmin"):
+        return "it_reachability"
     if session.get("is_requester"):
         return "requester_page"
     return "requester_page"
@@ -268,6 +270,19 @@ def require_subnet_access(f):
             return f(*args, **kwargs)
         if request.path.startswith("/api/"):
             return jsonify({"error": "Subnet-allocator access required"}), 403
+        return redirect(url_for(_home_endpoint()))
+    return decorated
+
+
+def require_itadmin(f):
+    """Guards the Reachability Tester — IT-admins OR super-admins. Open when SSO
+    is off (legacy). A signed-in user without access is sent to their home."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if session.get("is_itadmin") or session.get("is_superadmin") or not session.get("sso"):
+            return f(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "IT-admin access required"}), 403
         return redirect(url_for(_home_endpoint()))
     return decorated
 
@@ -325,9 +340,10 @@ def inject_globals():
             "sso_lock_email": bool(session.get("sso") and session.get("sso_email")),
             "is_superadmin": session.get("is_superadmin", False),
             "is_allocator": session.get("is_allocator", False),
+            "is_itadmin": session.get("is_itadmin", False),
             "is_requester": session.get("is_requester", False),
             "is_authed": bool(session.get("is_admin") or session.get("is_requester")
-                              or session.get("is_allocator"))}
+                              or session.get("is_allocator") or session.get("is_itadmin"))}
 
 
 def current_actor() -> str:
@@ -442,6 +458,7 @@ def auth_callback():
     is_superadmin = bool(cfg.KEYCLOAK_SUPERADMIN_ROLE) and cfg.KEYCLOAK_SUPERADMIN_ROLE in roles
     is_admin = is_superadmin or (cfg.KEYCLOAK_ADMIN_ROLE in roles)
     is_allocator = is_admin or (bool(cfg.KEYCLOAK_ALLOCATOR_ROLE) and cfg.KEYCLOAK_ALLOCATOR_ROLE in roles)
+    is_itadmin = is_superadmin or (bool(cfg.KEYCLOAK_ITADMIN_ROLE) and cfg.KEYCLOAK_ITADMIN_ROLE in roles)
     req_role = cfg.KEYCLOAK_REQUESTER_ROLE
     is_requester = is_admin or (not req_role) or (req_role in roles)
 
@@ -450,7 +467,7 @@ def auth_callback():
     full = (((info.get("given_name") or "") + " " + (info.get("family_name") or "")).strip())
     display = info.get("name") or full or username
 
-    if not (is_admin or is_requester or is_allocator):
+    if not (is_admin or is_requester or is_allocator or is_itadmin):
         audit.record("sso_denied", actor=display, actor_role="system",
                      summary=f"SSO login denied for {username} — no recognised role")
         return render_template("sso_denied.html", username=username,
@@ -461,6 +478,7 @@ def auth_callback():
     session["is_admin"] = is_admin
     session["is_superadmin"] = is_superadmin
     session["is_allocator"] = is_allocator
+    session["is_itadmin"] = is_itadmin
     session["is_requester"] = is_requester
     session["sso_user"] = username
     session["sso_email"] = info.get("email") or ""
@@ -472,6 +490,7 @@ def auth_callback():
     granted = [r for r, ok in (("super-admin", is_superadmin),
                                ("admin", is_admin and not is_superadmin),
                                ("allocator", is_allocator and not is_admin),
+                               ("it-admin", is_itadmin and not is_superadmin),
                                ("requester", is_requester and not is_admin)) if ok]
     audit.record("admin_login" if is_admin else "sso_login",
                  actor=display, actor_role="admin" if is_admin else "requester",
@@ -647,6 +666,15 @@ def fw_collections_delete(cid):
 def admin_settings_test_azure():
     import azure_tools
     res = azure_tools.test_connection()
+    return jsonify(res), (200 if res.get("success") else 400)
+
+
+@app.route("/api/admin/settings/test-connector", methods=["POST"])
+@require_superadmin
+def admin_settings_test_connector():
+    import reachability
+    src = str((request.get_json(force=True) or {}).get("source", "")).strip()
+    res = reachability.test_ssh(src)
     return jsonify(res), (200 if res.get("success") else 400)
 
 
@@ -1236,6 +1264,37 @@ def help_requester():
 @require_admin
 def help_admin():
     return render_template("help_admin.html")
+
+
+# ── Reachability Tester (IT team) ───────────────────────────────────────────
+
+@app.route("/it/reachability")
+@require_itadmin
+def it_reachability():
+    import reachability
+    return render_template("reachability.html",
+                           rnd_ready=reachability.configured("rnd"),
+                           nmo_ready=reachability.configured("nmo"))
+
+
+@app.route("/api/it/reachability", methods=["POST"])
+@require_itadmin
+def it_reachability_run():
+    import reachability
+    data = request.get_json(force=True) or {}
+    res = reachability.run_check(
+        source=str(data.get("source", "")).strip(),
+        dest=str(data.get("dest", "")).strip(),
+        port=data.get("port"),
+        method=str(data.get("method", "")).strip(),
+    )
+    if res.get("success"):
+        audit.record("reachability_check", actor=current_actor(), actor_role="admin",
+                     summary=f"{reachability.source_label(str(data.get('source','')))} → "
+                             f"{res.get('method')} {res.get('dest')}"
+                             f"{(':' + str(res.get('port'))) if res.get('port') else ''} "
+                             f"(exit {res.get('exit_code')})")
+    return jsonify(res), (200 if res.get("success") else 400)
 
 
 @app.route("/requester")

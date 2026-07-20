@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Reachability Tester | Network Copilot{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <div class="p-eyebrow" style="margin-bottom:10px;">IT · ZPA Connectors</div>
+    <h1 class="alloc-page-title">Reachability Tester</h1>
+    <p class="alloc-page-sub">Run ping, TCP-port (telnet-style) and curl checks to a destination — from the R&amp;D or NMO ZPA connector VM.</p>
+  </div>
+</div>
+
+<div style="max-width:920px;margin:0 auto;padding:28px 24px 60px;">
+
+  <div class="glass-card">
+    <div class="card-header-bar"><i class="bi bi-hdd-network"></i> Connectivity check</div>
+    <div class="card-body-pad">
+
+      <!-- 1) Source connector -->
+      <label class="p-eyebrow" style="display:block;margin-bottom:8px;">1 · Run from</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
+        <button type="button" class="src-btn active" data-src="rnd" onclick="pickSource('rnd', this)">
+          <i class="bi bi-shield-lock me-1"></i> R&amp;D ZPA connector
+          {% if not rnd_ready %}<span class="src-warn">not configured</span>{% endif %}
+        </button>
+        <button type="button" class="src-btn" data-src="nmo" onclick="pickSource('nmo', this)">
+          <i class="bi bi-shield-shaded me-1"></i> NMO ZPA connector
+          {% if not nmo_ready %}<span class="src-warn">not configured</span>{% endif %}
+        </button>
+      </div>
+
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label-custom">2 · Check type *</label>
+          <select class="form-input-custom" id="r_method" onchange="onMethodChange()">
+            <option value="ping">Ping (ICMP)</option>
+            <option value="tcp">TCP port (telnet-style)</option>
+            <option value="curl">Curl (HTTP/HTTPS)</option>
+          </select>
+        </div>
+        <div class="col-md-5">
+          <label class="form-label-custom">3 · Destination *</label>
+          <input type="text" class="form-input-custom" id="r_dest" placeholder="IP or FQDN — e.g. 10.20.30.40 or api.example.com">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label-custom" id="r_port_label">Port <span id="r_port_req" style="color:#f87171;">*</span></label>
+          <input type="number" class="form-input-custom" id="r_port" min="1" max="65535" placeholder="e.g. 443">
+        </div>
+      </div>
+
+      <div style="margin-top:18px;">
+        <button class="btn-primary-custom" id="runBtn" onclick="runCheck()">
+          <i class="bi bi-play-fill"></i> Run check
+        </button>
+      </div>
+
+      <div id="rResult" style="margin-top:18px;"></div>
+    </div>
+  </div>
+
+  <div style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.7;">
+    <i class="bi bi-info-circle me-1"></i>
+    Checks run over SSH on the connector VM. Ping needs no port; TCP and curl need one.
+    Configure the connector VMs (host, SSH user, key) in <strong>Settings → ZPA Connector VMs</strong>
+    (super-admin).
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .src-btn { font-family:var(--p-font-mono,monospace); font-size:12px; letter-spacing:.5px;
+    background:rgba(255,255,255,.05); border:1px solid var(--border); color:var(--text-dim);
+    border-radius:var(--radius-pill,100px); padding:9px 18px; cursor:pointer; transition:all .2s; }
+  .src-btn:hover { color:#fff; border-color:rgba(21,94,239,.5); }
+  .src-btn.active { background:var(--p-grad-h,linear-gradient(90deg,#0700c4,#10b5b0,#7edb56)); color:#fff; border-color:transparent; }
+  .src-warn { font-size:9.5px; background:rgba(245,158,11,.18); color:#f59e0b; border:1px solid rgba(245,158,11,.4);
+    border-radius:6px; padding:0 6px; margin-left:6px; text-transform:uppercase; letter-spacing:.5px; }
+  .r-out { font-family:var(--mono,monospace); font-size:12.5px; white-space:pre-wrap; word-break:break-word;
+    background:#0a0e14; border:1px solid var(--border); border-radius:10px; padding:14px 16px; color:#cfe3ff;
+    max-height:340px; overflow:auto; }
+</style>
+<script>
+let R_SOURCE = 'rnd';
+
+function pickSource(s, btn) {
+  R_SOURCE = s;
+  document.querySelectorAll('.src-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function onMethodChange() {
+  const m = document.getElementById('r_method').value;
+  const needsPort = (m !== 'ping');
+  document.getElementById('r_port').disabled = !needsPort;
+  document.getElementById('r_port_req').style.display = needsPort ? '' : 'none';
+  if (!needsPort) document.getElementById('r_port').value = '';
+}
+
+function box(kind, html) {
+  const c = kind === 'error' ? '#f87171' : (kind === 'ok' ? '#7edb56' : 'var(--text-muted)');
+  return `<div style="font-size:13px;color:${c};margin-bottom:8px;">${html}</div>`;
+}
+
+async function runCheck() {
+  const method = document.getElementById('r_method').value;
+  const dest = document.getElementById('r_dest').value.trim();
+  const port = document.getElementById('r_port').value.trim();
+  const out = document.getElementById('rResult');
+  if (!dest) { out.innerHTML = box('error', 'Enter a destination (IP or FQDN).'); return; }
+  if (method !== 'ping' && !port) { out.innerHTML = box('error', 'Enter a port for this check.'); return; }
+
+  const btn = document.getElementById('runBtn');
+  const orig = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Running…';
+  out.innerHTML = box('info', 'Running on the ' + (R_SOURCE === 'rnd' ? 'R&D' : 'NMO') + ' ZPA connector…');
+  try {
+    const r = await fetch('/api/it/reachability', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: R_SOURCE, dest, port: port || null, method })
+    });
+    const d = await r.json();
+    if (!d.success) { out.innerHTML = box('error', '<i class="bi bi-x-circle-fill me-1"></i>' + (d.message || 'Check failed.')); }
+    else {
+      const ok = d.exit_code === 0;
+      const head = `<i class="bi bi-${ok ? 'check-circle-fill' : 'exclamation-triangle-fill'} me-1"></i>` +
+        `${d.source} → <strong>${d.dest}</strong>${d.port ? ':' + d.port : ''} · ${d.method.toUpperCase()} · exit ${d.exit_code}`;
+      const body = (d.stdout || '') + (d.stderr ? '\n' + d.stderr : '') || '(no output)';
+      out.innerHTML = box(ok ? 'ok' : 'error', head) +
+        `<div style="font-size:10.5px;color:var(--text-muted);margin-bottom:6px;font-family:var(--mono,monospace);">$ ${d.command.replace(/</g,'&lt;')}</div>` +
+        `<div class="r-out">${body.replace(/</g,'&lt;')}</div>`;
+    }
+  } catch (e) { out.innerHTML = box('error', 'Network error.'); }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+onMethodChange();
+</script>
+{% endblock %}

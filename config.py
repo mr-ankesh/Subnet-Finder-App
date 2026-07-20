@@ -26,6 +26,7 @@ CATEGORIES = {
     "firewall":      {"title": "Firewall",            "desc": "Azure Firewall policy that receives spoke egress rules."},
     "routing":       {"title": "Routing / UDRs",      "desc": "Hub route tables updated when a spoke is onboarded."},
     "nmo":           {"title": "ZPA NMO Integration", "desc": "Targets used by 'Routing from NMO ZPA' requests: the NMO routing table, connector subnet, the NSG outbound allow rule and the firewall allow/deny rules that carry per-spoke CIDR lists."},
+    "connectors":    {"title": "ZPA Connector VMs", "desc": "SSH access to the R&D and NMO ZPA connector VMs. Used by the IT team's Reachability Tester to run ping/telnet/curl checks from those VMs. Keys are encrypted at rest."},
     "peering":       {"title": "Peering Defaults",    "desc": "Defaults applied to hub↔spoke peerings (overridable per action)."},
     "naming":        {"title": "Naming Conventions",  "desc": "Templates for generated resource names. Placeholders: {vnet} {request_id} {region} {cidr_mask} {purpose} {date}. Global prefix/suffix are joined with '-'."},
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
@@ -104,6 +105,20 @@ SETTINGS_SPEC = {
     "NMO_FW_DENY_RULE":        _f("nmo", "Firewall DENY rule name",
                                   help="Deny rule whose destination list receives each spoke CIDR."),
 
+    # ── ZPA connector VMs (Reachability Tester) ──
+    "ZPA_RND_VM_HOST": _f("connectors", "R&D connector VM host/IP",
+                          help="Reachable address of the R&D ZPA connector VM the checks run from."),
+    "ZPA_RND_VM_USER": _f("connectors", "R&D connector SSH user", "azureuser"),
+    "ZPA_RND_VM_PORT": _f("connectors", "R&D connector SSH port", "22", type="int"),
+    "ZPA_RND_VM_KEY":  _f("connectors", "R&D connector SSH private key", secret=True,
+                          help="PEM/OpenSSH private key for the SSH user. Stored encrypted. Leave blank on save to keep the current value."),
+    "ZPA_NMO_VM_HOST": _f("connectors", "NMO connector VM host/IP",
+                          help="Reachable address of the NMO ZPA connector VM the checks run from."),
+    "ZPA_NMO_VM_USER": _f("connectors", "NMO connector SSH user", "azureuser"),
+    "ZPA_NMO_VM_PORT": _f("connectors", "NMO connector SSH port", "22", type="int"),
+    "ZPA_NMO_VM_KEY":  _f("connectors", "NMO connector SSH private key", secret=True,
+                          help="PEM/OpenSSH private key for the SSH user. Stored encrypted. Leave blank on save to keep the current value."),
+
     # ── Peering defaults ──
     "PEERING_ALLOW_VNET_ACCESS":       _f("peering", "Allow virtual network access", "true",  type="bool"),
     "PEERING_ALLOW_FORWARDED_TRAFFIC": _f("peering", "Allow forwarded traffic",      "true",  type="bool"),
@@ -167,7 +182,9 @@ SETTINGS_SPEC = {
     "KEYCLOAK_REQUESTER_ROLE": _f("auth", "Requester role", "subnet-requester",
                                   help="Role for the requester portal (or leave open to all authenticated users)."),
     "KEYCLOAK_ALLOCATOR_ROLE": _f("auth", "Subnet-allocator role", "subnet-allocator",
-                                  help="Access to the subnet allocator ONLY — find/allocate/release subnets and manage the inventory. No request processing, Azure actions, Settings or Audit. Admins already have this."),
+                                  help="Access to the subnet allocator ONLY — find/allocate/release subnets. No request processing, Azure actions, Settings or Audit. Admins already have this."),
+    "KEYCLOAK_ITADMIN_ROLE":  _f("auth", "IT-admin role", "it-admin",
+                                 help="IT team access to the Reachability Tester (run ping/telnet/curl from the ZPA connector VMs). No other portal access. Super-admins already have this."),
 
     # ── Safety ──
     "AZURE_DRY_RUN": _f("safety", "Dry-run mode (simulate Azure changes)", "true", type="bool",

@@ -104,6 +104,11 @@
           {% if cat.key == 'auth' %}
           <button class="btn-glass" onclick="testKeycloak(this)"><i class="bi bi-plug"></i> Test SSO Connection</button>
           {% endif %}
+          {% if cat.key == 'connectors' %}
+          <button class="btn-glass" onclick="testConnector('rnd', this)"><i class="bi bi-plug"></i> Test R&amp;D SSH</button>
+          <button class="btn-glass" onclick="testConnector('nmo', this)"><i class="bi bi-plug"></i> Test NMO SSH</button>
+          <span id="connTestResult" style="font-size:.85rem;"></span>
+          {% endif %}
         </div>
         {% if cat.key == 'auth' %}
         <div id="kcTestResult" style="font-size:.82rem; margin-top:.75rem; line-height:1.5;"></div>
@@ -239,6 +244,23 @@
     } catch (e) {
       out.style.color = 'var(--danger)'; out.textContent = 'Request failed: ' + e;
     } finally { btn.disabled = false; }
+  }
+
+  async function testConnector(source, btn) {
+    const out = document.getElementById('connTestResult');
+    btn.disabled = true;
+    out.style.color = 'var(--text-muted)';
+    out.textContent = 'Connecting to the ' + (source === 'rnd' ? 'R&D' : 'NMO') + ' connector VM…';
+    try {
+      const r = await fetch('/api/admin/settings/test-connector', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ source })
+      });
+      const data = await r.json();
+      out.style.color = data.success ? '#4ade80' : 'var(--danger)';
+      out.textContent = data.message;
+    } catch (e) { out.style.color = 'var(--danger)'; out.textContent = 'Request failed: ' + e; }
+    finally { btn.disabled = false; }
   }
 
   // ── Auth-mode field visibility ──

@@ -73,6 +73,11 @@
             <i class="bi bi-gear"></i> Settings
           </a>
           {% endif %}
+          {% if is_superadmin or is_itadmin %}
+          <a href="{{ url_for('it_reachability') }}" class="nav-link {% if request.endpoint == 'it_reachability' %}active{% endif %}">
+            <i class="bi bi-hdd-network"></i> Reachability
+          </a>
+          {% endif %}
           <a href="{{ url_for('help_admin') }}" class="nav-link {% if request.endpoint == 'help_admin' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide
           </a>
@@ -90,6 +95,11 @@
           {% if is_allocator %}
           <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint in ('segment_select', 'allocator') %}active{% endif %}">
             <i class="bi bi-hdd-network"></i> Subnet Allocator
+          </a>
+          {% endif %}
+          {% if is_itadmin %}
+          <a href="{{ url_for('it_reachability') }}" class="nav-link {% if request.endpoint == 'it_reachability' %}active{% endif %}">
+            <i class="bi bi-hdd-network"></i> Reachability
           </a>
           {% endif %}
           {% if is_requester or not sso %}
