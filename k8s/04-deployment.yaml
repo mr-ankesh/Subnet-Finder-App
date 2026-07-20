@@ -24,6 +24,11 @@ spec:
         runAsUser: 10001          # matches the 'app' user baked into the image
         runAsGroup: 10001
         fsGroup: 10001            # makes the PVC writable for the non-root user
+        # Lets the non-root user run `ping` (kubectl exec) without CAP_NET_RAW —
+        # enables unprivileged ICMP datagram sockets. A K8s "safe" sysctl.
+        sysctls:
+          - name: net.ipv4.ping_group_range
+            value: "0 2147483647"
       containers:
         - name: subnet-manager
           # Replace with your ACR image: <acr-name>.azurecr.io/subnet-manager:<tag>

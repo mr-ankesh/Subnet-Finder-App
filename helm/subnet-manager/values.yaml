@@ -144,6 +144,12 @@ podSecurityContext:
   runAsUser: 10001
   runAsGroup: 10001
   fsGroup: 10001
+  # Let the non-root user run `ping` from inside the pod (kubectl exec) without
+  # CAP_NET_RAW: this enables unprivileged ICMP datagram sockets. It is a
+  # Kubernetes "safe" sysctl, so no kubelet allowlisting is required.
+  sysctls:
+    - name: net.ipv4.ping_group_range
+      value: "0 2147483647"
 
 containerSecurityContext:
   allowPrivilegeEscalation: false
