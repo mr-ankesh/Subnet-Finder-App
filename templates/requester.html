@@ -615,15 +615,22 @@
                   <div class="row g-3">
                     <div class="col-md-6">
                       <label class="form-label-custom">Cluster Name *</label>
-                      <input type="text" class="form-input-custom" data-detail="cluster_name" placeholder="e.g. presight-app-aks-01">
+                      <input type="text" class="form-input-custom" data-detail="cluster_name" placeholder="aks-vitruvian-rnd-prd-prs-aen-001">
+                      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                        Suggested convention: <code style="color:#00BCF2;">aks-&lt;project-short&gt;-&lt;subscription-short&gt;-&lt;env&gt;-prs-aen-001</code>
+                        — e.g. <code style="color:#00BCF2;">aks-vitruvian-rnd-prd-prs-aen-001</code>.
+                      </div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Cluster Resource Group *</label>
                       <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-app-prd-prs-aen-001">
+                      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                        <i class="bi bi-info-circle me-1"></i>Created automatically if it doesn't already exist.
+                      </div>
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label-custom">Subscription ID</label>
-                      <input type="text" class="form-input-custom" data-detail="subscription_id" placeholder="blank = default spoke subscription">
+                      <label class="form-label-custom">Subscription ID *</label>
+                      <input type="text" class="form-input-custom" data-detail="subscription_id" placeholder="00000000-0000-0000-0000-000000000000">
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Region</label>
@@ -650,6 +657,14 @@
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Subscription ID</label>
                       <input type="text" class="form-input-custom" data-detail="vnet_subscription_id" placeholder="blank = cluster subscription">
+                    </div>
+                    <div class="col-12">
+                      <div style="border:1px solid rgba(0,188,242,.3);background:rgba(0,188,242,.06);border-radius:8px;padding:10px 12px;font-size:11.5px;color:var(--text-dim);line-height:1.6;">
+                        <i class="bi bi-diagram-3 me-1" style="color:#00BCF2;"></i>
+                        The cluster deploys into an existing VNET and subnet. If the VNET or subnet you need
+                        isn't onboarded yet, please raise a <strong>New VNET</strong> request first (or a
+                        <strong>New Subnet in Existing VNET</strong> request), then submit this AKS request once it's ready.
+                      </div>
                     </div>
 
                     <div class="col-12" style="margin-top:2px;">
@@ -1085,6 +1100,7 @@ async function submitServiceRequest() {
   }
   if (currentType === 'aks_cluster') {
     for (const [k, lbl] of [['cluster_name','Cluster Name'],['resource_group','Resource Group'],
+                            ['subscription_id','Subscription ID'],
                             ['vnet_name','VNET Name'],['subnet_name','Subnet Name'],
                             ['node_pool_name','Node Pool Name']]) {
       if (!details[k]) return showResult('newReqResult', resultBox('error', `${lbl} is required.`));

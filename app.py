@@ -1334,8 +1334,8 @@ TYPE_REQUIRED_DETAILS = {
     RequestType.VNET_DECOMMISSION: ["vnet_name", "resource_group", "confirm",
                                     "created_by_admin", "manual_changes"],
     RequestType.DNS:               ["dns_kind", "zone"],
-    RequestType.AKS_CLUSTER:       ["cluster_name", "resource_group", "vnet_name",
-                                    "subnet_name", "node_pool_name"],
+    RequestType.AKS_CLUSTER:       ["cluster_name", "resource_group", "subscription_id",
+                                    "vnet_name", "subnet_name", "node_pool_name"],
     RequestType.OTHER:             ["description"],
 }
 
