@@ -51,7 +51,7 @@
 
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem 1.25rem;" class="settings-grid">
           {% for f in cat.fields %}
-          <div {% if f.type == 'bool' %}style="align-self:center;"{% endif %}>
+          <div {% if f.multiline %}style="grid-column:1/-1;"{% elif f.type == 'bool' %}style="align-self:center;"{% endif %}>
             <label class="form-label" style="display:flex; align-items:center; gap:.5rem; margin-bottom:.3rem;">
               <span>{{ f.label }}</span>
               <span class="src-badge src-{{ f.source }}" id="src-{{ f.key }}">{{ f.source }}</span>
@@ -77,6 +77,11 @@
                 <option value="{{ opt }}" {% if f.value == opt %}selected{% endif %}>{{ optlabels.get(opt) or opt.replace('_',' ')|title }}</option>
                 {% endfor %}
               </select>
+            {% elif f.secret and f.multiline %}
+              <textarea class="form-control setting-input" data-key="{{ f.key }}" data-secret="1"
+                        id="in-{{ f.key }}" rows="5" spellcheck="false" autocomplete="off"
+                        style="font-family:var(--mono,monospace); font-size:.78rem; white-space:pre;"
+                        placeholder="{% if f.is_set %}•••• key set{% if f.last4 %} (…{{ f.last4 }}){% endif %} — leave blank to keep{% else %}Paste the full key including -----BEGIN … END----- lines{% endif %}"></textarea>
             {% elif f.secret %}
               <input type="password" class="form-control setting-input" data-key="{{ f.key }}" data-secret="1"
                      id="in-{{ f.key }}" autocomplete="new-password"

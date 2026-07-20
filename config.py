@@ -36,9 +36,11 @@ CATEGORIES = {
 }
 
 
-def _f(category, label, default="", type="str", secret=False, help="", options=None):
+def _f(category, label, default="", type="str", secret=False, help="", options=None,
+       multiline=False):
     return {"category": category, "label": label, "default": default,
-            "type": type, "secret": secret, "help": help, "options": options}
+            "type": type, "secret": secret, "help": help, "options": options,
+            "multiline": multiline}
 
 
 # key → field spec (env var name == key)
@@ -110,14 +112,14 @@ SETTINGS_SPEC = {
                           help="Reachable address of the R&D ZPA connector VM the checks run from."),
     "ZPA_RND_VM_USER": _f("connectors", "R&D connector SSH user", "azureuser"),
     "ZPA_RND_VM_PORT": _f("connectors", "R&D connector SSH port", "22", type="int"),
-    "ZPA_RND_VM_KEY":  _f("connectors", "R&D connector SSH private key", secret=True,
-                          help="PEM/OpenSSH private key for the SSH user. Stored encrypted. Leave blank on save to keep the current value."),
+    "ZPA_RND_VM_KEY":  _f("connectors", "R&D connector SSH private key", secret=True, multiline=True,
+                          help="Paste the FULL private key incl. the BEGIN/END lines (PEM or OpenSSH). Stored encrypted. Leave blank on save to keep the current value."),
     "ZPA_NMO_VM_HOST": _f("connectors", "NMO connector VM host/IP",
                           help="Reachable address of the NMO ZPA connector VM the checks run from."),
     "ZPA_NMO_VM_USER": _f("connectors", "NMO connector SSH user", "azureuser"),
     "ZPA_NMO_VM_PORT": _f("connectors", "NMO connector SSH port", "22", type="int"),
-    "ZPA_NMO_VM_KEY":  _f("connectors", "NMO connector SSH private key", secret=True,
-                          help="PEM/OpenSSH private key for the SSH user. Stored encrypted. Leave blank on save to keep the current value."),
+    "ZPA_NMO_VM_KEY":  _f("connectors", "NMO connector SSH private key", secret=True, multiline=True,
+                          help="Paste the FULL private key incl. the BEGIN/END lines (PEM or OpenSSH). Stored encrypted. Leave blank on save to keep the current value."),
 
     # ── Peering defaults ──
     "PEERING_ALLOW_VNET_ACCESS":       _f("peering", "Allow virtual network access", "true",  type="bool"),
@@ -257,7 +259,7 @@ def settings_view():
             "key": key, "label": spec["label"], "help": spec["help"],
             "type": spec["type"], "options": spec["options"],
             "secret": spec["secret"], "source": source,
-            "default": spec["default"],
+            "default": spec["default"], "multiline": spec.get("multiline", False),
         }
         if spec["secret"]:
             field["value"] = ""

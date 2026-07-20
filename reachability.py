@@ -72,14 +72,42 @@ def _build_command(method: str, dest: str, port: int) -> str:
     return ""
 
 
-def _load_key(pem: str):
+def _rewrap_pem(text: str) -> str:
+    """Rebuild a PEM whose newlines were flattened (e.g. pasted into a
+    single-line input): keep the BEGIN/END markers, strip whitespace from the
+    base64 body, and re-wrap at 64 chars so it parses again."""
+    import re
+    m = re.search(r"(-----BEGIN [A-Z0-9 ]+?-----)(.*?)(-----END [A-Z0-9 ]+?-----)",
+                  text, re.S)
+    if not m:
+        return text
+    header, body, footer = m.group(1), m.group(2), m.group(3)
+    b64 = re.sub(r"\s+", "", body)
+    wrapped = "\n".join(b64[i:i + 64] for i in range(0, len(b64), 64))
+    return f"{header}\n{wrapped}\n{footer}\n"
+
+
+def _load_key(pem: str, passphrase: str = None):
+    """Parse a private key (RSA / Ed25519 / ECDSA), tolerating a flattened
+    PEM. Returns (key, None) or (None, reason)."""
     import paramiko
-    for cls in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
-        try:
-            return cls.from_private_key(io.StringIO(pem))
-        except Exception:
-            continue
-    return None
+    raw = (pem or "").strip()
+    candidates = [raw]
+    if "\\n" in raw and "\n" not in raw:            # literal backslash-n
+        candidates.append(raw.replace("\\n", "\n"))
+    rewrapped = _rewrap_pem(candidates[-1])
+    if rewrapped not in candidates:
+        candidates.append(rewrapped)
+    last_err = None
+    for text in candidates:
+        for cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
+            try:
+                return cls.from_private_key(io.StringIO(text), password=passphrase), None
+            except paramiko.PasswordRequiredException:
+                last_err = "the key is passphrase-protected — use a key without a passphrase"
+            except Exception as exc:
+                last_err = str(exc)
+    return None, (last_err or "unrecognised key format")
 
 
 def run_check(source: str, dest: str, port, method: str) -> dict:
@@ -109,10 +137,11 @@ def run_check(source: str, dest: str, port, method: str) -> dict:
     cmd = _build_command(method, d, port)
     try:
         import paramiko
-        key = _load_key(c["key"])
+        key, keyerr = _load_key(c["key"])
         if key is None:
-            return {"success": False, "message": "Could not parse the SSH private key for this "
-                                                 "connector (Settings → ZPA Connector VMs)."}
+            return {"success": False,
+                    "message": f"Could not parse the SSH private key ({keyerr}). Paste the full "
+                               f"key including the BEGIN/END lines in Settings → ZPA Connector VMs."}
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(c["host"], port=int(c["port"] or 22), username=c["user"], pkey=key,
