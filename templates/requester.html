@@ -610,6 +610,113 @@
                   </div>
                 </div>
 
+                <!-- ── AKS Cluster ── -->
+                <div class="col-12 type-section" id="section-aks_cluster" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Cluster Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="cluster_name" placeholder="e.g. presight-app-aks-01">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Cluster Resource Group *</label>
+                      <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-app-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subscription ID</label>
+                      <input type="text" class="form-input-custom" data-detail="subscription_id" placeholder="blank = default spoke subscription">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Region</label>
+                      <input type="text" class="form-input-custom" data-detail="region" placeholder="blank = default region">
+                    </div>
+
+                    <div class="col-12" style="margin-top:2px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-diagram-3 me-1"></i> Virtual Network &amp; Subnet
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_name" placeholder="presight-infra-uaen-vnet-01">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subnet Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="subnet_name" placeholder="presight-infra-adeo-dev-subnet-01">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Resource Group</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_resource_group" placeholder="blank = same as cluster RG">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VNET Subscription ID</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_subscription_id" placeholder="blank = cluster subscription">
+                    </div>
+
+                    <div class="col-12" style="margin-top:2px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-boxes me-1"></i> Kubernetes &amp; Node Pool
+                      </div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Kubernetes Version *</label>
+                      <select class="form-input-custom" data-detail="k8s_version">
+                        {% for v in aks_k8s_options %}
+                        <option value="{{ v }}">{{ v }}{% if loop.first %} (recommended){% endif %}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Node Pool Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="node_pool_name" value="nodepool1"
+                             maxlength="12" placeholder="lowercase, ≤ 12 chars">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Node Size *</label>
+                      <select class="form-input-custom" data-detail="node_size">
+                        {% for s in aks_node_sizes %}
+                        <option value="{{ s }}">{{ s }}{% if loop.first %} (default){% endif %}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Autoscaling *</label>
+                      <select class="form-input-custom" data-detail="autoscaling" id="aks_scale" onchange="onAksScaleChange()">
+                        <option value="disabled">Disabled — fixed node count</option>
+                        <option value="enabled">Enabled — scale between min &amp; max</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4" id="aksFixedCol">
+                      <label class="form-label-custom">Node Count</label>
+                      <input type="number" class="form-input-custom" data-detail="node_count" min="1" max="100"
+                             value="{{ aks_defaults.node_count }}">
+                    </div>
+                    <div class="col-md-2" id="aksMinCol" style="display:none;">
+                      <label class="form-label-custom">Min Nodes</label>
+                      <input type="number" class="form-input-custom" data-detail="min_count" min="1" max="100"
+                             value="{{ aks_defaults.min }}">
+                    </div>
+                    <div class="col-md-2" id="aksMaxCol" style="display:none;">
+                      <label class="form-label-custom">Max Nodes</label>
+                      <input type="number" class="form-input-custom" data-detail="max_count" min="1" max="100"
+                             value="{{ aks_defaults.max }}">
+                    </div>
+
+                    <div class="col-12">
+                      <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:11.5px;color:var(--text-muted);line-height:1.7;">
+                        <span style="color:var(--text-dim);font-weight:600;"><i class="bi bi-shield-check me-1"></i>Standard settings applied automatically:</span>
+                        Azure CNI {{ 'Overlay' if aks_defaults.plugin_mode == 'overlay' else aks_defaults.plugin }} ·
+                        network policy {{ aks_defaults.policy }} · pod CIDR {{ aks_defaults.pod_cidr }} ·
+                        service CIDR {{ aks_defaults.service_cidr }} · DNS IP {{ aks_defaults.dns_ip }} ·
+                        outbound {{ aks_defaults.outbound }} ·
+                        {% if aks_defaults.private %}private API server{% else %}public API server{% endif %} ·
+                        Entra ID + Azure RBAC · local accounts disabled ·
+                        auto-upgrade {{ aks_defaults.upgrade }} / node OS {{ aks_defaults.node_os }}.
+                        Need something different? Note it in the summary below — the network admin can adjust before deploying.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- ── Other ── -->
                 <div class="col-12 type-section" id="section-other" style="display:none;">
                   <div class="row g-3">
@@ -924,6 +1031,13 @@ function selectType(t) {
   showResult('newReqResult', '');
 }
 
+function onAksScaleChange() {
+  const on = document.getElementById('aks_scale').value === 'enabled';
+  document.getElementById('aksFixedCol').style.display = on ? 'none' : '';
+  document.getElementById('aksMinCol').style.display   = on ? '' : 'none';
+  document.getElementById('aksMaxCol').style.display   = on ? '' : 'none';
+}
+
 function backToPicker() {
   currentType = null;
   document.getElementById('typePicker').style.display = '';
@@ -967,6 +1081,20 @@ async function submitServiceRequest() {
     }
     if (!details.confirm) {
       return showResult('newReqResult', resultBox('error', 'Please tick the decommission confirmation checkbox.'));
+    }
+  }
+  if (currentType === 'aks_cluster') {
+    for (const [k, lbl] of [['cluster_name','Cluster Name'],['resource_group','Resource Group'],
+                            ['vnet_name','VNET Name'],['subnet_name','Subnet Name'],
+                            ['node_pool_name','Node Pool Name']]) {
+      if (!details[k]) return showResult('newReqResult', resultBox('error', `${lbl} is required.`));
+    }
+    if ((details.autoscaling || 'disabled') === 'enabled') {
+      const mn = parseInt(details.min_count, 10), mx = parseInt(details.max_count, 10);
+      if (!(mn >= 1) || !(mx >= mn)) return showResult('newReqResult', resultBox('error',
+        'Autoscaling needs Min ≥ 1 and Max ≥ Min.'));
+    } else if (!(parseInt(details.node_count, 10) >= 1)) {
+      return showResult('newReqResult', resultBox('error', 'Node Count must be at least 1.'));
     }
   }
 

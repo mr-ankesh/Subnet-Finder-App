@@ -85,6 +85,7 @@
             RequestStatus.RULE_IMPLEMENTED: 'bi-bricks', RequestStatus.ZPA_ROUTE_ADDED: 'bi-signpost-split',
             RequestStatus.SPOKE_UDR_UPDATED: 'bi-signpost-2', RequestStatus.SUBNET_ALLOCATED: 'bi-grid-1x2',
             RequestStatus.RESOURCES_REMOVED: 'bi-trash3', RequestStatus.CIDR_RELEASED: 'bi-arrow-return-left',
+            RequestStatus.AKS_DEPLOYED: 'bi-boxes',
             RequestStatus.COMPLETED: 'bi-check-all',
           } %}
           {% set ordered = req.workflow() %}
@@ -249,6 +250,43 @@
             nothing is overwritten without confirmation.
           </div>
           <div id="dnsResults" style="display:none;margin-top:10px;"></div>
+        </div>
+        {% endif %}
+
+        {# ── AKS cluster deploy ── #}
+        {% if rtype == 'aks_cluster' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        {% set ak = req.get_details() %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-boxes"></i> AKS Deployment</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;font-family:var(--mono);line-height:1.6;">
+            {{ ak.get('cluster_name') }} @ {{ ak.get('resource_group') }}<br>
+            VNET {{ ak.get('vnet_name') }} / subnet {{ ak.get('subnet_name') }}<br>
+            Kubernetes {{ ak.get('k8s_version') or '(default)' }} ·
+            pool {{ ak.get('node_pool_name') }} ({{ ak.get('node_size') or '(default)' }},
+            {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %})
+          </div>
+          <button class="btn btn-glass w-100 mb-2" onclick="runAction('aks_check', this)">
+            <i class="bi bi-clipboard-pulse me-2"></i>1 · Check Cluster State
+          </button>
+          {% if 'aks_deploy' in done_actions %}
+          <button class="btn btn-glass w-100 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Provisioning started — use Check to watch progress
+          </button>
+          {% else %}
+          <button class="btn btn-glow w-100" onclick="runAction('aks_deploy', this)">
+            <i class="bi bi-rocket-takeoff me-2"></i>2 · Deploy AKS Cluster
+          </button>
+          {% endif %}
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            1 is read-only. Deploy starts provisioning and returns immediately — a cluster takes
+            several minutes to build. Click <strong>Check Cluster State</strong> to poll; the request
+            auto-completes once Azure reports <em>Succeeded</em>. If the cluster already exists you'll
+            be shown its state with the option to proceed without changes.
+          </div>
+          <div id="actionResults" style="display:none;margin-top:10px;"></div>
         </div>
         {% endif %}
 
@@ -1107,6 +1145,15 @@ function renderConflict(box, d, retry) {
     stateHtml = renderExistingRouteTable(d.existing_route_table); kind = 'route table';
     showReplace = false;                       // recreating would clear its routes
     keepLabel = 'Reuse the existing table as-is & continue';
+  } else if (d.existing_cluster) {
+    const c = d.existing_cluster;
+    stateHtml = `<div style="margin-top:8px;font-size:12px;font-family:var(--mono);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+        ${c.name} · Kubernetes ${c.kubernetes_version || '—'} · ${c.provisioning_state || '—'}
+        · ${(c.node_pools || []).map(p => `${p.name} (${p.vm_size}, ${p.scale})`).join('; ') || 'no node pools'}
+      </div>`;
+    kind = 'AKS cluster';
+    showReplace = false;                       // in-place AKS updates are risky — keep-only
+    keepLabel = 'Proceed — treat the existing cluster as deployed';
   }
   box.style.display = 'block';
   box.innerHTML =

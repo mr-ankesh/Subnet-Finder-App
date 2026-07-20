@@ -2120,3 +2120,204 @@ def add_firewall_application_rule(
     except Exception as exc:
         log.error("add_firewall_application_rule failed: %s", exc)
         return {"success": False, "message": str(exc)}
+
+
+# ── AKS cluster lifecycle: status / create (non-blocking) / delete ─────────
+# AKS provisioning takes several minutes, so create is fire-and-forget: we send
+# the initial PUT (surfacing any validation error immediately) but do NOT wait
+# for it to finish, otherwise the request would exceed the gunicorn timeout.
+# The admin polls get_aks_cluster_status() to watch provisioningState.
+
+import re as _re
+
+
+def _containerservice_client(subscription_id: str):
+    from azure.mgmt.containerservice import ContainerServiceClient
+    return ContainerServiceClient(_get_credential(), subscription_id)
+
+
+def _aks_dns_prefix(name: str) -> str:
+    """A valid dnsPrefix: alphanumerics/hyphens, start+end alphanumeric, ≤ 54 chars."""
+    s = _re.sub(r"[^A-Za-z0-9-]", "-", (name or "aks")).strip("-")[:54].strip("-")
+    if not s or not s[0].isalnum():
+        s = "aks" + s
+    return s[:54].rstrip("-") or "akscluster"
+
+
+def _aks_pool_summary(profiles) -> list:
+    out = []
+    for p in (profiles or []):
+        scale = (f"auto {p.min_count}–{p.max_count}" if getattr(p, "enable_auto_scaling", False)
+                 else f"{p.count} node(s)")
+        out.append({"name": p.name, "vm_size": p.vm_size, "mode": p.mode,
+                    "count": p.count, "scale": scale,
+                    "k8s": getattr(p, "orchestrator_version", None)})
+    return out
+
+
+def get_aks_cluster_status(subscription_id: str, resource_group: str,
+                           cluster_name: str) -> dict:
+    """Read-only: does the cluster exist and what is its provisioningState?
+    Runs for real even in dry-run — it never mutates anything."""
+    try:
+        client = _containerservice_client(subscription_id)
+        try:
+            mc = client.managed_clusters.get(resource_group, cluster_name)
+        except Exception as exc:
+            if _is_not_found(exc):
+                return {"success": True, "exists": False,
+                        "message": f"No AKS cluster '{cluster_name}' in {resource_group} yet — "
+                                   f"ready to deploy."}
+            raise
+        state = mc.provisioning_state or "Unknown"
+        power = getattr(getattr(mc, "power_state", None), "code", None)
+        pools = _aks_pool_summary(mc.agent_pool_profiles)
+        endpoint = mc.private_fqdn or mc.fqdn or "—"
+        pool_desc = "; ".join(f"{p['name']} ({p['vm_size']}, {p['scale']})" for p in pools)
+        return {"success": True, "exists": True, "provisioning_state": state,
+                "power_state": power, "kubernetes_version": mc.kubernetes_version,
+                "fqdn": endpoint, "node_pools": pools,
+                "message": (f"Cluster '{cluster_name}': {state}"
+                            + (f" / {power}" if power else "")
+                            + f" · Kubernetes {mc.kubernetes_version} · endpoint {endpoint} · "
+                            + (pool_desc or "no node pools"))}
+    except Exception as exc:
+        log.error("get_aks_cluster_status failed: %s", exc)
+        return {"success": False, "exists": None, "message": str(exc)}
+
+
+@_guard
+def create_aks_cluster(
+    subscription_id: str,
+    resource_group: str,
+    cluster_name: str,
+    location: str,
+    subnet_id: str,
+    kubernetes_version: str,
+    node_pool_name: str,
+    node_size: str,
+    autoscaling: bool = False,
+    node_count: int = 2,
+    min_count: int = 2,
+    max_count: int = 5,
+    on_conflict: str = None,          # "replace" = update an existing cluster after confirmation
+) -> dict:
+    """Kick off AKS cluster creation (does NOT wait for provisioning to finish).
+    Network profile, security and upgrade settings come from config defaults."""
+    try:
+        client = _containerservice_client(subscription_id)
+
+        # No silent overwrite: surface an existing cluster's state first.
+        before = None
+        try:
+            existing = client.managed_clusters.get(resource_group, cluster_name)
+            before = {"name": existing.name, "location": existing.location,
+                      "kubernetes_version": existing.kubernetes_version,
+                      "provisioning_state": existing.provisioning_state,
+                      "node_pools": _aks_pool_summary(existing.agent_pool_profiles)}
+            if on_conflict != "replace":
+                return {"success": False, "conflict": True, "existing_cluster": before,
+                        "message": f"AKS cluster '{cluster_name}' already exists in {resource_group} "
+                                   f"(Kubernetes {existing.kubernetes_version}, "
+                                   f"{existing.provisioning_state}) — deploying would UPDATE it in place."}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+
+        rg_res = ensure_resource_group(subscription_id, resource_group, location)
+        if not rg_res.get("success"):
+            return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
+
+        pool = {
+            "name": (node_pool_name or "nodepool1")[:12],
+            "mode": "System",
+            "vm_size": node_size,
+            "os_type": "Linux",
+            "type": "VirtualMachineScaleSets",
+            "vnet_subnet_id": subnet_id,
+            "orchestrator_version": kubernetes_version,
+            "enable_auto_scaling": bool(autoscaling),
+        }
+        if autoscaling:
+            pool.update({"count": int(min_count), "min_count": int(min_count),
+                         "max_count": int(max_count)})
+        else:
+            pool["count"] = int(node_count)
+
+        net = {
+            "network_plugin": cfg.AKS_NETWORK_PLUGIN or "azure",
+            "network_policy": (cfg.AKS_NETWORK_POLICY
+                               if cfg.AKS_NETWORK_POLICY not in ("", "none") else None),
+            "pod_cidr": cfg.AKS_POD_CIDR or None,
+            "service_cidr": cfg.AKS_SERVICE_CIDR or None,
+            "dns_service_ip": cfg.AKS_DNS_SERVICE_IP or None,
+            "outbound_type": cfg.AKS_OUTBOUND_TYPE or "loadBalancer",
+            "load_balancer_sku": cfg.AKS_LB_SKU or "standard",
+        }
+        if cfg.AKS_NETWORK_PLUGIN_MODE:
+            net["network_plugin_mode"] = cfg.AKS_NETWORK_PLUGIN_MODE
+        net = {k: v for k, v in net.items() if v is not None}
+
+        params = {
+            "location": location,
+            "dns_prefix": _aks_dns_prefix(cluster_name),
+            "kubernetes_version": kubernetes_version,
+            "identity": {"type": "SystemAssigned"},
+            "agent_pool_profiles": [pool],
+            "network_profile": net,
+            "api_server_access_profile": {
+                "enable_private_cluster": bool(cfg.AKS_PRIVATE_CLUSTER)},
+            "disable_local_accounts": bool(cfg.AKS_DISABLE_LOCAL_ACCOUNTS),
+            "auto_upgrade_profile": {
+                "upgrade_channel": (cfg.AKS_UPGRADE_CHANNEL
+                                    if cfg.AKS_UPGRADE_CHANNEL not in ("", "none") else None),
+                "node_os_upgrade_channel": cfg.AKS_NODE_OS_UPGRADE_CHANNEL or None},
+        }
+        if cfg.AKS_ENABLE_AAD:
+            params["aad_profile"] = {"managed": True,
+                                     "enable_azure_rbac": bool(cfg.AKS_ENABLE_AZURE_RBAC)}
+
+        log.info("Kicking off AKS '%s' (%s, %s) in %s/%s",
+                 cluster_name, kubernetes_version, node_size, resource_group, location)
+        # begin_* sends the initial PUT (raising on invalid params) and returns a
+        # poller we deliberately drop — provisioning continues server-side.
+        client.managed_clusters.begin_create_or_update(
+            resource_group, cluster_name, params)
+
+        scale_desc = (f"autoscale {min_count}–{max_count}" if autoscaling
+                      else f"{node_count} node(s)")
+        msg = (f"AKS cluster '{cluster_name}' provisioning started "
+               f"(Kubernetes {kubernetes_version}, pool '{pool['name']}' {node_size} · {scale_desc}). "
+               f"This takes several minutes — use 'Check Cluster State' to watch progress.")
+        if rg_res.get("created"):
+            msg = f"RG '{resource_group}' created. " + msg
+        after = {"name": cluster_name, "location": location,
+                 "kubernetes_version": kubernetes_version, "node_pools": [pool["name"]]}
+        change = {"target": f"AKS {cluster_name} @ {resource_group}",
+                  "before": before, "after": after}
+        if not before:      # only a brand-new cluster has a clean revert (delete it)
+            change.update({"revert_op": "delete_aks_cluster",
+                           "revert_params": {"sub": subscription_id, "rg": resource_group,
+                                             "cluster": cluster_name}})
+        return {"success": True, "replaced_existing": bool(before), "change": change,
+                "async": True, "message": msg}
+    except Exception as exc:
+        log.error("create_aks_cluster failed: %s", exc)
+        return {"success": False, "message": str(exc)}
+
+
+@_guard
+def delete_aks_cluster(subscription_id: str, resource_group: str,
+                       cluster_name: str) -> dict:
+    """Delete an AKS cluster (revert op for a portal-created cluster)."""
+    try:
+        client = _containerservice_client(subscription_id)
+        client.managed_clusters.begin_delete(resource_group, cluster_name).result()
+        return {"success": True,
+                "message": f"AKS cluster '{cluster_name}' deleted from {resource_group}."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True,
+                    "message": f"AKS cluster '{cluster_name}' already absent."}
+        log.error("delete_aks_cluster failed: %s", exc)
+        return {"success": False, "message": str(exc)}

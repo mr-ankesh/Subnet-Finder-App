@@ -29,6 +29,7 @@ class RequestStatus:
     SUBNET_ALLOCATED  = "SUBNET_ALLOCATED"
     RESOURCES_REMOVED = "RESOURCES_REMOVED"
     CIDR_RELEASED     = "CIDR_RELEASED"
+    AKS_DEPLOYED      = "AKS_DEPLOYED"
     COMPLETED         = "COMPLETED"
     REJECTED          = "REJECTED"
 
@@ -63,6 +64,7 @@ class RequestStatus:
         SUBNET_ALLOCATED:            "Subnet Allocated",
         RESOURCES_REMOVED:           "Resources Removed",
         CIDR_RELEASED:               "CIDR Released",
+        AKS_DEPLOYED:                "Cluster Deployed",
         COMPLETED:                   "Completed",
         REJECTED:                    "Rejected",
     }
@@ -86,6 +88,7 @@ class RequestStatus:
         SUBNET_ALLOCATED:            "primary",
         RESOURCES_REMOVED:           "primary",
         CIDR_RELEASED:               "primary",
+        AKS_DEPLOYED:                "primary",
         COMPLETED:                   "success",
         REJECTED:                    "danger",
     }
@@ -110,11 +113,12 @@ class RequestType:
     SUBNET_ADDITIONAL = "subnet_additional"
     VNET_DECOMMISSION = "vnet_decommission"
     DNS               = "dns"
+    AKS_CLUSTER       = "aks_cluster"
     OTHER             = "other"
 
     ALL = [VNET_NEW, FIREWALL_POLICY, HUB_INTEGRATION, ZPA_RND_ROUTING,
            ZPA_OTHER_ROUTING, ZPA_NMO_ROUTING, SUBNET_ADDITIONAL,
-           VNET_DECOMMISSION, DNS, OTHER]
+           VNET_DECOMMISSION, DNS, AKS_CLUSTER, OTHER]
 
     _LABELS = {
         VNET_NEW:          "New VNET",
@@ -126,6 +130,7 @@ class RequestType:
         SUBNET_ADDITIONAL: "New Subnet in Existing VNET",
         VNET_DECOMMISSION: "VNET Decommission",
         DNS:               "DNS / Private DNS Link",
+        AKS_CLUSTER:       "AKS Cluster",
         OTHER:             "Other Request",
     }
 
@@ -139,6 +144,7 @@ class RequestType:
         SUBNET_ADDITIONAL: "Carve an additional subnet inside an onboarded VNET.",
         VNET_DECOMMISSION: "Retire a spoke: remove peering/routes and release the CIDR.",
         DNS:               "DNS record or Private DNS zone link for your spoke.",
+        AKS_CLUSTER:       "Deploy a managed Kubernetes (AKS) cluster into your spoke subnet.",
         OTHER:             "Anything that doesn't fit the categories above.",
     }
 
@@ -152,6 +158,7 @@ class RequestType:
         SUBNET_ADDITIONAL: "grid-1x2",
         VNET_DECOMMISSION: "trash3",
         DNS:               "globe2",
+        AKS_CLUSTER:       "boxes",
         OTHER:             "chat-square-text",
     }
 
@@ -174,6 +181,8 @@ class RequestType:
         VNET_DECOMMISSION: [RequestStatus.SUBMITTED, RequestStatus.RESOURCES_REMOVED,
                             RequestStatus.CIDR_RELEASED, RequestStatus.COMPLETED],
         DNS:               [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
+                            RequestStatus.COMPLETED],
+        AKS_CLUSTER:       [RequestStatus.SUBMITTED, RequestStatus.AKS_DEPLOYED,
                             RequestStatus.COMPLETED],
         OTHER:             [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
                             RequestStatus.COMPLETED],

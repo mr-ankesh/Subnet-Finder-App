@@ -343,7 +343,18 @@ def inject_globals():
             "is_itadmin": session.get("is_itadmin", False),
             "is_requester": session.get("is_requester", False),
             "is_authed": bool(session.get("is_admin") or session.get("is_requester")
-                              or session.get("is_allocator") or session.get("is_itadmin"))}
+                              or session.get("is_allocator") or session.get("is_itadmin")),
+            # AKS request form: version/size choices + the defaults applied for
+            # everything the requester doesn't pick (shown as a read-only note).
+            "aks_k8s_options": [v.strip() for v in (cfg.AKS_K8S_VERSION_OPTIONS or "").split(",") if v.strip()],
+            "aks_node_sizes":  [v.strip() for v in (cfg.AKS_NODE_SIZE_OPTIONS or "").split(",") if v.strip()],
+            "aks_defaults": {"node_count": cfg.AKS_DEFAULT_NODE_COUNT,
+                             "min": cfg.AKS_DEFAULT_MIN_COUNT, "max": cfg.AKS_DEFAULT_MAX_COUNT,
+                             "plugin": cfg.AKS_NETWORK_PLUGIN, "plugin_mode": cfg.AKS_NETWORK_PLUGIN_MODE,
+                             "policy": cfg.AKS_NETWORK_POLICY, "pod_cidr": cfg.AKS_POD_CIDR,
+                             "service_cidr": cfg.AKS_SERVICE_CIDR, "dns_ip": cfg.AKS_DNS_SERVICE_IP,
+                             "private": cfg.AKS_PRIVATE_CLUSTER, "outbound": cfg.AKS_OUTBOUND_TYPE,
+                             "upgrade": cfg.AKS_UPGRADE_CHANNEL, "node_os": cfg.AKS_NODE_OS_UPGRADE_CHANNEL}}
 
 
 def current_actor() -> str:
@@ -1323,6 +1334,8 @@ TYPE_REQUIRED_DETAILS = {
     RequestType.VNET_DECOMMISSION: ["vnet_name", "resource_group", "confirm",
                                     "created_by_admin", "manual_changes"],
     RequestType.DNS:               ["dns_kind", "zone"],
+    RequestType.AKS_CLUSTER:       ["cluster_name", "resource_group", "vnet_name",
+                                    "subnet_name", "node_pool_name"],
     RequestType.OTHER:             ["description"],
 }
 
@@ -1390,6 +1403,28 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
                 return {"error": "Hub-zone link needs your VNET details: " + ", ".join(missing)}, 400
         else:
             return {"error": "Pick a DNS request kind."}, 400
+
+    # AKS guard: validate node sizing at submission time.
+    if request_type == RequestType.AKS_CLUSTER:
+        import re as _re_aks
+        if not _re_aks.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,61}[A-Za-z0-9]$",
+                             details.get("cluster_name", "")):
+            return {"error": "Cluster name must be 2–63 characters: letters, digits, '-', '_' or '.'."}, 400
+        scale = (details.get("autoscaling") or "disabled").lower()
+        if scale == "enabled":
+            try:
+                mn, mx = int(details.get("min_count") or 0), int(details.get("max_count") or 0)
+            except ValueError:
+                return {"error": "Autoscale min/max node counts must be whole numbers."}, 400
+            if mn < 1 or mx < mn:
+                return {"error": "Autoscaling needs min ≥ 1 and max ≥ min."}, 400
+        else:
+            try:
+                nc = int(details.get("node_count") or 0)
+            except ValueError:
+                return {"error": "Node count must be a whole number."}, 400
+            if nc < 1:
+                return {"error": "Node count must be at least 1."}, 400
 
     # Decommission guard: manual changes made outside the portal must be removed
     # by the requester before the admin will decommission the VNET.
@@ -2159,6 +2194,74 @@ def admin_azure_action(req_id):
         _auto_advance(req)
         return jsonify(res), (200 if res.get("success") else 207)
 
+    # ── AKS cluster actions — read-only status poll + non-blocking deploy ──
+    if action in ("aks_check", "aks_deploy"):
+        sub  = (details.get("subscription_id") or cfg.AKS_DEFAULT_SUBSCRIPTION_ID
+                or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
+        rg   = details.get("resource_group", "")
+        name = details.get("cluster_name", "")
+        if not rg or not name:
+            return jsonify({"error": "Request details are missing the cluster name / resource group."}), 400
+
+        if action == "aks_check":
+            res = azure_tools.get_aks_cluster_status(sub, rg, name)
+            # Cluster finished provisioning → complete the request (once it was deployed here).
+            if (res.get("success") and res.get("provisioning_state") == "Succeeded"
+                    and "aks_deploy" in _done_actions(req)
+                    and req.status not in RequestType.TERMINALS
+                    and req.status != RequestStatus.COMPLETED):
+                req.status = RequestStatus.COMPLETED
+                req.updated_at = datetime.utcnow()
+                db.session.commit()
+                try:
+                    notifications.notify_status_changed(req)
+                except Exception:
+                    pass
+                res["message"] = str(res.get("message", "")) + " — cluster is ready; request completed."
+            _audit_azure(res)
+            return jsonify(res), (200 if res.get("success") else 207)
+
+        # aks_deploy — kick off (or accept an already-existing) cluster
+        vnet_sub = details.get("vnet_subscription_id") or sub
+        vnet_rg  = details.get("vnet_resource_group") or rg
+        vnet     = details.get("vnet_name", "")
+        subnet   = details.get("subnet_name", "")
+        if not vnet or not subnet:
+            return jsonify({"error": "Request details are missing the VNET / subnet."}), 400
+        subnet_id = (f"/subscriptions/{vnet_sub}/resourceGroups/{vnet_rg}"
+                     f"/providers/Microsoft.Network/virtualNetworks/{vnet}/subnets/{subnet}")
+        region = details.get("region") or cfg.DEFAULT_AZURE_REGION
+        k8s_opts = [v.strip() for v in (cfg.AKS_K8S_VERSION_OPTIONS or "").split(",") if v.strip()]
+        size_opts = [v.strip() for v in (cfg.AKS_NODE_SIZE_OPTIONS or "").split(",") if v.strip()]
+        k8s_version = details.get("k8s_version") or (k8s_opts[0] if k8s_opts else "")
+        node_size   = details.get("node_size") or (size_opts[0] if size_opts else "Standard_D8ds_v5")
+        autoscaling = (details.get("autoscaling") or "disabled").lower() == "enabled"
+
+        def _int(v, d):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return d
+
+        if on_conflict == "keep":
+            res = {"success": True, "kept_existing": True,
+                   "message": f"Existing AKS cluster '{name}' kept as-is — no Azure changes. "
+                              f"Use 'Check Cluster State' to confirm it is ready."}
+        else:
+            res = azure_tools.create_aks_cluster(
+                subscription_id=sub, resource_group=rg, cluster_name=name, location=region,
+                subnet_id=subnet_id, kubernetes_version=k8s_version,
+                node_pool_name=details.get("node_pool_name", "nodepool1"), node_size=node_size,
+                autoscaling=autoscaling,
+                node_count=_int(details.get("node_count"), cfg.AKS_DEFAULT_NODE_COUNT),
+                min_count=_int(details.get("min_count"), cfg.AKS_DEFAULT_MIN_COUNT),
+                max_count=_int(details.get("max_count"), cfg.AKS_DEFAULT_MAX_COUNT),
+                on_conflict=("replace" if on_conflict == "replace" else None),
+            )
+        _audit_azure(res)
+        _auto_advance(req)
+        return jsonify(res), (200 if res.get("success") else 207)
+
     # ── VNET decommission actions — driven by request details ──
     if action in ("decom_check", "decom_execute", "decom_release"):
         vnet_name = details.get("vnet_name", "")
@@ -2551,6 +2654,8 @@ def _required_actions(req) -> set:
     if t == RequestType.ZPA_NMO_ROUTING:
         return {"nmo_zpa_route", "nmo_spoke_udr", "nmo_nsg_add",
                 "nmo_fw_allow_add", "nmo_fw_deny_add"}
+    if t == RequestType.AKS_CLUSTER:
+        return {"aks_deploy"}
     return set()
 
 
@@ -2592,6 +2697,11 @@ def _auto_advance(req):
             new = RequestStatus.SPOKE_UDR_UPDATED
         elif "nmo_zpa_route" in done:
             new = RequestStatus.ZPA_ROUTE_ADDED
+    elif t == RequestType.AKS_CLUSTER:
+        # Deploy kicks provisioning off → 'Cluster Deployed'. Completion happens
+        # in the aks_check action once provisioningState is Succeeded.
+        if "aks_deploy" in done:
+            new = RequestStatus.AKS_DEPLOYED
     # Only ever move forward within the workflow
     if (not new or new == req.status or new not in wf
             or (req.status in wf and wf.index(new) <= wf.index(req.status))):
