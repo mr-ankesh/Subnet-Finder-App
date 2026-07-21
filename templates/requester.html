@@ -630,29 +630,45 @@
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Subscription ID *</label>
-                      <input type="text" class="form-input-custom" data-detail="subscription_id" placeholder="00000000-0000-0000-0000-000000000000">
+                      <input type="text" class="form-input-custom" data-detail="subscription_id" id="aks_subscription" placeholder="00000000-0000-0000-0000-000000000000">
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Region</label>
-                      <input type="text" class="form-input-custom" data-detail="region" placeholder="blank = default region">
+                      <input type="text" class="form-input-custom" data-detail="region" id="aks_region" placeholder="blank = default region">
                     </div>
 
-                    <div class="col-12" style="margin-top:2px;">
+                    <div class="col-12" style="margin-top:2px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
                         <i class="bi bi-diagram-3 me-1"></i> Virtual Network &amp; Subnet
                       </div>
+                      <button type="button" class="btn-secondary-custom" style="font-size:11px;padding:5px 11px;" onclick="aksFetchVnets(this)">
+                        <i class="bi bi-cloud-download"></i> Fetch VNets from subscription
+                      </button>
+                    </div>
+                    <div class="col-12" id="aksVnetPickerRow" style="display:none;">
+                      <div class="row g-2">
+                        <div class="col-md-6">
+                          <label class="form-label-custom" style="font-size:11px;">Pick a VNet</label>
+                          <select class="form-input-custom" id="aksVnetSelect" onchange="aksVnetPicked()"></select>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label-custom" style="font-size:11px;">Pick a subnet</label>
+                          <select class="form-input-custom" id="aksSubnetSelect" onchange="aksSubnetPicked()"><option value="">— fetch a VNet first —</option></select>
+                        </div>
+                      </div>
+                      <div id="aksVnetMsg" style="font-size:11px;color:var(--text-muted);margin-top:6px;"></div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Name *</label>
-                      <input type="text" class="form-input-custom" data-detail="vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
+                      <input type="text" class="form-input-custom" data-detail="vnet_name" id="aks_vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Subnet Name *</label>
-                      <input type="text" class="form-input-custom" data-detail="subnet_name" placeholder="snet-app-conn-prd-prs-aen-001">
+                      <input type="text" class="form-input-custom" data-detail="subnet_name" id="aks_subnet_name" placeholder="snet-app-conn-prd-prs-aen-001">
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Resource Group</label>
-                      <input type="text" class="form-input-custom" data-detail="vnet_resource_group" placeholder="blank = same as cluster RG">
+                      <input type="text" class="form-input-custom" data-detail="vnet_resource_group" id="aks_vnet_rg" placeholder="blank = same as cluster RG">
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Subscription ID</label>
@@ -667,10 +683,14 @@
                       </div>
                     </div>
 
-                    <div class="col-12" style="margin-top:2px;">
+                    <div class="col-12" style="margin-top:2px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                       <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
                         <i class="bi bi-boxes me-1"></i> Kubernetes &amp; Node Pool
                       </div>
+                      <button type="button" class="btn-secondary-custom" style="font-size:11px;padding:5px 11px;" onclick="aksFetchOptions(this)">
+                        <i class="bi bi-cloud-download"></i> Fetch live versions &amp; sizes from Azure
+                      </button>
+                      <span id="aksOptsMsg" style="font-size:11px;color:var(--text-muted);"></span>
                     </div>
                     <div class="col-12">
                       <label class="form-label-custom">Cluster Tier (pricing) *</label>
@@ -683,7 +703,7 @@
                     </div>
                     <div class="col-md-4">
                       <label class="form-label-custom">Kubernetes Version *</label>
-                      <select class="form-input-custom" data-detail="k8s_version">
+                      <select class="form-input-custom" data-detail="k8s_version" id="aks_k8s_version">
                         {% for v in aks_k8s_options %}
                         <option value="{{ v }}">{{ v }}{% if loop.first %} (recommended){% endif %}</option>
                         {% endfor %}
@@ -696,7 +716,7 @@
                     </div>
                     <div class="col-md-4">
                       <label class="form-label-custom">Node Size *</label>
-                      <select class="form-input-custom" data-detail="node_size">
+                      <select class="form-input-custom" data-detail="node_size" id="aks_node_size">
                         {% for s in aks_node_sizes %}
                         <option value="{{ s }}">{{ s }}{% if loop.first %} (default){% endif %}</option>
                         {% endfor %}
@@ -1073,6 +1093,90 @@ function onAksTierChange() {
   document.getElementById('aksTierHint').innerHTML =
     '<i class="bi bi-tag-fill me-1" style="color:#00BCF2;"></i>' + (AKS_TIER_INFO[el.value] || '') +
     '<br><span style="color:var(--text-muted);">This is the <strong>control-plane / management fee only</strong> — node VMs are billed separately by size × count. Prices are approximate and vary by region.</span>';
+}
+
+// ── AKS live Azure lookups ──────────────────────────────────────────────────
+function fillSelect(sel, values, fmt) {
+  const cur = sel.value;
+  sel.innerHTML = values.map(v => {
+    const val = (typeof v === 'string') ? v : v.value;
+    return `<option value="${val}">${fmt ? fmt(v) : val}</option>`;
+  }).join('');
+  // keep the previous choice if still present
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
+async function aksFetchOptions(btn) {
+  const sub = (document.getElementById('aks_subscription').value || '').trim();
+  const region = (document.getElementById('aks_region').value || '').trim();
+  const msg = document.getElementById('aksOptsMsg');
+  if (!sub) { msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Fetching…';
+  msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure…';
+  try {
+    const d = await (await fetch(`/api/azure/aks-options?subscription=${encodeURIComponent(sub)}&region=${encodeURIComponent(region)}`)).json();
+    let parts = [];
+    if (d.versions && d.versions.length) {
+      fillSelect(document.getElementById('aks_k8s_version'), d.versions, v => v + (d.versions[0] === v ? ' (latest)' : ''));
+      parts.push(d.versions.length + ' versions');
+    } else if (d.versions_error) { parts.push('versions: ' + d.versions_error); }
+    if (d.sizes && d.sizes.length) {
+      fillSelect(document.getElementById('aks_node_size'), d.sizes.map(s => ({ value: s.name, label: `${s.name} — ${s.cores} vCPU, ${s.memory_gb} GB` })), o => o.label);
+      parts.push(d.sizes.length + (d.sizes_total > d.sizes.length ? '/' + d.sizes_total : '') + ' sizes');
+    } else if (d.sizes_error) { parts.push('sizes: ' + d.sizes_error); }
+    msg.style.color = (d.versions_error || d.sizes_error) ? '#f59e0b' : '#7edb56';
+    msg.innerHTML = '<i class="bi bi-check-circle me-1"></i>Loaded from Azure (' + (d.region || '') + '): ' + (parts.join(' · ') || 'nothing returned') + '.';
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+let AKS_VNETS = [];
+async function aksFetchVnets(btn) {
+  const sub = (document.getElementById('aks_subscription').value || '').trim();
+  const msg = document.getElementById('aksVnetMsg');
+  const row = document.getElementById('aksVnetPickerRow');
+  if (!sub) { row.style.display = ''; msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Fetching…';
+  row.style.display = ''; msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure…';
+  try {
+    const d = await (await fetch(`/api/azure/vnets?subscription=${encodeURIComponent(sub)}`)).json();
+    if (d.error || !d.success) { msg.style.color = '#f87171'; msg.textContent = d.error || d.message || 'Failed.'; }
+    else {
+      AKS_VNETS = d.vnets || [];
+      const sel = document.getElementById('aksVnetSelect');
+      sel.innerHTML = '<option value="">— select a VNet —</option>' +
+        AKS_VNETS.map((v, i) => `<option value="${i}">${v.name} · ${v.resource_group} · ${v.address_space || ''}</option>`).join('');
+      document.getElementById('aksSubnetSelect').innerHTML = '<option value="">— pick a VNet first —</option>';
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${AKS_VNETS.length} VNet(s) found — pick one, then its subnet.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+async function aksVnetPicked() {
+  const idx = document.getElementById('aksVnetSelect').value;
+  if (idx === '') return;
+  const v = AKS_VNETS[idx];
+  document.getElementById('aks_vnet_name').value = v.name;
+  document.getElementById('aks_vnet_rg').value = v.resource_group;
+  const msg = document.getElementById('aksVnetMsg');
+  const sub = (document.getElementById('aks_subscription').value || '').trim();
+  msg.style.color = 'var(--text-muted)'; msg.textContent = `Loading subnets of ${v.name}…`;
+  const sSel = document.getElementById('aksSubnetSelect');
+  try {
+    const d = await (await fetch(`/api/azure/subnets?subscription=${encodeURIComponent(sub)}&resource_group=${encodeURIComponent(v.resource_group)}&vnet=${encodeURIComponent(v.name)}`)).json();
+    if (d.error || !d.success) { msg.style.color = '#f87171'; msg.textContent = d.error || d.message || 'Failed.'; }
+    else {
+      sSel.innerHTML = '<option value="">— select a subnet —</option>' +
+        (d.subnets || []).map(s => `<option value="${s.name}">${s.name} · ${s.address_prefix}${s.used != null ? ' · ' + s.used + ' in use' : ''}</option>`).join('');
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${(d.subnets || []).length} subnet(s) — pick one.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not load subnets.'; }
+}
+
+function aksSubnetPicked() {
+  const name = document.getElementById('aksSubnetSelect').value;
+  if (name) document.getElementById('aks_subnet_name').value = name;
 }
 
 function backToPicker() {

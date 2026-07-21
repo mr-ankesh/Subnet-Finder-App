@@ -5,6 +5,7 @@ selected by the AZURE_AUTH_MODE setting (editable in /admin/settings).
 """
 import functools
 import logging
+import re
 from config import cfg
 from naming import render_name
 
@@ -2315,3 +2316,116 @@ def delete_aks_cluster(subscription_id: str, resource_group: str,
                     "message": f"AKS cluster '{cluster_name}' already absent."}
         log.error("delete_aks_cluster failed: %s", exc)
         return {"success": False, "message": str(exc)}
+
+
+# ── Live option lookups (read-only — run for real even in dry-run) ──────────
+# Let the requester/admin pull current choices straight from Azure instead of
+# typing them: AKS versions & node sizes, and the VNets/subnets in a scope.
+
+def _compute_client(subscription_id: str):
+    from azure.mgmt.compute import ComputeManagementClient
+    return ComputeManagementClient(_get_credential(), subscription_id)
+
+
+def aks_tiers() -> list:
+    """The control-plane SKU tiers AKS offers (fixed set, cheapest first)."""
+    return ["Free", "Standard", "Premium"]
+
+
+def _ver_key(v: str):
+    parts = []
+    for p in str(v).split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return parts
+
+
+def list_aks_versions(subscription_id: str, location: str) -> dict:
+    """Kubernetes versions available for AKS in a region (newest first)."""
+    if not subscription_id or not location:
+        return {"success": False, "message": "Subscription ID and region are required."}
+    try:
+        client = _containerservice_client(subscription_id)
+        res = client.managed_clusters.list_kubernetes_versions(location)
+        # dict-model: '.values' collides with dict.values(); use item access.
+        values = res.get("values") if hasattr(res, "get") else []
+        versions = set()
+        for item in (values or []):
+            patches = (item.get("patchVersions") if hasattr(item, "get") else None) or {}
+            if patches:
+                versions.update(patches.keys())
+            else:
+                ver = item.get("version") if hasattr(item, "get") else None
+                if ver:
+                    versions.add(ver)
+        ordered = sorted(versions, key=_ver_key, reverse=True)
+        return {"success": True, "versions": ordered}
+    except Exception as exc:
+        log.error("list_aks_versions failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+_AKS_SIZE_RE = re.compile(r"^Standard_(B|D|DS|DC|E|ES|F|FS)\d", re.I)
+
+
+def list_vm_sizes(subscription_id: str, location: str) -> dict:
+    """AKS-suitable VM sizes available in a region (≥ 2 vCPU, common families)."""
+    if not subscription_id or not location:
+        return {"success": False, "message": "Subscription ID and region are required."}
+    try:
+        client = _compute_client(subscription_id)
+        sizes = []
+        for s in client.virtual_machine_sizes.list(location):
+            cores = s.number_of_cores or 0
+            if cores < 2 or not _AKS_SIZE_RE.match(s.name or ""):
+                continue
+            sizes.append({"name": s.name, "cores": cores,
+                          "memory_gb": round((s.memory_in_mb or 0) / 1024, 1)})
+        # Smaller first, then by name; cap so the dropdown stays usable.
+        sizes.sort(key=lambda x: (x["cores"], x["name"]))
+        return {"success": True, "sizes": sizes[:150], "total": len(sizes)}
+    except Exception as exc:
+        log.error("list_vm_sizes failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def _rg_from_id(resource_id: str) -> str:
+    m = re.search(r"/resourceGroups/([^/]+)/", resource_id or "", re.I)
+    return m.group(1) if m else ""
+
+
+def list_vnets(subscription_id: str) -> dict:
+    """All VNets visible in a subscription (name, RG, region, address space)."""
+    if not subscription_id:
+        return {"success": False, "message": "Subscription ID is required."}
+    try:
+        client = _network_client(subscription_id)
+        vnets = []
+        for v in client.virtual_networks.list_all():
+            vnets.append({
+                "name": v.name, "resource_group": _rg_from_id(v.id), "location": v.location,
+                "address_space": ", ".join((v.address_space.address_prefixes if v.address_space else []) or [])})
+        vnets.sort(key=lambda x: (x["resource_group"].lower(), x["name"].lower()))
+        return {"success": True, "vnets": vnets}
+    except Exception as exc:
+        log.error("list_vnets failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def list_subnets(subscription_id: str, resource_group: str, vnet_name: str) -> dict:
+    """Subnets in a VNet (name + address prefix)."""
+    if not all([subscription_id, resource_group, vnet_name]):
+        return {"success": False, "message": "Subscription, resource group and VNet are required."}
+    try:
+        client = _network_client(subscription_id)
+        subnets = []
+        for s in client.subnets.list(resource_group, vnet_name):
+            prefix = s.address_prefix or ", ".join(getattr(s, "address_prefixes", None) or [])
+            subnets.append({"name": s.name, "address_prefix": prefix,
+                            "used": len(s.ip_configurations or []) if hasattr(s, "ip_configurations") else None})
+        return {"success": True, "subnets": subnets}
+    except Exception as exc:
+        log.error("list_subnets failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}

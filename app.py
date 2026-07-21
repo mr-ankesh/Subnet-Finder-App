@@ -1344,6 +1344,52 @@ def it_connector_status():
     return jsonify(res), (200 if res.get("success") else 400)
 
 
+# ── Live Azure lookups for the request forms (read-only) ───────────────────
+
+@app.route("/api/azure/aks-options")
+@require_login
+def azure_aks_options():
+    """Current AKS versions, node sizes and tiers for a subscription/region."""
+    import azure_tools
+    sub = (request.args.get("subscription", "").strip() or cfg.AKS_DEFAULT_SUBSCRIPTION_ID
+           or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
+    region = request.args.get("region", "").strip() or cfg.DEFAULT_AZURE_REGION
+    if not sub:
+        return jsonify({"error": "Enter a Subscription ID first."}), 400
+    ver = azure_tools.list_aks_versions(sub, region)
+    siz = azure_tools.list_vm_sizes(sub, region)
+    return jsonify({
+        "region": region, "tiers": azure_tools.aks_tiers(),
+        "versions": ver.get("versions", []), "versions_error": None if ver.get("success") else ver.get("message"),
+        "sizes": siz.get("sizes", []), "sizes_total": siz.get("total"),
+        "sizes_error": None if siz.get("success") else siz.get("message"),
+    })
+
+
+@app.route("/api/azure/vnets")
+@require_login
+def azure_vnets():
+    """VNets visible in a subscription (for the VNet picker)."""
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    if not sub:
+        return jsonify({"error": "Enter a Subscription ID first."}), 400
+    res = azure_tools.list_vnets(sub)
+    return jsonify(res), (200 if res.get("success") else 400)
+
+
+@app.route("/api/azure/subnets")
+@require_login
+def azure_subnets():
+    """Subnets in a chosen VNet (for the subnet picker)."""
+    import azure_tools
+    res = azure_tools.list_subnets(
+        request.args.get("subscription", "").strip(),
+        request.args.get("resource_group", "").strip(),
+        request.args.get("vnet", "").strip())
+    return jsonify(res), (200 if res.get("success") else 400)
+
+
 @app.route("/requester")
 @require_login
 def requester_page():
