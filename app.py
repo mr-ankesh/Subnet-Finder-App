@@ -2304,6 +2304,8 @@ def admin_azure_action(req_id):
                 except Exception:
                     pass
                 res["message"] = str(res.get("message", "")) + " — cluster is ready; request completed."
+                res["completed"] = True
+            res["already_completed"] = (req.status == RequestStatus.COMPLETED)
             _audit_azure(res)
             return jsonify(res), (200 if res.get("success") else 207)
 

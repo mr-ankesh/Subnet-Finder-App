@@ -301,9 +301,10 @@
             pool {{ ak.get('node_pool_name') }} ({{ ak.get('node_size') or '(default)' }},
             {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %})
           </div>
-          <button class="btn btn-glass w-100 mb-2" onclick="runAction('aks_check', this)">
+          <button class="btn btn-glass w-100 mb-2" onclick="checkAksStatus(this)">
             <i class="bi bi-clipboard-pulse me-2"></i>1 · Check Cluster State
           </button>
+          <div id="aksStatusBox" style="display:none;margin-bottom:10px;"></div>
           {% if 'aks_deploy' not in done_actions %}
           <details style="margin-bottom:10px;">
             <summary style="font-size:12px;color:#60a5fa;cursor:pointer;"><i class="bi bi-sliders me-1"></i>Review / adjust parameters before deploy</summary>
@@ -350,10 +351,11 @@
           </button>
           {% endif %}
           <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
-            1 is read-only. Deploy starts provisioning and returns immediately — a cluster takes
-            several minutes to build. Click <strong>Check Cluster State</strong> to poll; the request
-            auto-completes once Azure reports <em>Succeeded</em>. If the cluster already exists you'll
-            be shown its state with the option to proceed without changes.
+            1 is read-only and shows the live cluster state with a timestamp — keep it open with
+            <strong>auto-refresh</strong> (or hit Refresh) and the request <strong>auto-completes</strong> the moment
+            Azure reports <em>Succeeded</em>. Deploy starts provisioning and returns immediately — a cluster
+            takes several minutes to build. If the cluster already exists you'll be shown its state with the
+            option to proceed without changes.
           </div>
           <div id="actionResults" style="display:none;margin-top:10px;"></div>
         </div>
@@ -387,6 +389,63 @@
             } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
             btn.disabled = false; btn.innerHTML = o;
           }
+          let aksAutoOn = false, aksPollTimer = null;
+          function aksStopPoll() { if (aksPollTimer) { clearTimeout(aksPollTimer); aksPollTimer = null; } }
+          function aksTogglePoll() { aksAutoOn = document.getElementById('aksAutoPoll').checked; if (aksAutoOn) aksSchedulePoll(); else aksStopPoll(); }
+          function aksSchedulePoll() { aksStopPoll(); aksPollTimer = setTimeout(() => checkAksStatus(null, true), 30000); }
+
+          function aksStateStyle(st) {
+            if (st === 'Succeeded') return { c: '#7edb56', i: 'check-circle-fill' };
+            if (st === 'Failed' || st === 'Canceled') return { c: '#f87171', i: 'x-circle-fill' };
+            if (st === 'Not found') return { c: '#f59e0b', i: 'question-circle-fill' };
+            return { c: '#f59e0b', i: 'arrow-repeat' };   // Creating / Updating / Unknown
+          }
+
+          async function checkAksStatus(btn, isAuto) {
+            const box = document.getElementById('aksStatusBox');
+            box.style.display = 'block';
+            if (btn && !isAuto) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Checking…'; }
+            let d;
+            try {
+              d = await (await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'aks_check' }) })).json();
+            } catch (e) {
+              box.innerHTML = `<div style="border:1px solid #f8717166;background:rgba(248,113,113,.08);border-radius:10px;padding:12px 14px;font-size:13px;color:#f87171;">Network error while checking.</div>`;
+              if (btn && !isAuto) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-clipboard-pulse me-2"></i>1 · Check Cluster State'; }
+              return;
+            }
+            const now = new Date().toLocaleTimeString();
+            if (!d.success) {
+              box.innerHTML = `<div style="border:1px solid #f8717166;background:rgba(248,113,113,.08);border-radius:10px;padding:12px 14px;">
+                  <div style="font-size:13px;color:#f87171;"><i class="bi bi-x-circle-fill me-1"></i>${(d.error || d.message || 'Check failed.').replace(/</g,'&lt;')}</div>
+                  <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;">Checked at ${now}</div>
+                  <button class="btn btn-glass btn-sm" style="margin-top:8px;" onclick="checkAksStatus(this)"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button></div>`;
+            } else {
+              const st = d.exists === false ? 'Not found' : (d.provisioning_state || 'Unknown');
+              const done = !!d.completed || d.already_completed || st === 'Succeeded';
+              const s = aksStateStyle(st);
+              let html = `<div style="border:1px solid ${s.c}66;background:${s.c}14;border-radius:10px;padding:12px 14px;">
+                  <div style="font-size:15px;font-weight:700;color:${s.c};display:flex;align-items:center;gap:8px;">
+                    <i class="bi bi-${s.i}"></i><span>${st}${d.power_state ? ' · ' + d.power_state : ''}</span></div>
+                  <div style="font-size:12px;color:var(--text-dim);margin-top:8px;font-family:var(--mono);line-height:1.6;">${(d.message || '').replace(/</g,'&lt;')}</div>
+                  <div style="font-size:10.5px;color:var(--text-muted);margin-top:10px;">Checked at ${now}</div>
+                  <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn btn-glass btn-sm" onclick="checkAksStatus(this)"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>`;
+              if (!done) {
+                html += `<label style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" id="aksAutoPoll" ${aksAutoOn ? 'checked' : ''} onchange="aksTogglePoll()" style="accent-color:#60a5fa;"> auto-refresh every 30s</label>`;
+              }
+              html += `</div>`;
+              if (d.completed) html += `<div style="margin-top:10px;font-size:12.5px;color:#7edb56;"><i class="bi bi-check-circle-fill me-1"></i>Cluster is ready — request completed. Reloading…</div>`;
+              html += `</div>`;
+              box.innerHTML = html;
+              if (d.completed) { aksStopPoll(); setTimeout(() => location.reload(), 2500); }
+              else if (aksAutoOn) aksSchedulePoll();
+            }
+            if (btn && !isAuto) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-clipboard-pulse me-2"></i>1 · Check Cluster State'; }
+          }
+
           function deployAks(btn) {
             const scale = document.getElementById('ov_scale').value;
             const extra = { k8s_version: document.getElementById('ov_k8s').value, tier: document.getElementById('ov_tier').value,
