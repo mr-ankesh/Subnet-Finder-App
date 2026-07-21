@@ -1031,7 +1031,10 @@ async function doTerminate(status) {
   const panel = document.getElementById('terminatePanel');
   const chk = document.getElementById('revertChk');
   const revert = chk ? chk.checked : true;
-  const comment = ((document.getElementById('terminateComment') || {}).value || '').trim();
+  const cEl = document.getElementById('terminateComment');
+  const comment = ((cEl || {}).value || '').trim();
+  // Reverting deployed changes (revertChk only exists when there are changes) needs a reason.
+  if (chk && revert && !comment) { if (cEl) { cEl.style.borderColor = '#d13438'; cEl.focus(); } return; }
   panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Reverting changes and updating status…</span>';
   try {
     const resp = await fetch(`/api/admin/requests/${REQ_ID}/terminate`, {
@@ -1154,8 +1157,8 @@ async function confirmRevertDeployment() {
                Also release the CIDR back to the pool (untick to keep it assigned for redeploy)
              </label>`;
   }
-  body += `<label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Comment / reason</label>
-           <textarea id="revDeployComment" rows="2" placeholder="Why is the deployment being reverted? (recorded in notes &amp; history)"
+  body += `<label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#f87171;">Reason for revert *</label>
+           <textarea id="revDeployComment" rows="2" placeholder="Why is the deployment being reverted? (required — recorded on the ticket, notes &amp; history)"
              style="width:100%;font-size:12.5px;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 10px;margin:4px 0 10px;resize:vertical;"></textarea>
            <div style="display:flex;gap:8px;">
              <button class="btn btn-sm" style="flex:1;background:rgba(209,52,56,.2);border:1px solid #d13438;color:#f87171;font-weight:700;"
@@ -1169,7 +1172,9 @@ async function doRevertDeployment() {
   const panel = document.getElementById('revertDeployPanel');
   const cidrChk = document.getElementById('revDeployCidr');
   const release_cidr = cidrChk ? cidrChk.checked : false;
-  const comment = ((document.getElementById('revDeployComment') || {}).value || '').trim();
+  const cEl = document.getElementById('revDeployComment');
+  const comment = ((cEl || {}).value || '').trim();
+  if (!comment) { if (cEl) { cEl.style.borderColor = '#d13438'; cEl.focus(); } return; }
   panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Reverting deployment in Azure…</span>';
   try {
     const resp = await fetch(`/api/admin/requests/${REQ_ID}/revert-deployment`, {

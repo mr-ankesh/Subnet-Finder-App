@@ -81,6 +81,9 @@
           {% endif %}
           Azure is updated for real{% if AZURE_DRY_RUN %} — but DRY-RUN is currently ON, so it will be simulated{% endif %}. Continue?
         </div>
+        <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#f87171;">Reason for revert *</label>
+        <textarea id="revreason-{{ e.id }}" rows="2" placeholder="Why is this change being reverted? (required — recorded on the change, the request/ticket and the audit trail)"
+          style="width:100%;font-size:12.5px;background:rgba(255,255,255,.05);border:1px solid rgba(209,52,56,.4);border-radius:8px;color:var(--text);padding:8px 10px;margin:4px 0 10px;resize:vertical;"></textarea>
         <button class="btn btn-glow btn-sm" onclick="doRevert({{ e.id }}, this)"><i class="bi bi-check2 me-1"></i>Yes, revert</button>
         <button class="btn btn-glass btn-sm" onclick="document.getElementById('revconfirm-{{ e.id }}').style.display='none'">Cancel</button>
       </div>
@@ -115,13 +118,22 @@ function askRevert(id) {
   document.getElementById('revconfirm-' + id).style.display = 'block';
 }
 async function doRevert(id, btn) {
-  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Reverting…';
   const msg = document.getElementById('revmsg-' + id);
+  const reason = (document.getElementById('revreason-' + id).value || '').trim();
+  if (!reason) {
+    msg.style.color = 'var(--danger)'; msg.textContent = 'A reason for the revert is required.';
+    document.getElementById('revreason-' + id).focus();
+    return;
+  }
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Reverting…';
   try {
-    const resp = await fetch(`/api/admin/changes/${id}/revert`, { method: 'POST' });
+    const resp = await fetch(`/api/admin/changes/${id}/revert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason })
+    });
     const d = await resp.json();
     msg.style.color = d.success ? '#7edb56' : 'var(--danger)';
-    msg.textContent = d.message || (d.success ? 'Reverted.' : 'Failed.');
+    msg.textContent = d.message || d.error || (d.success ? 'Reverted.' : 'Failed.');
     if (d.success) setTimeout(() => location.reload(), 1800);
     else { btn.disabled = false; btn.innerHTML = '<i class="bi bi-check2 me-1"></i>Yes, revert'; }
   } catch (e) {

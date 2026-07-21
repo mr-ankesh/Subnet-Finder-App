@@ -1166,7 +1166,21 @@ def admin_changes():
 @app.route("/api/admin/changes/<int:cid>/revert", methods=["POST"])
 @require_admin
 def admin_change_revert(cid):
-    res = changes.execute_revert(cid, actor=current_actor())
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason", "")).strip()
+    if not reason:
+        return jsonify({"error": "A reason for the revert is required."}), 400
+    res = changes.execute_revert(cid, actor=current_actor(), reason=reason)
+    # Reflect the revert on the originating ticket so it's visible there.
+    if res.get("success") and res.get("request_id"):
+        req = SpokeRequest.query.get(res["request_id"])
+        if req:
+            stamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+            note = (f"[{stamp} UTC] Deployed change reverted by {current_actor()} — "
+                    f"{res.get('change_summary', '')[:160]} · reason: {reason}")
+            req.notes = f"{req.notes}\n{note}" if req.notes else note
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
     return jsonify(res), (200 if res.get("success") else 400)
 
 
@@ -3085,6 +3099,8 @@ def request_revert_deployment(req_id):
     data = request.get_json(force=True) or {}
     release_cidr = bool(data.get("release_cidr", True))
     comment = str(data.get("comment", "")).strip()[:500]
+    if not comment:
+        return jsonify({"error": "A reason for the revert is required."}), 400
 
     changes_list = _deployed_changes(req)
     if not release_cidr:
@@ -3250,6 +3266,9 @@ def request_terminate(req_id):
 
     steps, all_ok = [], True
     if do_revert:
+        # Reverting deployed changes always requires a reason.
+        if _deployed_changes(req) and not comment:
+            return jsonify({"error": "A reason/comment is required when reverting deployed changes."}), 400
         steps, all_ok = _run_reverts(req, _deployed_changes(req), tag="cancel_revert")
 
     old_status = req.status

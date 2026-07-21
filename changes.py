@@ -212,9 +212,14 @@ def _revert_dispatch(op: str, p: dict) -> dict:
     return {"success": False, "message": f"Unknown revert operation '{op}'."}
 
 
-def execute_revert(cid: int, actor: str) -> dict:
-    """Restore the earlier state recorded in change #cid. Fully audited."""
+def execute_revert(cid: int, actor: str, reason: str = "") -> dict:
+    """Restore the earlier state recorded in change #cid. Reason is mandatory
+    and recorded in the ledger, the audit trail and (via the caller) the ticket.
+    Fully audited."""
     import audit
+    reason = (reason or "").strip()
+    if not reason:
+        return {"success": False, "message": "A reason for the revert is required."}
     entry = get_change(cid)
     if not entry:
         return {"success": False, "message": f"Change #{cid} not found."}
@@ -228,17 +233,19 @@ def execute_revert(cid: int, actor: str) -> dict:
         log.error("changes.execute_revert #%s failed: %s", cid, exc)
         res = {"success": False, "message": str(exc)}
     if res.get("success"):
-        _mark(cid, STATUS_REVERTED, actor, str(res.get("message", ""))[:500])
+        _mark(cid, STATUS_REVERTED, actor, f"{res.get('message', '')} — reason: {reason}"[:500])
         # The revert itself is a change — record it so it can be re-applied.
         record(action=f"revert:{entry['action']}", actor=actor,
                request_id=entry.get("request_id"),
                target=entry.get("target", ""),
-               summary=f"Reverted change #{cid}: {entry.get('summary', '')}"[:490],
+               summary=f"Reverted change #{cid}: {entry.get('summary', '')} (reason: {reason})"[:490],
                before=entry.get("after"), after=entry.get("before"))
     audit.record("change_reverted" if res.get("success") else "change_revert_failed",
                  actor=actor, actor_role="admin", request_id=entry.get("request_id"),
                  summary=f"Revert change #{cid} ({entry['action']} — {entry.get('target', '')}): "
-                         f"{str(res.get('message', ''))[:200]}",
+                         f"{str(res.get('message', ''))[:150]}" + (f' — "{reason}"' if reason else ""),
                  data={"change_id": cid, "revert_op": entry.get("revert_op"),
-                       "success": bool(res.get("success"))})
+                       "success": bool(res.get("success")), "reason": reason})
+    res["request_id"] = entry.get("request_id")
+    res["change_summary"] = entry.get("summary", "")
     return res
