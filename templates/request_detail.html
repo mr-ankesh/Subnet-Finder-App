@@ -300,7 +300,8 @@
             Kubernetes {{ ak.get('k8s_version') or '(default)' }} · {{ ak.get('tier') or 'Free' }} tier ·
             region {{ ak.get('region') or 'uaenorth' }}{% if (ak.get('region') or 'uaenorth') != 'uaenorth' %} <span style="color:#f59e0b;">(non-standard)</span>{% endif %} ·
             pool {{ ak.get('node_pool_name') }} ({{ ak.get('node_size') or '(default)' }},
-            {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %})<br>
+            {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %},
+            zones {{ ak.get('zones') or 'default' }})<br>
             {% if ak.get('region_justification') %}Region justification: {{ ak.get('region_justification') }}<br>{% endif %}
             ZPA R&amp;D access: {% if ak.get('zpa_rnd_access') == 'yes' %}<span style="color:#7edb56;">yes — link private DNS zone to hub</span>{% else %}no{% endif %}
           </div>
@@ -332,6 +333,15 @@
                     <option value="westeurope" {% if _r=='westeurope' %}selected{% endif %}>West Europe</option>
                     <option value="northeurope" {% if _r=='northeurope' %}selected{% endif %}>North Europe</option>
                     <option value="eastus" {% if _r=='eastus' %}selected{% endif %}>East US</option>
+                  </select></div>
+                <div><div class="aks-ov-lbl">Availability zones</div>
+                  {% set _z = ak.get('zones') or 'default' %}
+                  <select id="ov_zones" class="aks-ov">
+                    <option value="default" {% if _z=='default' %}selected{% endif %}>Default (no pinning)</option>
+                    <option value="1" {% if _z=='1' %}selected{% endif %}>Zone 1</option>
+                    <option value="2" {% if _z=='2' %}selected{% endif %}>Zone 2</option>
+                    <option value="3" {% if _z=='3' %}selected{% endif %}>Zone 3</option>
+                    <option value="1,2,3" {% if _z=='1,2,3' %}selected{% endif %}>Zones 1,2,3 (HA)</option>
                   </select></div>
                 <div><div class="aks-ov-lbl">Node size</div>
                   <select id="ov_size" class="aks-ov">
@@ -475,7 +485,8 @@
           function deployAks(btn) {
             const scale = document.getElementById('ov_scale').value;
             const extra = { k8s_version: document.getElementById('ov_k8s').value, tier: document.getElementById('ov_tier').value,
-              node_size: document.getElementById('ov_size').value, region: document.getElementById('ov_region').value, autoscaling: scale };
+              node_size: document.getElementById('ov_size').value, region: document.getElementById('ov_region').value,
+              zones: document.getElementById('ov_zones').value, autoscaling: scale };
             if (scale === 'enabled') { extra.min_count = document.getElementById('ov_min').value; extra.max_count = document.getElementById('ov_max').value; }
             else { extra.node_count = document.getElementById('ov_count').value; }
             runAction('aks_deploy', btn, extra);

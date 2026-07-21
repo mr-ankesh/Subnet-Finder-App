@@ -173,6 +173,11 @@ SETTINGS_SPEC = {
                                    help="Control-plane SKU tier. Free = no uptime SLA (dev/test); "
                                         "Standard ≈ $73/mo with a 99.95% SLA (production); Premium ≈ $438/mo "
                                         "incl. long-term support. Node VMs are billed separately."),
+    "AKS_DEFAULT_ZONES":        _f("aks", "Default availability zones", "default",
+                                   options=["default", "1", "2", "3", "1,2,3"],
+                                   help="Availability zones the node pool spreads across. "
+                                        "'default' = no zone pinning (Azure default); '1,2,3' = zone-redundant. "
+                                        "Requires the region and node size to support zones."),
     "AKS_DEFAULT_NODE_COUNT":   _f("aks", "Default node count", "2", type="int",
                                    help="Fixed node count when autoscaling is off."),
     "AKS_DEFAULT_MIN_COUNT":    _f("aks", "Autoscale min nodes", "2", type="int"),

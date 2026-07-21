@@ -777,6 +777,17 @@
                       </select>
                     </div>
                     <div class="col-md-4">
+                      <label class="form-label-custom">Availability Zones</label>
+                      <select class="form-input-custom" data-detail="zones" id="aks_zones">
+                        <option value="default" {% if aks_defaults.zones == 'default' %}selected{% endif %}>Default (no zone pinning)</option>
+                        <option value="1"     {% if aks_defaults.zones == '1' %}selected{% endif %}>Zone 1</option>
+                        <option value="2"     {% if aks_defaults.zones == '2' %}selected{% endif %}>Zone 2</option>
+                        <option value="3"     {% if aks_defaults.zones == '3' %}selected{% endif %}>Zone 3</option>
+                        <option value="1,2,3" {% if aks_defaults.zones == '1,2,3' %}selected{% endif %}>Zones 1, 2 &amp; 3 (HA)</option>
+                      </select>
+                      <div class="field-help">Spread nodes across availability zones. Default keeps Azure's default (no pinning).</div>
+                    </div>
+                    <div class="col-md-4">
                       <label class="form-label-custom">Autoscaling *</label>
                       <select class="form-input-custom" data-detail="autoscaling" id="aks_scale" onchange="onAksScaleChange()">
                         <option value="disabled">Disabled — fixed node count</option>

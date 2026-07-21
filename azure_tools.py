@@ -2202,6 +2202,7 @@ def create_aks_cluster(
     min_count: int = 2,
     max_count: int = 5,
     tier: str = "Free",               # control-plane SKU tier: Free / Standard / Premium
+    zones: str = "default",           # node-pool availability zones: "default" / "1" / "1,2,3"
     on_conflict: str = None,          # "replace" = update an existing cluster after confirmation
 ) -> dict:
     """Kick off AKS cluster creation (does NOT wait for provisioning to finish).
@@ -2246,6 +2247,8 @@ def create_aks_cluster(
             pool.count, pool.min_count, pool.max_count = int(min_count), int(min_count), int(max_count)
         else:
             pool.count = int(node_count)
+        if zones and str(zones).lower() != "default":
+            pool.availability_zones = [z.strip() for z in str(zones).split(",") if z.strip()]
 
         net = ContainerServiceNetworkProfile(
             network_plugin=cfg.AKS_NETWORK_PLUGIN or "azure",
