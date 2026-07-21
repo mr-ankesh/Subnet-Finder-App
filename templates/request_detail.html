@@ -125,6 +125,27 @@
         </p>
         {% endif %}
 
+        {# ── Aggregated "deploy everything" for VNET requests ── #}
+        {% if rtype in ('vnet_new', 'hub_integration') and req.status not in terminals and req.status != wf[-1] %}
+        <div style="border:1px solid rgba(21,94,239,.4);background:rgba(21,94,239,.06);border-radius:10px;padding:12px;margin-bottom:14px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#60a5fa;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-lightning-charge-fill"></i> One-Click Deployment</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.6;">
+            Run every remaining deployment step for this request in the correct order — you'll see exactly
+            what will happen and confirm before anything runs.
+          </div>
+          <button class="btn btn-glow w-100" onclick="confirmDeployAll()">
+            <i class="bi bi-rocket-takeoff me-2"></i>Deploy Everything
+          </button>
+          <div id="deployAllPanel" style="display:none;margin-top:12px;border:1px solid rgba(21,94,239,.4);background:rgba(21,94,239,.05);border-radius:10px;padding:14px;"></div>
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            Prefer step-by-step? The individual actions below still work — this just runs the required ones together.
+          </div>
+        </div>
+        {% endif %}
+
         {# ── ZPA routing actions ── #}
         {% if rtype in ('zpa_rnd_routing', 'zpa_other_routing') and req.status not in terminals %}
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
@@ -1030,6 +1051,69 @@ async function doTerminate(status) {
     html += `<div style="font-size:12.5px;color:${d.success ? '#7edb56' : '#f59e0b'};margin-top:8px;">${d.message} Reloading…</div>`;
     panel.innerHTML = html;
     setTimeout(() => location.reload(), (d.steps || []).length ? 3000 : 1200);
+  } catch (e) {
+    panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+  }
+}
+
+// ── Aggregated "deploy everything" — preview, confirm, then run in order ────
+async function confirmDeployAll() {
+  const panel = document.getElementById('deployAllPanel');
+  panel.style.display = 'block';
+  panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Working out what needs deploying…</span>';
+  let d;
+  try {
+    d = await (await fetch(`/api/admin/requests/${REQ_ID}/pending-deploy`)).json();
+  } catch (e) {
+    panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Could not load the deploy plan.</span>';
+    return;
+  }
+  const plan = d.plan || [];
+  if (!plan.length) {
+    panel.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">Nothing left to deploy — all required steps are already done.</span>';
+    return;
+  }
+  const dry = d.dry_run_mode;
+  let body = `<div style="font-size:13px;font-weight:700;color:#60a5fa;margin-bottom:8px;">
+                <i class="bi bi-info-circle-fill me-1"></i>This will run the following ${plan.length} step(s), in order${dry ? ' (DRY-RUN — simulated)' : ''}:</div>
+              <ol style="font-size:12px;color:var(--text-dim);margin:0 0 10px;padding-left:20px;line-height:1.8;">` +
+    plan.map(p => `<li>${p.label}${p.manual ? ' <span style="color:#f59e0b;">— left for you to do manually (needs a rule collection choice)</span>' : ''}</li>`).join('') +
+    `</ol>`;
+  if (plan.some(p => p.manual)) {
+    body += `<div style="font-size:11.5px;color:#f59e0b;margin-bottom:10px;line-height:1.5;">
+               <i class="bi bi-exclamation-triangle-fill me-1"></i>The specific internet rule can't be auto-run —
+               after this finishes, use the firewall step below to pick a rule collection group &amp; collection.</div>`;
+  }
+  body += `<div style="display:flex;gap:8px;">
+             <button class="btn btn-glow btn-sm" style="flex:1;" onclick="doDeployAll()">
+               <i class="bi bi-rocket-takeoff me-1"></i>Yes, deploy these steps</button>
+             <button class="btn btn-glass btn-sm" style="flex:1;" onclick="document.getElementById('deployAllPanel').style.display='none'">Cancel</button>
+           </div>`;
+  panel.innerHTML = body;
+}
+
+async function doDeployAll() {
+  const panel = document.getElementById('deployAllPanel');
+  panel.innerHTML = '<span style="font-size:12px;color:var(--text-muted);"><i class="bi bi-hourglass-split me-1"></i>Deploying — running each step in order…</span>';
+  try {
+    const resp = await fetch(`/api/admin/requests/${REQ_ID}/deploy-all`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+    });
+    const d = await resp.json();
+    if (d.error) { panel.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; return; }
+    let html = '<div style="font-size:12.5px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">Operations performed:</div>';
+    (d.steps || []).forEach(s => {
+      const icon = s.success ? '<i class="bi bi-check-circle-fill" style="color:#7edb56;"></i>'
+                 : (s.manual ? '<i class="bi bi-hand-index" style="color:#f59e0b;"></i>'
+                 : (s.conflict ? '<i class="bi bi-exclamation-triangle-fill" style="color:#f59e0b;"></i>'
+                 : '<i class="bi bi-x-circle-fill" style="color:#f87171;"></i>'));
+      html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:5px;">${icon} ${s.label}
+                 ${s.dry_run ? '<span style="color:#f59e0b;">(dry-run)</span>' : ''}
+                 <div style="font-size:11px;color:var(--text-muted);margin-left:20px;">${s.message}</div></div>`;
+    });
+    html += `<div style="font-size:12.5px;color:${d.success ? '#7edb56' : '#f59e0b'};margin-top:8px;">${d.message} Reloading…</div>`;
+    panel.innerHTML = html;
+    setTimeout(() => location.reload(), 3500);
   } catch (e) {
     panel.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
   }

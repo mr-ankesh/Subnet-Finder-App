@@ -2882,6 +2882,73 @@ def request_spoke_subnets(req_id):
     return jsonify({"source": "declared", "subnets": declared})
 
 
+# Creation order (the reverse of teardown): VNET first, routes/rules after.
+_DEPLOY_ORDER = ["vnet", "peer", "internet", "internet_rule", "gateway_route", "zpa_route"]
+_DEPLOY_LABELS = {
+    "vnet":          "Create the spoke VNET & subnet(s)",
+    "peer":          "Peer the spoke VNET with the hub (both directions)",
+    "internet":      "Add the internet-egress firewall rule (allow-all)",
+    "internet_rule": "Add the requested internet firewall rule",
+    "gateway_route": "Add the spoke route to the hub gateway routing table",
+    "zpa_route":     "Add the spoke route to the hub ZPA routing table",
+}
+
+
+def _pending_deploy_actions(req):
+    """Ordered list of required deploy steps not yet done, for the aggregated
+    deploy. internet_rule is flagged 'manual' — it needs a human to choose the
+    rule collection group & collection, so the one-click deploy can't run it."""
+    done = _done_actions(req)
+    required = set(_required_actions(req))
+    if (req.request_type or RequestType.VNET_NEW) == RequestType.VNET_NEW \
+            and req.deployment_mode == "admin":
+        required.add("vnet")
+    plan = []
+    for k in _DEPLOY_ORDER:
+        if k in required and k not in done:
+            plan.append({"key": k, "label": _DEPLOY_LABELS[k], "manual": k == "internet_rule"})
+    return plan
+
+
+def _deploy_one(req, key):
+    """Run one VNET deploy step with server-derived defaults (aggregated deploy)."""
+    import azure_tools
+    from naming import sanitize
+    vi = req.vnet_info
+    details = req.get_details()
+    addr = req.allocated_subnet or ""
+    if key == "vnet":
+        return azure_tools.create_spoke_vnet(
+            vi.subscription_id, vi.resource_group, vi.vnet_name, vi.region, addr,
+            subnet_name=vi.subnet_name or "default", subnet_size=vi.subnet_size,
+            subnets=details.get("subnets") or None)
+    if key == "peer":
+        pn = details.get("peering_names") or {}
+        s2h = sanitize(pn.get("spoke_to_hub") or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=vi.vnet_name))
+        h2s = sanitize(pn.get("hub_to_spoke") or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=vi.vnet_name))
+        return azure_tools.peer_hub_vnet(
+            spoke_subscription_id=vi.subscription_id, spoke_resource_group=vi.resource_group,
+            spoke_vnet_name=vi.vnet_name, spoke_address_space=addr,
+            spoke_to_hub_name=s2h, hub_to_spoke_name=h2s)
+    if key == "internet":
+        rule_name = render_name("TPL_FW_RULE_NAME", vnet=vi.vnet_name, request_id=req.id,
+                                region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
+        return azure_tools.allow_internet_rule(addr, rule_name)
+    if key in ("gateway_route", "zpa_route"):
+        table = (cfg.UDR_GATEWAY_NAME or cfg.UDR_NAME_1) if key == "gateway_route" \
+                else (cfg.UDR_ZPA_NAME or cfg.UDR_NAME_2)
+        if not table:
+            return {"success": False, "message": f"No routing table configured for {key} "
+                                                 f"(set UDR_GATEWAY_NAME / UDR_ZPA_NAME)."}
+        route_name = render_name("TPL_ROUTE_NAME", vnet=vi.vnet_name, request_id=req.id,
+                                 region=vi.region, cidr_mask=addr.split("/")[-1], purpose=req.purpose)
+        return azure_tools.add_route_to_table(
+            route_table_name=table, resource_group=cfg.UDR_RESOURCE_GROUP, route_name=route_name,
+            address_prefix=addr, next_hop_type="VirtualAppliance",
+            next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP, subscription_id=cfg.HUB_SUBSCRIPTION_ID)
+    return {"success": False, "message": f"Cannot auto-deploy '{key}'."}
+
+
 def _run_reverts(req, changes_list, tag):
     """Undo a list of deployed changes in the given (Azure-dependency-safe) order.
     Records each revert in the change ledger + audit trail. Returns (steps, all_ok)."""
@@ -2971,6 +3038,102 @@ def request_revert_deployment(req_id):
     return jsonify({"success": all_ok, "status": new_status, "steps": steps,
                     "message": f"Deployment reverted — {reverted}/{len(steps)} change(s) undone. "
                                f"Request reset to {RequestStatus.label(new_status)}."})
+
+
+@app.route("/api/admin/requests/<int:req_id>/pending-deploy")
+@require_admin
+def request_pending_deploy(req_id):
+    """Preview: the ordered list of deploy steps the aggregated deploy will run."""
+    req = SpokeRequest.query.get_or_404(req_id)
+    return jsonify({"plan": _pending_deploy_actions(req), "dry_run_mode": cfg.AZURE_DRY_RUN})
+
+
+@app.route("/api/admin/requests/<int:req_id>/deploy-all", methods=["POST"])
+@require_admin
+def request_deploy_all(req_id):
+    """
+    Aggregated deploy for a VNET request: run every required step — create VNET,
+    peer with the hub, add the internet-egress rule, add the gateway & ZPA hub
+    routes — in the order Azure needs, then advance the status. Each step is
+    audited + snapshotted to the change ledger. A specific internet rule
+    (network/application access) is left as a manual step because it needs the
+    admin to choose a rule collection group & collection.
+    """
+    req = SpokeRequest.query.get_or_404(req_id)
+    t = req.request_type or RequestType.VNET_NEW
+    if t not in (RequestType.VNET_NEW, RequestType.HUB_INTEGRATION):
+        return jsonify({"error": "Aggregated deploy is only available for VNET requests."}), 400
+    if req.status in RequestType.TERMINALS:
+        return jsonify({"error": f"Request is already {req.status_label()}."}), 400
+    vi = req.vnet_info
+    if not vi or not all([vi.subscription_id, vi.resource_group, vi.vnet_name]):
+        return jsonify({"error": "VNET details are missing — assign a CIDR / capture VNET info first."}), 400
+
+    plan = _pending_deploy_actions(req)
+    if not plan:
+        return jsonify({"error": "Nothing left to deploy — all required steps are already done."}), 400
+
+    def _rec_change(res, act):
+        ch = res.get("change")
+        if res.get("success") and ch and not res.get("dry_run"):
+            changes.record(action=act, actor=current_actor(), request_id=req.id,
+                           target=ch.get("target", ""), summary=str(res.get("message", ""))[:300],
+                           before=ch.get("before"), after=ch.get("after"),
+                           revert_op=ch.get("revert_op"), revert_params=ch.get("revert_params"))
+
+    steps, all_ok = [], True
+    for item in plan:
+        key = item["key"]
+        if item.get("manual"):
+            all_ok = False
+            steps.append({"key": key, "label": item["label"], "success": False, "manual": True,
+                          "dry_run": False,
+                          "message": "Run this step manually — a specific internet rule needs you to "
+                                     "pick a rule collection group & collection."})
+            continue
+        res = _deploy_one(req, key)
+        ok = bool(res.get("success"))
+        all_ok = all_ok and ok
+        # Persist the side-effects the individual handlers record.
+        if key == "vnet" and ok and req.status == RequestStatus.CIDR_ASSIGNED:
+            req.status = RequestStatus.VNET_CREATED
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
+            try:
+                notifications.notify_vnet_created(req)
+            except Exception:
+                pass
+        if key == "peer" and ok:
+            d = req.get_details()
+            d["peering_names"] = {
+                "spoke_to_hub": res.get("spoke_to_hub_name")
+                                or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=vi.vnet_name),
+                "hub_to_spoke": res.get("hub_to_spoke_name")
+                                or render_name("TPL_PEERING_HUB_TO_SPOKE", vnet=vi.vnet_name)}
+            req.set_details(d)
+            db.session.commit()
+        _rec_change(res, key)
+        audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
+                     summary=f"Azure action '{key}' (deploy-all) — "
+                             f"{'dry-run' if res.get('dry_run') else ('ok' if ok else 'FAILED')}",
+                     data={"action": key, "dry_run": bool(res.get("dry_run")),
+                           "success": ok, "message": str(res.get("message", ""))[:400]})
+        steps.append({"key": key, "label": item["label"], "success": ok,
+                      "conflict": bool(res.get("conflict")), "dry_run": bool(res.get("dry_run")),
+                      "message": str(res.get("message", ""))})
+
+    _auto_advance(req)
+    done_n = sum(1 for s in steps if s["success"])
+    db.session.refresh(req)
+    audit.record("status_changed" if done_n else "azure_action", actor=current_actor(),
+                 actor_role="admin", request_id=req.id,
+                 summary=f"Aggregated deploy: {done_n}/{len(steps)} step(s) succeeded "
+                         f"(status now {req.status_label()}).",
+                 data={"aggregated_deploy": True, "succeeded": done_n, "steps": len(steps)})
+    return jsonify({"success": all_ok, "status": req.status, "steps": steps,
+                    "message": f"Deploy complete — {done_n}/{len(steps)} step(s) succeeded. "
+                               f"Status now {req.status_label()}."
+                               + ("" if all_ok else " Some steps need attention (see below).")})
 
 
 @app.route("/api/admin/requests/<int:req_id>/terminate", methods=["POST"])
