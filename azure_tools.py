@@ -2200,6 +2200,7 @@ def create_aks_cluster(
     node_count: int = 2,
     min_count: int = 2,
     max_count: int = 5,
+    tier: str = "Free",               # control-plane SKU tier: Free / Standard / Premium
     on_conflict: str = None,          # "replace" = update an existing cluster after confirmation
 ) -> dict:
     """Kick off AKS cluster creation (does NOT wait for provisioning to finish).
@@ -2233,7 +2234,7 @@ def create_aks_cluster(
         from azure.mgmt.containerservice.models import (
             ManagedCluster, ManagedClusterAgentPoolProfile, ContainerServiceNetworkProfile,
             ManagedClusterAPIServerAccessProfile, ManagedClusterAADProfile,
-            ManagedClusterAutoUpgradeProfile, ManagedClusterIdentity)
+            ManagedClusterAutoUpgradeProfile, ManagedClusterIdentity, ManagedClusterSKU)
 
         pool_name = (node_pool_name or "nodepool1")[:12]
         pool = ManagedClusterAgentPoolProfile(
@@ -2268,6 +2269,8 @@ def create_aks_cluster(
         if cfg.AKS_ENABLE_AAD:
             mc.aad_profile = ManagedClusterAADProfile(
                 managed=True, enable_azure_rbac=bool(cfg.AKS_ENABLE_AZURE_RBAC))
+        if tier in ("Free", "Standard", "Premium"):
+            mc.sku = ManagedClusterSKU(name="Base", tier=tier)
 
         log.info("Kicking off AKS '%s' (%s, %s) in %s/%s",
                  cluster_name, kubernetes_version, node_size, resource_group, location)
@@ -2278,7 +2281,7 @@ def create_aks_cluster(
         scale_desc = (f"autoscale {min_count}–{max_count}" if autoscaling
                       else f"{node_count} node(s)")
         msg = (f"AKS cluster '{cluster_name}' provisioning started "
-               f"(Kubernetes {kubernetes_version}, pool '{pool_name}' {node_size} · {scale_desc}). "
+               f"(Kubernetes {kubernetes_version}, {tier} tier, pool '{pool_name}' {node_size} · {scale_desc}). "
                f"This takes several minutes — use 'Check Cluster State' to watch progress.")
         if rg_res.get("created"):
             msg = f"RG '{resource_group}' created. " + msg

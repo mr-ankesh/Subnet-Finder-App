@@ -297,7 +297,7 @@
           <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;font-family:var(--mono);line-height:1.6;">
             {{ ak.get('cluster_name') }} @ {{ ak.get('resource_group') }}<br>
             VNET {{ ak.get('vnet_name') }} / subnet {{ ak.get('subnet_name') }}<br>
-            Kubernetes {{ ak.get('k8s_version') or '(default)' }} ·
+            Kubernetes {{ ak.get('k8s_version') or '(default)' }} · {{ ak.get('tier') or 'Free' }} tier ·
             pool {{ ak.get('node_pool_name') }} ({{ ak.get('node_size') or '(default)' }},
             {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %})
           </div>

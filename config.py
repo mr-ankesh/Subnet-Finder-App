@@ -166,6 +166,11 @@ SETTINGS_SPEC = {
     "AKS_NODE_SIZE_OPTIONS":    _f("aks", "Node size choices",
                                    "Standard_D8ds_v5,Standard_D4ds_v5,Standard_D16ds_v5,Standard_D2ds_v5",
                                    help="Comma-separated VM sizes for the node pool dropdown. First = default."),
+    "AKS_DEFAULT_TIER":         _f("aks", "Default cluster tier (pricing)", "Free",
+                                   options=["Free", "Standard", "Premium"],
+                                   help="Control-plane SKU tier. Free = no uptime SLA (dev/test); "
+                                        "Standard ≈ $73/mo with a 99.95% SLA (production); Premium ≈ $438/mo "
+                                        "incl. long-term support. Node VMs are billed separately."),
     "AKS_DEFAULT_NODE_COUNT":   _f("aks", "Default node count", "2", type="int",
                                    help="Fixed node count when autoscaling is off."),
     "AKS_DEFAULT_MIN_COUNT":    _f("aks", "Autoscale min nodes", "2", type="int"),

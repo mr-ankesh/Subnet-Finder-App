@@ -350,6 +350,7 @@ def inject_globals():
             "aks_node_sizes":  [v.strip() for v in (cfg.AKS_NODE_SIZE_OPTIONS or "").split(",") if v.strip()],
             "aks_defaults": {"node_count": cfg.AKS_DEFAULT_NODE_COUNT,
                              "min": cfg.AKS_DEFAULT_MIN_COUNT, "max": cfg.AKS_DEFAULT_MAX_COUNT,
+                             "tier": cfg.AKS_DEFAULT_TIER,
                              "plugin": cfg.AKS_NETWORK_PLUGIN, "plugin_mode": cfg.AKS_NETWORK_PLUGIN_MODE,
                              "policy": cfg.AKS_NETWORK_POLICY, "pod_cidr": cfg.AKS_POD_CIDR,
                              "service_cidr": cfg.AKS_SERVICE_CIDR, "dns_ip": cfg.AKS_DNS_SERVICE_IP,
@@ -1358,7 +1359,7 @@ TYPE_REQUIRED_DETAILS = {
                                     "created_by_admin", "manual_changes"],
     RequestType.DNS:               ["dns_kind", "zone"],
     RequestType.AKS_CLUSTER:       ["cluster_name", "resource_group", "subscription_id",
-                                    "vnet_name", "subnet_name", "node_pool_name"],
+                                    "vnet_name", "subnet_name", "node_pool_name", "tier"],
     RequestType.OTHER:             ["description"],
 }
 
@@ -1433,6 +1434,8 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
         if not _re_aks.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,61}[A-Za-z0-9]$",
                              details.get("cluster_name", "")):
             return {"error": "Cluster name must be 2–63 characters: letters, digits, '-', '_' or '.'."}, 400
+        if details.get("tier") not in ("Free", "Standard", "Premium"):
+            return {"error": "Pick a cluster tier: Free, Standard or Premium."}, 400
         scale = (details.get("autoscaling") or "disabled").lower()
         if scale == "enabled":
             try:
@@ -2275,6 +2278,7 @@ def admin_azure_action(req_id):
                 subscription_id=sub, resource_group=rg, cluster_name=name, location=region,
                 subnet_id=subnet_id, kubernetes_version=k8s_version,
                 node_pool_name=details.get("node_pool_name", "nodepool1"), node_size=node_size,
+                tier=details.get("tier") or cfg.AKS_DEFAULT_TIER or "Free",
                 autoscaling=autoscaling,
                 node_count=_int(details.get("node_count"), cfg.AKS_DEFAULT_NODE_COUNT),
                 min_count=_int(details.get("min_count"), cfg.AKS_DEFAULT_MIN_COUNT),

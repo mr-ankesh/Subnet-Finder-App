@@ -672,6 +672,15 @@
                         <i class="bi bi-boxes me-1"></i> Kubernetes &amp; Node Pool
                       </div>
                     </div>
+                    <div class="col-12">
+                      <label class="form-label-custom">Cluster Tier (pricing) *</label>
+                      <select class="form-input-custom" data-detail="tier" id="aks_tier" onchange="onAksTierChange()">
+                        <option value="Free"     {% if aks_defaults.tier == 'Free' %}selected{% endif %}>Free — no uptime SLA (dev / test)</option>
+                        <option value="Standard" {% if aks_defaults.tier == 'Standard' %}selected{% endif %}>Standard — 99.95% SLA (production)</option>
+                        <option value="Premium"  {% if aks_defaults.tier == 'Premium' %}selected{% endif %}>Premium — long-term support (LTS)</option>
+                      </select>
+                      <div id="aksTierHint" style="border:1px solid rgba(0,188,242,.3);background:rgba(0,188,242,.06);border-radius:10px;padding:10px 12px;font-size:11.5px;color:var(--text-dim);line-height:1.7;margin-top:8px;"></div>
+                    </div>
                     <div class="col-md-4">
                       <label class="form-label-custom">Kubernetes Version *</label>
                       <select class="form-input-custom" data-detail="k8s_version">
@@ -1042,6 +1051,7 @@ function selectType(t) {
         holder.appendChild(document.getElementById('zpaFieldsTemplate').content.cloneNode(true));
       }
     }
+    if (t === 'aks_cluster') onAksTierChange();
   }
   showResult('newReqResult', '');
 }
@@ -1051,6 +1061,18 @@ function onAksScaleChange() {
   document.getElementById('aksFixedCol').style.display = on ? 'none' : '';
   document.getElementById('aksMinCol').style.display   = on ? '' : 'none';
   document.getElementById('aksMaxCol').style.display   = on ? '' : 'none';
+}
+
+const AKS_TIER_INFO = {
+  Free:     '<strong>Free</strong> — free control plane, <strong>no financially-backed uptime SLA</strong> (99.9% best-effort). Best for dev / test and non-critical clusters.',
+  Standard: '<strong>Standard</strong> — ≈ <strong>$0.10/hour (~$73/month)</strong> per cluster · <strong>99.95% uptime SLA</strong> with availability zones (99.9% without). Recommended for production.',
+  Premium:  '<strong>Premium</strong> — ≈ <strong>$0.60/hour (~$438/month)</strong> per cluster · includes <strong>Long-Term Support (LTS, ~2 years)</strong>. For clusters that must stay on an older Kubernetes version.',
+};
+function onAksTierChange() {
+  const el = document.getElementById('aks_tier'); if (!el) return;
+  document.getElementById('aksTierHint').innerHTML =
+    '<i class="bi bi-tag-fill me-1" style="color:#00BCF2;"></i>' + (AKS_TIER_INFO[el.value] || '') +
+    '<br><span style="color:var(--text-muted);">This is the <strong>control-plane / management fee only</strong> — node VMs are billed separately by size × count. Prices are approximate and vary by region.</span>';
 }
 
 function backToPicker() {
