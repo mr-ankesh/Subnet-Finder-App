@@ -2319,9 +2319,17 @@ def admin_azure_action(req_id):
         region = details.get("region") or cfg.DEFAULT_AZURE_REGION
         k8s_opts = [v.strip() for v in (cfg.AKS_K8S_VERSION_OPTIONS or "").split(",") if v.strip()]
         size_opts = [v.strip() for v in (cfg.AKS_NODE_SIZE_OPTIONS or "").split(",") if v.strip()]
-        k8s_version = details.get("k8s_version") or (k8s_opts[0] if k8s_opts else "")
-        node_size   = details.get("node_size") or (size_opts[0] if size_opts else "Standard_D8ds_v5")
-        autoscaling = (details.get("autoscaling") or "disabled").lower() == "enabled"
+        # Admin overrides from the deploy panel win over the request's stored values.
+        def _ov(key, default=None):
+            v = payload.get(key)
+            if v not in (None, ""):
+                return v
+            dv = details.get(key)
+            return dv if dv not in (None, "") else default
+        k8s_version = _ov("k8s_version") or (k8s_opts[0] if k8s_opts else "")
+        node_size   = _ov("node_size") or (size_opts[0] if size_opts else "Standard_D8ds_v5")
+        tier        = _ov("tier") or cfg.AKS_DEFAULT_TIER or "Free"
+        autoscaling = str(_ov("autoscaling", "disabled")).lower() == "enabled"
 
         def _int(v, d):
             try:
@@ -2338,11 +2346,10 @@ def admin_azure_action(req_id):
                 subscription_id=sub, resource_group=rg, cluster_name=name, location=region,
                 subnet_id=subnet_id, kubernetes_version=k8s_version,
                 node_pool_name=details.get("node_pool_name", "nodepool1"), node_size=node_size,
-                tier=details.get("tier") or cfg.AKS_DEFAULT_TIER or "Free",
-                autoscaling=autoscaling,
-                node_count=_int(details.get("node_count"), cfg.AKS_DEFAULT_NODE_COUNT),
-                min_count=_int(details.get("min_count"), cfg.AKS_DEFAULT_MIN_COUNT),
-                max_count=_int(details.get("max_count"), cfg.AKS_DEFAULT_MAX_COUNT),
+                tier=tier, autoscaling=autoscaling,
+                node_count=_int(_ov("node_count"), cfg.AKS_DEFAULT_NODE_COUNT),
+                min_count=_int(_ov("min_count"), cfg.AKS_DEFAULT_MIN_COUNT),
+                max_count=_int(_ov("max_count"), cfg.AKS_DEFAULT_MAX_COUNT),
                 on_conflict=("replace" if on_conflict == "replace" else None),
             )
         _audit_azure(res)

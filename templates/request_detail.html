@@ -304,12 +304,48 @@
           <button class="btn btn-glass w-100 mb-2" onclick="runAction('aks_check', this)">
             <i class="bi bi-clipboard-pulse me-2"></i>1 · Check Cluster State
           </button>
+          {% if 'aks_deploy' not in done_actions %}
+          <details style="margin-bottom:10px;">
+            <summary style="font-size:12px;color:#60a5fa;cursor:pointer;"><i class="bi bi-sliders me-1"></i>Review / adjust parameters before deploy</summary>
+            <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;">
+              <button class="btn btn-glass btn-sm w-100 mb-2" onclick="aksAdminFetch(this)"><i class="bi bi-cloud-download me-1"></i>Fetch latest versions &amp; sizes from Azure</button>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div><div class="aks-ov-lbl">Kubernetes version</div>
+                  <select id="ov_k8s" class="aks-ov">
+                    {% if ak.get('k8s_version') %}<option value="{{ ak.get('k8s_version') }}" selected>{{ ak.get('k8s_version') }}</option>{% endif %}
+                    {% for v in aks_k8s_options %}{% if v != ak.get('k8s_version') %}<option value="{{ v }}">{{ v }}</option>{% endif %}{% endfor %}
+                  </select></div>
+                <div><div class="aks-ov-lbl">Tier (pricing)</div>
+                  <select id="ov_tier" class="aks-ov">
+                    {% for t in ['Free','Standard','Premium'] %}<option value="{{ t }}" {% if (ak.get('tier') or 'Free')==t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+                  </select></div>
+                <div><div class="aks-ov-lbl">Node size</div>
+                  <select id="ov_size" class="aks-ov">
+                    {% if ak.get('node_size') %}<option value="{{ ak.get('node_size') }}" selected>{{ ak.get('node_size') }}</option>{% endif %}
+                    {% for s in aks_node_sizes %}{% if s != ak.get('node_size') %}<option value="{{ s }}">{{ s }}</option>{% endif %}{% endfor %}
+                  </select></div>
+                <div><div class="aks-ov-lbl">Autoscaling</div>
+                  <select id="ov_scale" class="aks-ov" onchange="aksOvScale()">
+                    <option value="disabled" {% if (ak.get('autoscaling') or 'disabled')!='enabled' %}selected{% endif %}>Disabled</option>
+                    <option value="enabled"  {% if ak.get('autoscaling')=='enabled' %}selected{% endif %}>Enabled</option>
+                  </select></div>
+                <div id="ov_fixed_wrap"><div class="aks-ov-lbl">Node count</div>
+                  <input id="ov_count" type="number" min="1" max="100" class="aks-ov" value="{{ ak.get('node_count') or 2 }}"></div>
+                <div id="ov_min_wrap" style="display:none;"><div class="aks-ov-lbl">Min nodes</div>
+                  <input id="ov_min" type="number" min="1" max="100" class="aks-ov" value="{{ ak.get('min_count') or 2 }}"></div>
+                <div id="ov_max_wrap" style="display:none;"><div class="aks-ov-lbl">Max nodes</div>
+                  <input id="ov_max" type="number" min="1" max="100" class="aks-ov" value="{{ ak.get('max_count') or 5 }}"></div>
+              </div>
+              <div id="aksOvMsg" style="font-size:11px;color:var(--text-muted);margin-top:7px;"></div>
+            </div>
+          </details>
+          {% endif %}
           {% if 'aks_deploy' in done_actions %}
           <button class="btn btn-glass w-100 action-done" disabled>
             <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Provisioning started — use Check to watch progress
           </button>
           {% else %}
-          <button class="btn btn-glow w-100" onclick="runAction('aks_deploy', this)">
+          <button class="btn btn-glow w-100" onclick="deployAks(this)">
             <i class="bi bi-rocket-takeoff me-2"></i>2 · Deploy AKS Cluster
           </button>
           {% endif %}
@@ -321,6 +357,45 @@
           </div>
           <div id="actionResults" style="display:none;margin-top:10px;"></div>
         </div>
+        <style>
+          .aks-ov { width:100%; font-size:12px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:6px; color:var(--text); padding:5px 8px; }
+          .aks-ov-lbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted); margin-bottom:3px; }
+        </style>
+        <script>
+          const AKS_OV_SUB = {{ ak.get('subscription_id')|tojson }};
+          const AKS_OV_REGION = {{ (ak.get('region') or '')|tojson }};
+          function aksOvScale() {
+            if (!document.getElementById('ov_scale')) return;
+            const on = document.getElementById('ov_scale').value === 'enabled';
+            document.getElementById('ov_fixed_wrap').style.display = on ? 'none' : '';
+            document.getElementById('ov_min_wrap').style.display = on ? '' : 'none';
+            document.getElementById('ov_max_wrap').style.display = on ? '' : 'none';
+          }
+          aksOvScale();
+          async function aksAdminFetch(btn) {
+            const msg = document.getElementById('aksOvMsg'); const o = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Fetching…';
+            msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure…';
+            try {
+              const q = `?subscription=${encodeURIComponent(AKS_OV_SUB || '')}&region=${encodeURIComponent(AKS_OV_REGION || '')}`;
+              const d = await (await fetch('/api/azure/aks-options' + q)).json();
+              const kSel = document.getElementById('ov_k8s'), sSel = document.getElementById('ov_size');
+              if (d.versions && d.versions.length) { const cur = kSel.value; kSel.innerHTML = d.versions.map(v => `<option value="${v}">${v}</option>`).join(''); if ([...kSel.options].some(x => x.value === cur)) kSel.value = cur; }
+              if (d.sizes && d.sizes.length) { const cur = sSel.value; sSel.innerHTML = d.sizes.map(s => `<option value="${s.name}">${s.name} — ${s.cores} vCPU, ${s.memory_gb} GB</option>`).join(''); if ([...sSel.options].some(x => x.value === cur)) sSel.value = cur; }
+              msg.style.color = (d.versions_error || d.sizes_error) ? '#f59e0b' : '#7edb56';
+              msg.innerHTML = '<i class="bi bi-check-circle me-1"></i>Loaded ' + ((d.versions || []).length) + ' versions, ' + ((d.sizes || []).length) + ' sizes' + (d.versions_error || d.sizes_error ? ' (' + (d.versions_error || d.sizes_error) + ')' : '') + '.';
+            } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
+            btn.disabled = false; btn.innerHTML = o;
+          }
+          function deployAks(btn) {
+            const scale = document.getElementById('ov_scale').value;
+            const extra = { k8s_version: document.getElementById('ov_k8s').value, tier: document.getElementById('ov_tier').value,
+              node_size: document.getElementById('ov_size').value, autoscaling: scale };
+            if (scale === 'enabled') { extra.min_count = document.getElementById('ov_min').value; extra.max_count = document.getElementById('ov_max').value; }
+            else { extra.node_count = document.getElementById('ov_count').value; }
+            runAction('aks_deploy', btn, extra);
+          }
+        </script>
         {% endif %}
 
         {# ── NMO ZPA routing actions ── #}
