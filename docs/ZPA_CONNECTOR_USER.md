@@ -38,10 +38,21 @@ these commands, you should add the forced-command wrapper below.
 `<service>` is the **ZPA connector service name** setting (default
 `zpa-connector`). None of these modify anything.
 
-## Optional hardening — confine the key to exactly these commands
+## Optional hardening — confine the key to read-only commands
 
-If you want `networkuser`'s SSH **key** to be unable to run anything except the
-above (defence-in-depth against key misuse), install the forced-command wrapper:
+If you want `networkuser`'s SSH **key** to be unable to run mutating/arbitrary
+commands (defence-in-depth against key misuse), install the forced-command
+wrapper. It allows the analyzer's own commands **and** the read-only network
+diagnostics you run by hand — `curl`, `ping`, `telnet`, `nc`, `dig`,
+`traceroute`, `tracepath`, `nslookup`, `getent`, plus host/health reads
+(`uptime`, `free`, `df`, `cat /proc/*`, `systemctl show/status`, `timedatectl`,
+`ip`, `ss`, …). It blocks shell chaining/redirection/substitution (`;` `|` `&`
+`` ` `` `$(` `<` `>` newline) and anything that writes or mutates — so
+`curl -vk http://host:8000/path` works, but `curl … ; rm -rf …`,
+`curl -o /etc/…`, `curl -d …`/uploads, `curl file://…`, `systemctl stop`, and
+`cat` outside `/proc`,`/sys` are denied.
+
+To install:
 
 1. Copy [`scripts/zpa-networkuser-wrapper.sh`](../scripts/zpa-networkuser-wrapper.sh)
    to `/usr/local/bin/zpa-networkuser-wrapper.sh` on each connector VM and
@@ -58,13 +69,16 @@ above (defence-in-depth against key misuse), install the forced-command wrapper:
    ZPA_WRAP_DRYRUN=1 SSH_ORIGINAL_COMMAND='rm -rf /'   ./zpa-networkuser-wrapper.sh   # → DENY
    ```
 
-The wrapper allow-list **mirrors the commands built in `reachability.py`** — if
-you change the connector service name or those commands, update the patterns.
+The wrapper allows the read-only tool families with any arguments; the
+analyzer's two compound commands (the `</dev/tcp>` TCP probe and the CPU/network
+sample pipeline) are permitted as **exact shapes** because they need shell
+operators. If you change the analyzer's compound commands, update those two
+patterns.
 
 ### Trade-off
 The TCP-port (telnet-style) check needs `bash -c '</dev/tcp/…'`. The wrapper
 permits **only** that exact probe shape, not arbitrary `bash`. If your policy
-forbids `bash -c` outright, drop those two patterns from the allow-list — the
+forbids `bash -c` outright, drop that pattern from the allow-list — the
 analyzer's **ping** and **curl** checks and the whole health dashboard still
 work; only the TCP-port check is lost.
 
