@@ -2882,15 +2882,18 @@ def request_spoke_subnets(req_id):
     return jsonify({"source": "declared", "subnets": declared})
 
 
-# Creation order (the reverse of teardown): VNET first, routes/rules after.
-_DEPLOY_ORDER = ["vnet", "peer", "internet", "internet_rule", "gateway_route", "zpa_route"]
+# Creation order (the reverse of teardown): VNET first, then peering/rules/hub
+# routes, and finally the spoke route table (needs the subnets to exist).
+_DEPLOY_ORDER = ["vnet", "peer", "internet", "internet_rule", "gateway_route",
+                 "zpa_route", "spoke_route_table"]
 _DEPLOY_LABELS = {
-    "vnet":          "Create the spoke VNET & subnet(s)",
-    "peer":          "Peer the spoke VNET with the hub (both directions)",
-    "internet":      "Add the internet-egress firewall rule (allow-all)",
-    "internet_rule": "Add the requested internet firewall rule",
-    "gateway_route": "Add the spoke route to the hub gateway routing table",
-    "zpa_route":     "Add the spoke route to the hub ZPA routing table",
+    "vnet":              "Create the spoke VNET & subnet(s)",
+    "peer":              "Peer the spoke VNET with the hub (both directions)",
+    "internet":          "Add the internet-egress firewall rule (allow-all)",
+    "internet_rule":     "Add the requested internet firewall rule",
+    "gateway_route":     "Add the spoke route to the hub gateway routing table",
+    "zpa_route":         "Add the spoke route to the hub ZPA routing table",
+    "spoke_route_table": "Create the spoke route table (UDR) & assign it to the VNET's subnets",
 }
 
 
@@ -2902,12 +2905,64 @@ def _pending_deploy_actions(req):
     required = set(_required_actions(req))
     if (req.request_type or RequestType.VNET_NEW) == RequestType.VNET_NEW \
             and req.deployment_mode == "admin":
+        # Admin-deploy of a new spoke: create the VNET and lay its UDR/route table.
         required.add("vnet")
+        required.add("spoke_route_table")
     plan = []
     for k in _DEPLOY_ORDER:
         if k in required and k not in done:
             plan.append({"key": k, "label": _DEPLOY_LABELS[k], "manual": k == "internet_rule"})
     return plan
+
+
+def _deploy_spoke_route_table(req):
+    """Create the spoke route table (default + hub-firewall routes) and assign it
+    to every workload subnet of the spoke VNET. Records each sub-change to the
+    ledger under the 'spoke_route_table' key so it reverts as one unit."""
+    import azure_tools
+    vi = req.vnet_info
+    details = req.get_details()
+    rt_name = render_name("TPL_ROUTE_TABLE_NAME", vnet=vi.vnet_name, request_id=req.id)
+
+    def _rec(res):
+        ch = res.get("change")
+        if res.get("success") and ch and not res.get("dry_run"):
+            changes.record(action="spoke_route_table", actor=current_actor(), request_id=req.id,
+                           target=ch.get("target", ""), summary=str(res.get("message", ""))[:300],
+                           before=ch.get("before"), after=ch.get("after"),
+                           revert_op=ch.get("revert_op"), revert_params=ch.get("revert_params"))
+
+    create_res = azure_tools.create_route_table(rt_name, vi.resource_group, location=vi.region,
+                                                 subscription_id=vi.subscription_id)
+    if create_res.get("conflict"):
+        return {"success": False, "conflict": True, "dry_run": False,
+                "message": f"Route table '{rt_name}' already exists — reuse/resolve it via the "
+                           f"individual 'Spoke Route Table' step."}
+    _rec(create_res)
+    ok = bool(create_res.get("success"))
+    for r in _spoke_default_routes():
+        rr = azure_tools.add_route_to_table(
+            rt_name, vi.resource_group, r["name"], r["prefix"], "VirtualAppliance",
+            next_hop_ip=cfg.HUB_FIREWALL_PRIVATE_IP, subscription_id=vi.subscription_id)
+        _rec(rr)
+        ok = ok and bool(rr.get("success"))
+    rt_id = (f"/subscriptions/{vi.subscription_id}/resourceGroups/{vi.resource_group}"
+             f"/providers/Microsoft.Network/routeTables/{rt_name}")
+    skip = ("GatewaySubnet", "AzureFirewallSubnet", "AzureFirewallManagementSubnet", "AzureBastionSubnet")
+    listing = azure_tools.list_vnet_subnets(vi.subscription_id, vi.resource_group, vi.vnet_name)
+    if listing.get("success"):
+        targets = [s["name"] for s in listing["subnets"] if s["name"] not in skip]
+    else:                                    # VNET not reachable (e.g. dry-run) — use declared subnets
+        targets = [s.get("name") for s in (details.get("subnets") or []) if s.get("name")] \
+                  or ([vi.subnet_name] if vi.subnet_name else [])
+    for name in targets:
+        ar = azure_tools.assign_route_table_to_subnet(
+            vi.subscription_id, vi.resource_group, vi.vnet_name, name, rt_id)
+        _rec(ar)
+        ok = ok and bool(ar.get("success"))
+    return {"success": ok, "dry_run": bool(create_res.get("dry_run")),
+            "message": (f"Route table '{rt_name}' created & assigned to {len(targets)} subnet(s)."
+                        if ok else "Some route-table steps failed — check the individual step.")}
 
 
 def _deploy_one(req, key):
@@ -3090,6 +3145,19 @@ def request_deploy_all(req_id):
                           "dry_run": False,
                           "message": "Run this step manually — a specific internet rule needs you to "
                                      "pick a rule collection group & collection."})
+            continue
+        if key == "spoke_route_table":
+            res = _deploy_spoke_route_table(req)   # records its own sub-changes
+            ok = bool(res.get("success"))
+            all_ok = all_ok and ok
+            audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
+                         summary=f"Azure action 'spoke_route_table' (deploy-all) — "
+                                 f"{'dry-run' if res.get('dry_run') else ('ok' if ok else 'FAILED')}",
+                         data={"action": "spoke_route_table", "dry_run": bool(res.get("dry_run")),
+                               "success": ok, "message": str(res.get("message", ""))[:400]})
+            steps.append({"key": key, "label": item["label"], "success": ok,
+                          "conflict": bool(res.get("conflict")), "dry_run": bool(res.get("dry_run")),
+                          "message": str(res.get("message", ""))})
             continue
         res = _deploy_one(req, key)
         ok = bool(res.get("success"))
