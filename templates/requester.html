@@ -3,6 +3,7 @@
 
 {% block content %}
 <style>
+  .field-help { font-size:11px; color:rgba(255,255,255,.5); margin-top:4px; line-height:1.55; }
   .deploy-opt { flex:1 1 220px; display:flex; align-items:center; gap:9px; cursor:pointer;
     padding:11px 13px; border-radius:10px; border:1px solid rgba(255,255,255,.12);
     background:rgba(255,255,255,.03); font-size:.85rem; color:rgba(255,255,255,.7); transition:all .15s; }
@@ -129,6 +130,7 @@
                   <option value="10.110.0.0/16">10.110.0.0/16 — Primary</option>
                   <option value="10.119.0.0/16">10.119.0.0/16 — Secondary</option>
                 </select>
+                <div class="field-help">The address pool your CIDR is allocated from.</div>
               </div>
               <div class="col-md-6">
                 <label class="form-label-custom">CIDR Size *</label>
@@ -142,6 +144,7 @@
                   <option value="27">/27 — 30 hosts</option>
                   <option value="28">/28 — 14 hosts</option>
                 </select>
+                <div class="field-help">Size of the VNet address block to reserve — pick the smallest that fits your subnets.</div>
               </div>
               <div class="col-md-6">
                 <label class="form-label-custom">Hub Integration?</label>
@@ -218,18 +221,39 @@
                     <i class="bi bi-cloud-arrow-up"></i> Azure deployment target
                     <span style="font-weight:400;color:rgba(255,255,255,.5);">— so the admin can create the VNET (and peer to hub) for you</span>
                   </div>
+                  <!-- Auto-name helper: project + env → resource names -->
+                  <div style="background:rgba(126,219,86,.06);border:1px solid rgba(126,219,86,.25);border-radius:10px;padding:12px;margin-bottom:12px;">
+                    <div style="font-size:12px;color:#7edb56;font-weight:600;margin-bottom:6px;"><i class="bi bi-magic me-1"></i>Auto-name your resources (optional)</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,.6);margin-bottom:10px;line-height:1.6;">
+                      Don't want to type resource names? Enter a <strong>project</strong> and <strong>environment</strong> and we'll fill them
+                      using the standard convention <code>&lt;type&gt;-&lt;project&gt;-&lt;env&gt;-prs-aen-001</code>.
+                      Example — project <code>g100</code>, env <code>dev</code> → RG <code>rg-g100-dev-prs-aen-001</code>, VNET <code>vnet-g100-dev-prs-aen-001</code>. You can still edit any name after.
+                    </div>
+                    <div class="row g-2">
+                      <div class="col-md-4"><label class="form-label-custom">Project</label>
+                        <input type="text" class="form-input-custom" id="f_proj" placeholder="e.g. g100"></div>
+                      <div class="col-md-4"><label class="form-label-custom">Environment</label>
+                        <input type="text" class="form-input-custom" id="f_env" placeholder="e.g. dev"></div>
+                      <div class="col-md-4" style="display:flex;align-items:flex-end;">
+                        <button type="button" class="btn-secondary-custom" style="width:100%;" onclick="vnetGenerateNames()"><i class="bi bi-arrow-repeat me-1"></i>Generate names</button></div>
+                    </div>
+                    <div id="f_nameMsg" style="font-size:11px;color:#7edb56;margin-top:6px;"></div>
+                  </div>
                   <div class="row g-3">
                     <div class="col-md-6">
                       <label class="form-label-custom">Subscription ID *</label>
                       <input type="text" class="form-input-custom" id="f_sub" placeholder="00000000-0000-0000-0000-000000000000">
+                      <div class="field-help">Mandatory — the Azure subscription your VNET will be created in. You must have a subscription to request a VNET.</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Resource Group *</label>
                       <input type="text" class="form-input-custom" id="f_rg" placeholder="rg-conn-prd-prs-aen-001">
+                      <div class="field-help">The resource group that will hold your VNET (created if it doesn't exist).</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Name *</label>
                       <input type="text" class="form-input-custom" id="f_vnet" placeholder="vnet-conn-prd-prs-aen-001">
+                      <div class="field-help">The name of the virtual network that will be created.</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Region *</label>
@@ -240,6 +264,7 @@
                         <option value="northeurope">North Europe</option>
                         <option value="eastus">East US</option>
                       </select>
+                      <div class="field-help">The Azure region your VNet is created in.</div>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label-custom">How many subnets? *</label>
@@ -613,28 +638,41 @@
                 <!-- ── AKS Cluster ── -->
                 <div class="col-12 type-section" id="section-aks_cluster" style="display:none;">
                   <div class="row g-3">
-                    <div class="col-md-6">
-                      <label class="form-label-custom">Cluster Name *</label>
-                      <input type="text" class="form-input-custom" data-detail="cluster_name" placeholder="aks-vitruvian-rnd-prd-prs-aen-001">
-                      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
-                        Suggested convention: <code style="color:#00BCF2;">aks-&lt;project-short&gt;-&lt;subscription-short&gt;-&lt;env&gt;-prs-aen-001</code>
-                        — e.g. <code style="color:#00BCF2;">aks-vitruvian-rnd-prd-prs-aen-001</code>.
+                    <div class="col-12">
+                      <div style="background:rgba(126,219,86,.06);border:1px solid rgba(126,219,86,.25);border-radius:10px;padding:12px;">
+                        <div style="font-size:12px;color:#7edb56;font-weight:600;margin-bottom:6px;"><i class="bi bi-magic me-1"></i>Auto-name your resources (optional)</div>
+                        <div style="font-size:11px;color:rgba(255,255,255,.6);margin-bottom:10px;line-height:1.6;">
+                          Enter a <strong>project</strong> and <strong>environment</strong> and we'll name the cluster and its resource group using
+                          <code>&lt;type&gt;-&lt;project&gt;-&lt;env&gt;-prs-aen-001</code> — e.g. project <code>g100</code>, env <code>dev</code> →
+                          cluster <code>aks-g100-dev-prs-aen-001</code>, RG <code>rg-g100-dev-prs-aen-001</code>. You can still edit them.
+                        </div>
+                        <div class="row g-2">
+                          <div class="col-md-4"><label class="form-label-custom">Project</label><input type="text" class="form-input-custom" id="aks_proj" placeholder="e.g. g100"></div>
+                          <div class="col-md-4"><label class="form-label-custom">Environment</label><input type="text" class="form-input-custom" id="aks_env" placeholder="e.g. dev"></div>
+                          <div class="col-md-4" style="display:flex;align-items:flex-end;"><button type="button" class="btn-secondary-custom" style="width:100%;" onclick="aksGenerateNames()"><i class="bi bi-arrow-repeat me-1"></i>Generate names</button></div>
+                        </div>
+                        <div id="aksNameMsg" style="font-size:11px;color:#7edb56;margin-top:6px;"></div>
                       </div>
                     </div>
                     <div class="col-md-6">
+                      <label class="form-label-custom">Cluster Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="cluster_name" placeholder="aks-g100-dev-prs-aen-001">
+                      <div class="field-help">The name of the AKS cluster to create. Convention: <code style="color:#00BCF2;">aks-&lt;project&gt;-&lt;env&gt;-prs-aen-001</code>.</div>
+                    </div>
+                    <div class="col-md-6">
                       <label class="form-label-custom">Cluster Resource Group *</label>
-                      <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-app-prd-prs-aen-001">
-                      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
-                        <i class="bi bi-info-circle me-1"></i>Created automatically if it doesn't already exist.
-                      </div>
+                      <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-g100-dev-prs-aen-001">
+                      <div class="field-help">The resource group that will hold the cluster — created automatically if it doesn't exist.</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Subscription ID *</label>
                       <input type="text" class="form-input-custom" data-detail="subscription_id" id="aks_subscription" placeholder="00000000-0000-0000-0000-000000000000">
+                      <div class="field-help">Mandatory — the subscription the cluster is deployed into. Also used to fetch live VNets/versions/sizes.</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Region</label>
                       <input type="text" class="form-input-custom" data-detail="region" id="aks_region" placeholder="blank = default region">
+                      <div class="field-help">Azure region for the cluster. Leave blank to use the org default.</div>
                     </div>
 
                     <div class="col-12" style="margin-top:2px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -661,10 +699,12 @@
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Name *</label>
                       <input type="text" class="form-input-custom" data-detail="vnet_name" id="aks_vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
+                      <div class="field-help">The existing VNet the cluster's nodes join. Use "Fetch VNets" above to pick one.</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">Subnet Name *</label>
                       <input type="text" class="form-input-custom" data-detail="subnet_name" id="aks_subnet_name" placeholder="snet-app-conn-prd-prs-aen-001">
+                      <div class="field-help">The subnet within that VNet where the node pool will be placed.</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom">VNET Resource Group</label>
@@ -1093,6 +1133,35 @@ function selectType(t) {
 function onAksZpaChange() {
   const el = document.getElementById('aks_zpa'); if (!el) return;
   document.getElementById('aksZpaHint').style.display = (el.value === 'yes') ? '' : 'none';
+}
+
+// ── Auto-name resources from project + env (<type>-<project>-<env>-prs-aen-NNN) ──
+function nameSlug(s) { return (s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, ''); }
+function vnetGenerateNames() {
+  const p = nameSlug(document.getElementById('f_proj').value);
+  const e = nameSlug(document.getElementById('f_env').value);
+  const msg = document.getElementById('f_nameMsg');
+  if (!p || !e) { msg.style.color = '#f59e0b'; msg.textContent = 'Enter both a project and an environment first.'; return; }
+  const base = `${p}-${e}-prs-aen`;
+  document.getElementById('f_rg').value = `rg-${base}-001`;
+  document.getElementById('f_vnet').value = `vnet-${base}-001`;
+  document.querySelectorAll('#subnetBlocks .snet-name').forEach((el, i) => {
+    el.value = `snet-${base}-${String(i + 1).padStart(3, '0')}`;
+  });
+  msg.style.color = '#7edb56';
+  msg.innerHTML = '<i class="bi bi-check-circle me-1"></i>Names filled from ' + p + ' / ' + e + ' — edit any as needed.';
+}
+function aksGenerateNames() {
+  const p = nameSlug(document.getElementById('aks_proj').value);
+  const e = nameSlug(document.getElementById('aks_env').value);
+  const msg = document.getElementById('aksNameMsg');
+  const sec = document.getElementById('section-aks_cluster');
+  if (!p || !e) { msg.style.color = '#f59e0b'; msg.textContent = 'Enter both a project and an environment first.'; return; }
+  const base = `${p}-${e}-prs-aen-001`;
+  sec.querySelector('[data-detail="cluster_name"]').value = `aks-${base}`;
+  sec.querySelector('[data-detail="resource_group"]').value = `rg-${base}`;
+  msg.style.color = '#7edb56';
+  msg.innerHTML = '<i class="bi bi-check-circle me-1"></i>Cluster + RG named from ' + p + ' / ' + e + ' — edit as needed.';
 }
 
 function onAksScaleChange() {
