@@ -1,25 +1,47 @@
 {% extends "base.html" %}
-{% block title %}Reachability Tester | Network Copilot{% endblock %}
+{% block title %}ZPA Analyzer Portal | Network Copilot{% endblock %}
 
 {% block content %}
 <div class="alloc-page-header">
   <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
   <div class="alloc-page-header-content">
     <div class="p-eyebrow" style="margin-bottom:10px;">IT · ZPA Connectors</div>
-    <h1 class="alloc-page-title">Reachability Tester</h1>
-    <p class="alloc-page-sub">Run ping, TCP-port (telnet-style) and curl checks to a destination — from the R&amp;D or NMO ZPA connector VM.</p>
+    <h1 class="alloc-page-title">ZPA Analyzer Portal</h1>
+    <p class="alloc-page-sub">Monitor the R&amp;D and NMO ZPA connector VMs and analyze reachability from them —
+      health at a glance, plus ping, TCP-port (telnet-style) and curl checks to any destination.</p>
   </div>
 </div>
 
 <div style="max-width:920px;margin:0 auto;padding:28px 24px 60px;">
 
+  <!-- ── Health dashboard ─────────────────────────────────────────────── -->
+  <div class="glass-card" style="margin-bottom:22px;">
+    <div class="card-header-bar" style="display:flex;align-items:center;justify-content:space-between;">
+      <span><i class="bi bi-heart-pulse"></i> Connector VM Health</span>
+      <button class="btn-secondary-custom" style="font-size:11px;padding:5px 12px;" onclick="loadHealth()">
+        <i class="bi bi-arrow-clockwise"></i> Refresh
+      </button>
+    </div>
+    <div class="card-body-pad">
+      <div id="healthGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;">
+        <div style="font-size:12px;color:var(--text-muted);">Checking connector VMs…</div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:12px;line-height:1.6;">
+        <i class="bi bi-info-circle me-1"></i>“Up” means the VM answered over SSH and passed a ping test.
+        <strong>More status</strong> pulls uptime, disk, memory, the ZPA connector service state and clock sync
+        live from the VM.
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Reachability analyzer ────────────────────────────────────────── -->
   <div class="glass-card">
-    <div class="card-header-bar"><i class="bi bi-hdd-network"></i> Connectivity check</div>
+    <div class="card-header-bar"><i class="bi bi-hdd-network"></i> Reachability Analyzer</div>
     <div class="card-body-pad">
 
-      <!-- 1) Source connector -->
+      <!-- 1) Source connector + instance -->
       <label class="p-eyebrow" style="display:block;margin-bottom:8px;">1 · Run from</label>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
         <button type="button" class="src-btn active" data-src="rnd" onclick="pickSource('rnd', this)">
           <i class="bi bi-shield-lock me-1"></i> R&amp;D ZPA connector
           {% if not rnd_ready %}<span class="src-warn">not configured</span>{% endif %}
@@ -27,6 +49,13 @@
         <button type="button" class="src-btn" data-src="nmo" onclick="pickSource('nmo', this)">
           <i class="bi bi-shield-shaded me-1"></i> NMO ZPA connector
           {% if not nmo_ready %}<span class="src-warn">not configured</span>{% endif %}
+        </button>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;align-items:center;">
+        <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">Instance:</span>
+        <button type="button" class="inst-btn active" data-inst="primary" onclick="pickInstance('primary', this)">Primary</button>
+        <button type="button" class="inst-btn" data-inst="secondary" onclick="pickInstance('secondary', this)">
+          Secondary <span id="instSecWarn" class="src-warn" style="display:none;">not configured</span>
         </button>
       </div>
 
@@ -63,8 +92,8 @@
   <div style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.7;">
     <i class="bi bi-info-circle me-1"></i>
     Checks run over SSH on the connector VM. Ping needs no port; TCP and curl need one.
-    Configure the connector VMs (host, SSH user, key) in <strong>Settings → ZPA Connector VMs</strong>
-    (super-admin).
+    Configure the connector VMs (primary + secondary host, SSH user, key) in
+    <strong>Settings → ZPA Connector VMs</strong> (super-admin).
   </div>
 </div>
 {% endblock %}
@@ -76,21 +105,101 @@
     border-radius:var(--radius-pill,100px); padding:9px 18px; cursor:pointer; transition:all .2s; }
   .src-btn:hover { color:#fff; border-color:rgba(21,94,239,.5); }
   .src-btn.active { background:var(--p-grad-h,linear-gradient(90deg,#0700c4,#10b5b0,#7edb56)); color:#fff; border-color:transparent; }
+  .inst-btn { font-family:var(--p-font-mono,monospace); font-size:11px; letter-spacing:.5px;
+    background:rgba(255,255,255,.05); border:1px solid var(--border); color:var(--text-dim);
+    border-radius:8px; padding:5px 14px; cursor:pointer; transition:all .2s; }
+  .inst-btn:hover { color:#fff; border-color:rgba(21,94,239,.5); }
+  .inst-btn.active { background:rgba(21,94,239,.25); color:#fff; border-color:rgba(21,94,239,.6); }
   .src-warn { font-size:9.5px; background:rgba(245,158,11,.18); color:#f59e0b; border:1px solid rgba(245,158,11,.4);
     border-radius:6px; padding:0 6px; margin-left:6px; text-transform:uppercase; letter-spacing:.5px; }
   .r-out { font-family:var(--mono,monospace); font-size:12.5px; white-space:pre-wrap; word-break:break-word;
     background:#0a0e14; border:1px solid var(--border); border-radius:10px; padding:14px 16px; color:#cfe3ff;
     max-height:340px; overflow:auto; }
+  .hv-card { border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:rgba(255,255,255,.03); }
+  .hv-dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:7px; }
+  .hv-status { font-size:12px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
 </style>
 <script>
-let R_SOURCE = 'rnd';
+// Which instances are configured (from the server) — drives the Secondary toggle.
+const READY = {
+  rnd: { primary: {{ 'true' if rnd_ready else 'false' }}, secondary: {{ 'true' if rnd2_ready else 'false' }} },
+  nmo: { primary: {{ 'true' if nmo_ready else 'false' }}, secondary: {{ 'true' if nmo2_ready else 'false' }} },
+};
 
+let R_SOURCE = 'rnd';
+let R_INSTANCE = 'primary';
+
+function refreshInstanceButtons() {
+  const secOk = READY[R_SOURCE].secondary;
+  document.getElementById('instSecWarn').style.display = secOk ? 'none' : '';
+  if (!secOk && R_INSTANCE === 'secondary') pickInstance('primary',
+      document.querySelector('.inst-btn[data-inst="primary"]'));
+}
 function pickSource(s, btn) {
   R_SOURCE = s;
   document.querySelectorAll('.src-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  refreshInstanceButtons();
+}
+function pickInstance(i, btn) {
+  if (i === 'secondary' && !READY[R_SOURCE].secondary) return;
+  R_INSTANCE = i;
+  document.querySelectorAll('.inst-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
 }
 
+// ── Health dashboard ────────────────────────────────────────────────────────
+async function loadHealth() {
+  const grid = document.getElementById('healthGrid');
+  grid.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Checking connector VMs…</div>';
+  let vms = [];
+  try { vms = (await (await fetch('/api/it/connector-health')).json()).vms || []; }
+  catch (e) { grid.innerHTML = '<div style="font-size:12px;color:#f87171;">Could not load health.</div>'; return; }
+  if (!vms.length) { grid.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">No connector VMs configured.</div>'; return; }
+  grid.innerHTML = vms.map(v => {
+    const color = v.up ? '#7edb56' : (v.configured ? '#f87171' : '#f59e0b');
+    const label = v.up ? 'Up' : (v.configured ? 'Down' : 'Not set');
+    const idKey = v.source + '_' + v.instance;
+    return `<div class="hv-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="font-size:13px;font-weight:600;color:#fff;">${v.label}</div>
+          <div><span class="hv-dot" style="background:${color};box-shadow:0 0 8px ${color};"></span><span class="hv-status" style="color:${color};">${label}</span></div>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-muted);font-family:var(--mono);margin-top:4px;">${v.host || '—'}</div>
+        <div style="font-size:11.5px;color:var(--text-dim);margin-top:6px;line-height:1.5;">${v.message || ''}</div>
+        ${v.configured ? `<button class="btn-secondary-custom" style="font-size:11px;padding:4px 10px;margin-top:10px;"
+            onclick="moreStatus('${v.source}','${v.instance}','${idKey}', this)"><i class="bi bi-clipboard-data"></i> More status</button>
+          <div id="more_${idKey}" style="display:none;margin-top:10px;"></div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+async function moreStatus(source, instance, idKey, btn) {
+  const box = document.getElementById('more_' + idKey);
+  if (box.style.display === 'block') { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  box.innerHTML = '<span style="font-size:11.5px;color:var(--text-muted);">Fetching live status…</span>';
+  const orig = btn.innerHTML; btn.disabled = true;
+  try {
+    const d = await (await fetch('/api/it/connector-status', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, instance })
+    })).json();
+    if (!d.success) { box.innerHTML = `<span style="font-size:11.5px;color:#f87171;">${d.message || 'Could not fetch status.'}</span>`; }
+    else {
+      box.innerHTML = (d.checks || []).map(ch => `
+        <div style="margin-bottom:8px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:${ch.ok ? '#7edb56' : '#f59e0b'};">
+            <i class="bi bi-${ch.ok ? 'check-circle' : 'exclamation-triangle'} me-1"></i>${ch.label}</div>
+          <div class="r-out" style="max-height:160px;margin-top:4px;font-size:11.5px;">${(ch.output || '').replace(/</g,'&lt;')}</div>
+        </div>`).join('') +
+        `<div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">Service checked: <span style="font-family:var(--mono);">${d.service_name}</span></div>`;
+    }
+  } catch (e) { box.innerHTML = '<span style="font-size:11.5px;color:#f87171;">Network error.</span>'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+// ── Reachability analyzer ────────────────────────────────────────────────────
 const METHOD_UI = {
   ping:   { label: '3 · Destination *', ph: 'IP or FQDN — e.g. 10.20.30.40 or api.example.com',
             port: false, hint: 'Checks whether the host answers ICMP echo from the connector.' },
@@ -134,11 +243,12 @@ async function runCheck() {
   const btn = document.getElementById('runBtn');
   const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Checking…';
-  out.innerHTML = box('info', 'Running from the ' + (R_SOURCE === 'rnd' ? 'R&D' : 'NMO') + ' ZPA connector…');
+  const label = (R_SOURCE === 'rnd' ? 'R&D' : 'NMO') + ' ' + R_INSTANCE;
+  out.innerHTML = box('info', 'Running from the ' + label + ' ZPA connector…');
   try {
     const r = await fetch('/api/it/reachability', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: R_SOURCE, method, target, port: port || null })
+      body: JSON.stringify({ source: R_SOURCE, instance: R_INSTANCE, method, target, port: port || null })
     });
     const d = await r.json();
     if (!d.success) { out.innerHTML = box('error', '<i class="bi bi-x-circle-fill me-1"></i>' + (d.message || 'Check failed.')); }
@@ -163,6 +273,9 @@ async function runCheck() {
   } catch (e) { out.innerHTML = box('error', 'Network error.'); }
   btn.disabled = false; btn.innerHTML = orig;
 }
+
 onMethodChange();
+refreshInstanceButtons();
+loadHealth();
 </script>
 {% endblock %}

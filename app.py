@@ -1285,7 +1285,9 @@ def it_reachability():
     import reachability
     return render_template("reachability.html",
                            rnd_ready=reachability.configured("rnd"),
-                           nmo_ready=reachability.configured("nmo"))
+                           rnd2_ready=reachability.configured("rnd", "secondary"),
+                           nmo_ready=reachability.configured("nmo"),
+                           nmo2_ready=reachability.configured("nmo", "secondary"))
 
 
 @app.route("/api/it/reachability", methods=["POST"])
@@ -1298,11 +1300,32 @@ def it_reachability_run():
         method=str(data.get("method", "")).strip(),
         target=str(data.get("target", "")).strip(),
         port=data.get("port"),
+        instance=str(data.get("instance", "primary")).strip() or "primary",
     )
     if res.get("success"):
         audit.record("reachability_check", actor=current_actor(), actor_role="admin",
                      summary=f"{res.get('source')} → {res.get('method')} {res.get('target')} "
                              f"→ {res.get('verdict')} (exit {res.get('exit_code')})")
+    return jsonify(res), (200 if res.get("success") else 400)
+
+
+@app.route("/api/it/connector-health")
+@require_itadmin
+def it_connector_health():
+    """Health dashboard: are the connector VMs (primary + secondary) up?"""
+    import reachability
+    return jsonify({"vms": reachability.health_all()})
+
+
+@app.route("/api/it/connector-status", methods=["POST"])
+@require_itadmin
+def it_connector_status():
+    """Richer per-VM diagnostics for the dashboard's 'More status'."""
+    import reachability
+    data = request.get_json(force=True) or {}
+    res = reachability.vm_status(
+        source=str(data.get("source", "")).strip(),
+        instance=str(data.get("instance", "primary")).strip() or "primary")
     return jsonify(res), (200 if res.get("success") else 400)
 
 

@@ -59,7 +59,7 @@
           </a>
           {% if is_superadmin or is_itadmin %}
           <a href="{{ url_for('it_reachability') }}" class="nav-link {% if request.endpoint == 'it_reachability' %}active{% endif %}">
-            <i class="bi bi-hdd-network"></i> Reachability
+            <i class="bi bi-hdd-network"></i> ZPA Analyzer
           </a>
           {% endif %}
           <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}">
@@ -99,7 +99,7 @@
           {% endif %}
           {% if is_itadmin %}
           <a href="{{ url_for('it_reachability') }}" class="nav-link {% if request.endpoint == 'it_reachability' %}active{% endif %}">
-            <i class="bi bi-hdd-network"></i> Reachability
+            <i class="bi bi-hdd-network"></i> ZPA Analyzer
           </a>
           {% endif %}
           {% if is_requester or not sso %}
