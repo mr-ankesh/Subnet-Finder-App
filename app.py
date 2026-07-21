@@ -1425,6 +1425,31 @@ def admin_firewall_lookup():
     return jsonify(res), (200 if res.get("success") else 400)
 
 
+@app.route("/api/admin/requests/<int:req_id>/diagnose", methods=["POST"])
+@require_admin
+def request_diagnose(req_id):
+    """Run the source→destination connectivity diagnosis for a network-issue
+    request (routing / DNS / firewall / return path), optionally with live tests."""
+    req = SpokeRequest.query.get_or_404(req_id)
+    if (req.request_type or "") != RequestType.NETWORK_ISSUE:
+        return jsonify({"error": "Diagnosis is only available for network-issue requests."}), 400
+    import netdiag
+    run_live = bool((request.get_json(silent=True) or {}).get("run_live"))
+    try:
+        report = netdiag.diagnose(req.get_details(), run_live=run_live)
+    except Exception as exc:
+        log.exception("network diagnosis failed")
+        return jsonify({"error": f"Diagnosis failed: {exc}"}), 500
+    audit.record("network_diagnosis", actor=current_actor(), actor_role="admin", request_id=req.id,
+                 summary=f"Connectivity diagnosis — verdict: {report.get('verdict')}",
+                 data={"verdict": report.get("verdict"), "run_live": run_live})
+    if req.status == RequestStatus.SUBMITTED:
+        req.status = RequestStatus.IN_PROGRESS
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+    return jsonify({"success": True, **report})
+
+
 @app.route("/api/azure/subnets")
 @require_login
 def azure_subnets():
@@ -1468,6 +1493,7 @@ TYPE_REQUIRED_DETAILS = {
     RequestType.AKS_CLUSTER:       ["cluster_name", "resource_group", "subscription_id",
                                     "vnet_name", "subnet_name", "node_pool_name", "tier",
                                     "zpa_rnd_access"],
+    RequestType.NETWORK_ISSUE:     ["issue", "source", "destination"],
     RequestType.OTHER:             ["description"],
 }
 

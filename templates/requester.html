@@ -840,6 +840,58 @@
                   </div>
                 </div>
 
+                <!-- ── Report Network Issue ── -->
+                <div class="col-12 type-section" id="section-network_issue" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <label class="form-label-custom">Describe the issue *</label>
+                      <textarea class="form-input-custom" data-detail="issue" rows="3" placeholder="What isn't working? e.g. 'My AKS pods can't reach api.internal.contoso.com' or 'No connectivity from 10.110.51.10 to 10.120.4.5 on 443'"></textarea>
+                      <div class="field-help">Paste the problem in your own words — then give the source and destination below so the network team can trace the path.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Source type *</label>
+                      <select class="form-input-custom" data-detail="source_kind" id="ni_srckind" onchange="onNiSrcKind()">
+                        <option value="ip">IP address</option>
+                        <option value="aks">AKS cluster</option>
+                        <option value="vm">VM / other resource</option>
+                      </select>
+                      <div class="field-help">What the traffic originates from.</div>
+                    </div>
+                    <div class="col-md-8">
+                      <label class="form-label-custom" id="ni_srclabel">Source IP *</label>
+                      <input type="text" class="form-input-custom" data-detail="source" id="ni_src" placeholder="e.g. 10.110.51.10">
+                      <div class="field-help" id="ni_srchelp">The IP the traffic comes from — the tool locates its VNet, subnet and route table.</div>
+                    </div>
+                    <div class="col-12" id="ni_srcresource" style="display:none;">
+                      <div class="row g-2">
+                        <div class="col-md-4"><label class="form-label-custom">Source subscription ID</label>
+                          <input type="text" class="form-input-custom" data-detail="source_subscription" placeholder="00000000-…"></div>
+                        <div class="col-md-4"><label class="form-label-custom">Source resource group</label>
+                          <input type="text" class="form-input-custom" data-detail="source_rg" placeholder="rg-…"></div>
+                        <div class="col-md-4"><label class="form-label-custom" id="ni_resname_lbl">Cluster / resource name</label>
+                          <input type="text" class="form-input-custom" data-detail="source_resource" placeholder="aks-…"></div>
+                      </div>
+                      <div class="field-help">Helps identify the resource's subnet. If you also know a source IP, put it above — it's the most reliable.</div>
+                    </div>
+                    <div class="col-md-8">
+                      <label class="form-label-custom">Destination (IP or FQDN) *</label>
+                      <input type="text" class="form-input-custom" data-detail="destination" placeholder="e.g. 10.120.4.5  or  api.internal.contoso.com">
+                      <div class="field-help">Where you're trying to reach. FQDNs are checked for DNS resolvability; IPs are traced through routing &amp; firewall.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Destination port / protocol</label>
+                      <input type="text" class="form-input-custom" data-detail="dest_port" placeholder="e.g. 443 or TCP/443">
+                      <div class="field-help">Optional — the port you're connecting on.</div>
+                    </div>
+                    <div class="col-12">
+                      <div style="border:1px solid rgba(0,188,242,.3);background:rgba(0,188,242,.06);border-radius:8px;padding:10px 12px;font-size:11.5px;color:var(--text-dim);line-height:1.6;">
+                        <i class="bi bi-info-circle me-1" style="color:#00BCF2;"></i>
+                        After you submit, the network team runs an automated diagnosis (routing, DNS, firewall, return path) and replies with findings.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- ── Other ── -->
                 <div class="col-12 type-section" id="section-other" style="display:none;">
                   <div class="row g-3">
@@ -1155,6 +1207,7 @@ function selectType(t) {
       }
     }
     if (t === 'aks_cluster') { onAksTierChange(); onAksZpaChange(); onAksRegionChange(); }
+    if (t === 'network_issue') onNiSrcKind();
   }
   showResult('newReqResult', '');
 }
@@ -1162,6 +1215,15 @@ function selectType(t) {
 function onAksZpaChange() {
   const el = document.getElementById('aks_zpa'); if (!el) return;
   document.getElementById('aksZpaHint').style.display = (el.value === 'yes') ? '' : 'none';
+}
+
+function onNiSrcKind() {
+  const k = document.getElementById('ni_srckind').value;
+  const isRes = (k === 'aks' || k === 'vm');
+  document.getElementById('ni_srcresource').style.display = isRes ? '' : 'none';
+  document.getElementById('ni_srclabel').textContent = isRes ? 'Source IP (recommended)' : 'Source IP *';
+  document.getElementById('ni_src').placeholder = isRes ? 'node/pod IP, e.g. 10.110.51.10 (optional but best)' : 'e.g. 10.110.51.10';
+  document.getElementById('ni_resname_lbl').textContent = (k === 'aks') ? 'AKS cluster name' : 'Resource name';
 }
 
 function onAksRegionChange() {

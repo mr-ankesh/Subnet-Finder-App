@@ -4,6 +4,7 @@ Credentials come from config.cfg: Service Principal or Managed Identity,
 selected by the AZURE_AUTH_MODE setting (editable in /admin/settings).
 """
 import functools
+import ipaddress
 import logging
 import re
 from config import cfg
@@ -2622,3 +2623,169 @@ def list_subnets(subscription_id: str, resource_group: str, vnet_name: str) -> d
     except Exception as exc:
         log.error("list_subnets failed: %s", exc)
         return {"success": False, "message": str(exc)[:200]}
+
+
+# ── Network diagnostics helpers (read-only) ────────────────────────────────
+# Used by netdiag.py to trace a source→destination path: locate an IP's VNet/
+# subnet, look up the UDR route toward a destination, and find the private DNS
+# zone for an FQDN. All read-only; run for real even in dry-run.
+
+def _is_cidr(s) -> bool:
+    try:
+        ipaddress.ip_network(str(s), strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def _diag_subs(*hints) -> list:
+    subs = []
+    for s in list(hints) + [cfg.HUB_SUBSCRIPTION_ID, cfg.SPOKE_SUBSCRIPTION_ID]:
+        s = (s or "").strip()
+        if s and s not in subs:
+            subs.append(s)
+    return subs
+
+
+def locate_ip(ip: str, *subscription_hints) -> dict:
+    """Find the VNet/subnet a (private) IP belongs to, across known subscriptions."""
+    try:
+        addr = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return {"found": False, "message": f"'{ip}' is not a valid IP address."}
+    for sub in _diag_subs(*subscription_hints):
+        try:
+            client = _network_client(sub)
+            for v in client.virtual_networks.list_all():
+                spaces = (v.address_space.address_prefixes if v.address_space else []) or []
+                if not any(addr in ipaddress.ip_network(sp, strict=False) for sp in spaces if _is_cidr(sp)):
+                    continue
+                rg = _rg_from_id(v.id)
+                for sn in client.subnets.list(rg, v.name):
+                    prefixes = [sn.address_prefix] if sn.address_prefix else \
+                        list(getattr(sn, "address_prefixes", None) or [])
+                    if any(addr in ipaddress.ip_network(p, strict=False) for p in prefixes if _is_cidr(p)):
+                        rt = getattr(sn, "route_table", None)
+                        return {"found": True, "subscription": sub, "resource_group": rg,
+                                "vnet": v.name, "vnet_id": v.id, "subnet": sn.name,
+                                "address_prefix": prefixes[0] if prefixes else "",
+                                "route_table_id": rt.id if rt else None,
+                                "dns_servers": list((v.dhcp_options.dns_servers
+                                                     if v.dhcp_options else []) or [])}
+        except Exception as exc:
+            log.error("locate_ip in %s failed: %s", sub, exc)
+    return {"found": False,
+            "message": f"{ip} is not inside any VNet in the hub/spoke subscriptions "
+                       f"(it may be external, or in a subscription this tool can't see)."}
+
+
+def route_lookup(route_table_id: str, dest_ip: str) -> dict:
+    """Longest-prefix-match UDR route for dest_ip in a subnet's route table.
+    NOTE: only the associated user-defined routes are examined — Azure system
+    and BGP/peering routes are not visible here."""
+    if not route_table_id:
+        return {"has_udr": False,
+                "message": "No route table (UDR) attached — Azure system routes apply "
+                           "(local VNet, peering, default Internet)."}
+    try:
+        sub, rg = _sub_from_id(route_table_id), _rg_from_id(route_table_id)
+        name = route_table_id.rstrip("/").split("/")[-1]
+        rt = _network_client(sub).route_tables.get(rg, name)
+        dest = ipaddress.ip_address(str(dest_ip).strip())
+        best = None
+        routes = []
+        for r in (rt.routes or []):
+            routes.append({"name": r.name, "prefix": r.address_prefix,
+                           "next_hop_type": r.next_hop_type,
+                           "next_hop_ip": r.next_hop_ip_address})
+            if not _is_cidr(r.address_prefix):
+                continue
+            net = ipaddress.ip_network(r.address_prefix, strict=False)
+            if dest in net and (best is None or net.prefixlen > best[0]):
+                best = (net.prefixlen, r)
+        match = None
+        if best:
+            r = best[1]
+            match = {"name": r.name, "prefix": r.address_prefix,
+                     "next_hop_type": r.next_hop_type, "next_hop_ip": r.next_hop_ip_address}
+        return {"has_udr": True, "table": name, "route_count": len(routes),
+                "match": match, "routes": routes}
+    except Exception as exc:
+        log.error("route_lookup failed: %s", exc)
+        return {"has_udr": False, "message": str(exc)[:150]}
+
+
+def private_dns_for_fqdn(fqdn: str, source_vnet_id: str = None) -> dict:
+    """Is there a private DNS zone (in the hub DNS RG) covering the FQDN, and is
+    it linked to the hub / the source VNet?"""
+    fqdn = str(fqdn or "").strip().lower().rstrip(".")
+    rg = cfg.DNS_ZONE_RG
+    if not rg:
+        return {"checked": False, "message": "Hub private DNS zone RG not configured (Settings → Hub)."}
+    labels = fqdn.split(".")
+    if len(labels) < 2:
+        return {"checked": False, "message": "Not an FQDN."}
+    try:
+        pc = _privatedns_client()
+        zone = None
+        for i in range(1, len(labels) - 1):
+            cand = ".".join(labels[i:])
+            try:
+                pc.private_zones.get(rg, cand)
+                zone = cand
+                break
+            except Exception as exc:
+                if not _is_not_found(exc):
+                    raise
+        if not zone:
+            return {"checked": True, "zone": None,
+                    "message": "No matching private DNS zone found in the hub."}
+        linked = [(l.virtual_network.id or "").lower()
+                  for l in pc.virtual_network_links.list(rg, zone) if l.virtual_network]
+        return {"checked": True, "zone": zone,
+                "hub_linked": _hub_vnet_id().lower() in linked,
+                "source_linked": bool(source_vnet_id and source_vnet_id.lower() in linked),
+                "linked_count": len(linked)}
+    except Exception as exc:
+        log.error("private_dns_for_fqdn failed: %s", exc)
+        return {"checked": False, "message": str(exc)[:150]}
+
+
+def aks_source_subnet(subscription_id: str, resource_group: str, cluster_name: str) -> dict:
+    """The VNet/subnet an AKS cluster's (system) node pool sits in."""
+    try:
+        mc = _containerservice_client(subscription_id).managed_clusters.get(
+            resource_group, cluster_name)
+        for p in (mc.agent_pool_profiles or []):
+            sid = getattr(p, "vnet_subnet_id", None)
+            if sid:
+                return {"found": True, "subscription": _sub_from_id(sid) or subscription_id,
+                        "resource_group": _rg_from_id(sid),
+                        "vnet": sid.split("/virtualNetworks/")[-1].split("/")[0],
+                        "subnet": sid.rstrip("/").split("/")[-1], "subnet_id": sid}
+        return {"found": False, "message": "Cluster has no VNet-integrated node pool (kubenet?)."}
+    except Exception as exc:
+        log.error("aks_source_subnet failed: %s", exc)
+        return {"found": False, "message": str(exc)[:150]}
+
+
+def subnet_details(subnet_id: str) -> dict:
+    """VNet/subnet/route-table/DNS facts for a subnet resource id."""
+    try:
+        sub, rg = _sub_from_id(subnet_id), _rg_from_id(subnet_id)
+        vnet = subnet_id.split("/virtualNetworks/")[-1].split("/")[0]
+        sname = subnet_id.rstrip("/").split("/")[-1]
+        client = _network_client(sub)
+        sn = client.subnets.get(rg, vnet, sname)
+        v = client.virtual_networks.get(rg, vnet)
+        prefixes = [sn.address_prefix] if sn.address_prefix else \
+            list(getattr(sn, "address_prefixes", None) or [])
+        rt = getattr(sn, "route_table", None)
+        return {"found": True, "subscription": sub, "resource_group": rg, "vnet": vnet,
+                "vnet_id": v.id, "subnet": sname,
+                "address_prefix": prefixes[0] if prefixes else "",
+                "route_table_id": rt.id if rt else None,
+                "dns_servers": list((v.dhcp_options.dns_servers if v.dhcp_options else []) or [])}
+    except Exception as exc:
+        log.error("subnet_details failed: %s", exc)
+        return {"found": False, "message": str(exc)[:150]}

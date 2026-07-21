@@ -114,11 +114,12 @@ class RequestType:
     VNET_DECOMMISSION = "vnet_decommission"
     DNS               = "dns"
     AKS_CLUSTER       = "aks_cluster"
+    NETWORK_ISSUE     = "network_issue"
     OTHER             = "other"
 
     ALL = [VNET_NEW, FIREWALL_POLICY, HUB_INTEGRATION, ZPA_RND_ROUTING,
            ZPA_OTHER_ROUTING, ZPA_NMO_ROUTING, SUBNET_ADDITIONAL,
-           VNET_DECOMMISSION, DNS, AKS_CLUSTER, OTHER]
+           VNET_DECOMMISSION, DNS, AKS_CLUSTER, NETWORK_ISSUE, OTHER]
 
     _LABELS = {
         VNET_NEW:          "New VNET",
@@ -131,6 +132,7 @@ class RequestType:
         VNET_DECOMMISSION: "VNET Decommission",
         DNS:               "DNS / Private DNS Link",
         AKS_CLUSTER:       "AKS Cluster",
+        NETWORK_ISSUE:     "Report Network Issue",
         OTHER:             "Other Request",
     }
 
@@ -145,6 +147,7 @@ class RequestType:
         VNET_DECOMMISSION: "Retire a spoke: remove peering/routes and release the CIDR.",
         DNS:               "DNS record or Private DNS zone link for your spoke.",
         AKS_CLUSTER:       "Deploy a managed Kubernetes (AKS) cluster into your spoke subnet.",
+        NETWORK_ISSUE:     "Report a connectivity problem — the network team diagnoses the path (routing, DNS, firewall).",
         OTHER:             "Anything that doesn't fit the categories above.",
     }
 
@@ -159,6 +162,7 @@ class RequestType:
         VNET_DECOMMISSION: "trash3",
         DNS:               "globe2",
         AKS_CLUSTER:       "boxes",
+        NETWORK_ISSUE:     "wifi-off",
         OTHER:             "chat-square-text",
     }
 
@@ -183,6 +187,8 @@ class RequestType:
         DNS:               [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
                             RequestStatus.COMPLETED],
         AKS_CLUSTER:       [RequestStatus.SUBMITTED, RequestStatus.AKS_DEPLOYED,
+                            RequestStatus.COMPLETED],
+        NETWORK_ISSUE:     [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
                             RequestStatus.COMPLETED],
         OTHER:             [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
                             RequestStatus.COMPLETED],

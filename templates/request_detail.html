@@ -503,6 +503,33 @@
         </script>
         {% endif %}
 
+        {# ── Network issue diagnosis ── #}
+        {% if rtype == 'network_issue' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        {% set ni = req.get_details() %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;">
+            <i class="bi bi-activity"></i> Connectivity Diagnosis
+          </div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;font-family:var(--mono);line-height:1.6;">
+            {% if ni.get('issue') %}<span style="color:var(--text-muted);">Issue:</span> {{ ni.get('issue') }}<br>{% endif %}
+            <span style="color:var(--text-muted);">Source:</span> {{ ni.get('source') or ni.get('source_resource') or '—' }} ({{ ni.get('source_kind') or 'ip' }})
+            &nbsp;→&nbsp; <span style="color:var(--text-muted);">Destination:</span> {{ ni.get('destination') }}{% if ni.get('dest_port') %} : {{ ni.get('dest_port') }}{% endif %}
+          </div>
+          <label style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--text-dim);margin-bottom:8px;cursor:pointer;">
+            <input type="checkbox" id="niLive" style="accent-color:#60a5fa;"> Also run <strong>live tests</strong> (ping / TCP / curl) from a ZPA connector VM
+          </label>
+          <button class="btn btn-glow w-100" onclick="runDiagnose(this)">
+            <i class="bi bi-search me-2"></i>Check &amp; Identify the Issue
+          </button>
+          <div style="margin-top:8px;font-size:10.5px;color:var(--text-muted);line-height:1.55;">
+            <i class="bi bi-info-circle me-1"></i>Reads Azure config to trace the path — source VNet/subnet &amp; UDR, DNS zones,
+            firewall rules and the return route. It can't run from the exact source VM/pod: routing shows the subnet's
+            <strong>UDR only</strong> (not system/BGP/peering routes), and live tests run from a connector VM, not the source.
+          </div>
+          <div id="niResults" style="display:none;margin-top:10px;"></div>
+        </div>
+        {% endif %}
+
         {# ── NMO ZPA routing actions ── #}
         {% if rtype == 'zpa_nmo_routing' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
@@ -1890,6 +1917,40 @@ function fwRenderCoverage(cov) {
   });
   html += `<div style="font-size:12.5px;font-weight:600;margin-top:6px;color:${cov.fully_covered ? '#7edb56' : 'var(--text-dim)'};">${cov.message}</div></div>`;
   return html;
+}
+
+// ── Network issue diagnosis ────────────────────────────────────────────────
+function niStep(s) {
+  const map = { ok: ['#7edb56', 'check-circle-fill'], warn: ['#f59e0b', 'exclamation-triangle-fill'],
+    fail: ['#f87171', 'x-circle-fill'], info: ['#60a5fa', 'info-circle-fill'], skip: ['#888', 'dash-circle'] };
+  const [c, ic] = map[s.status] || map.info;
+  return `<div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+    <i class="bi bi-${ic}" style="color:${c};margin-top:2px;flex-shrink:0;"></i>
+    <div><div style="font-size:12.5px;font-weight:600;color:#fff;">${s.title}</div>
+      <div style="font-size:11.5px;color:var(--text-dim);line-height:1.6;">${(s.detail || '').replace(/</g,'&lt;')}</div></div></div>`;
+}
+async function runDiagnose(btn) {
+  const box = document.getElementById('niResults'); box.style.display = 'block';
+  const live = document.getElementById('niLive').checked;
+  const o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Diagnosing…';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Tracing the path — source, routing, DNS, firewall, return route…</span>';
+  try {
+    const d = await (await fetch(`/api/admin/requests/${REQ_ID}/diagnose`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_live: live }) })).json();
+    if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; }
+    else {
+      const vmap = { clear: ['#7edb56', 'check-circle-fill', 'No blocking issue found'],
+        attention: ['#f59e0b', 'exclamation-triangle-fill', 'Needs attention'],
+        blocked: ['#f87171', 'x-octagon-fill', 'Traffic blocked'] };
+      const [vc, vi, vl] = vmap[d.verdict] || vmap.attention;
+      let html = `<div style="border:1px solid ${vc}66;background:${vc}14;border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+          <div style="font-size:14px;font-weight:700;color:${vc};"><i class="bi bi-${vi} me-1"></i>${vl}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:5px;">${(d.cause || '').replace(/</g,'&lt;')}</div></div>`;
+      html += (d.steps || []).map(niStep).join('');
+      box.innerHTML = html;
+    }
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+  btn.disabled = false; btn.innerHTML = o;
 }
 
 // ── Firewall rule lookup by IP/CIDR (with larger-subnet coverage) ──────────
