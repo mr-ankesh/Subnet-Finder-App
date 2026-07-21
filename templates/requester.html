@@ -991,8 +991,12 @@
                 <div class="chat-status"><span class="status-dot"></span> Online</div>
               </div>
             </div>
-            <div class="chat-actions">
-              <button class="btn-icon-sm" onclick="clearChat()" title="Clear conversation"><i class="bi bi-trash3"></i></button>
+            <div class="chat-actions" style="display:flex;align-items:center;gap:6px;">
+              <select id="reqChatSelect" onchange="reqOpenChat(this.value)" title="Your past chats"
+                style="max-width:150px;font-size:.72rem;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.8);border-radius:7px;padding:4px 6px;">
+                <option value="">Past chats…</option>
+              </select>
+              <button class="btn-icon-sm" onclick="reqNewChat()" title="New chat"><i class="bi bi-plus-lg"></i></button>
             </div>
           </div>
 
@@ -1789,6 +1793,7 @@ function setLoading(v) {
   btn.innerHTML=v?'<span class="spinner-border spinner-border-sm"></span>':'<i class="bi bi-send-fill"></i>';
 }
 
+let CURRENT_CHAT_REQ=null, REQ_WELCOME='';
 async function sendMessage() {
   if(isLoading) return;
   const input=document.getElementById('chatInput'), text=input.value.trim();
@@ -1796,21 +1801,47 @@ async function sendMessage() {
   input.value=''; input.style.height='auto';
   appendMessage('user', text); setLoading(true); hideToolPanel(); appendTypingIndicator();
   try {
-    const resp=await fetch('/api/requester/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+    const resp=await fetch('/api/requester/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text, chat_id:CURRENT_CHAT_REQ})});
     removeTypingIndicator(); const data=await resp.json();
     if(data.tool_calls&&data.tool_calls.length){ appendToolCalls(data.tool_calls); document.getElementById('toolCallsStatus').textContent=`${data.tool_calls.length} action(s) completed`; }
     appendMessage('agent', data.reply||data.error||'(no response)');
+    if(data.chat_id){ CURRENT_CHAT_REQ=data.chat_id; reqLoadChats(); }
   } catch(err) { removeTypingIndicator(); appendMessage('agent',`Connection error: ${err.message}`); }
   setLoading(false);
 }
 
-async function clearChat() {
-  if(!confirm('Clear the conversation history?')) return;
-  await fetch('/requester/clear',{method:'POST'});
-  const msgs=document.getElementById('chatMessages');
-  while(msgs.children.length>1) msgs.removeChild(msgs.lastChild);
-  hideToolPanel();
+async function reqLoadChats() {
+  try {
+    const d=await (await fetch('/api/requester/chats')).json();
+    const sel=document.getElementById('reqChatSelect'); if(!sel) return;
+    const items=d.chats||[];
+    sel.innerHTML='<option value="">'+(items.length?'Past chats ('+items.length+')…':'No past chats')+'</option>'+
+      items.map(c=>`<option value="${c.id}" ${c.id===CURRENT_CHAT_REQ?'selected':''}>${escapeHtml((c.title||'New chat').slice(0,40))}</option>`).join('');
+  } catch(e){}
 }
+async function reqOpenChat(id) {
+  if(!id) return;
+  try {
+    const d=await (await fetch('/api/requester/chats/'+id)).json();
+    if(d.error) return;
+    CURRENT_CHAT_REQ=parseInt(id,10);
+    const msgs=document.getElementById('chatMessages'); msgs.innerHTML='';
+    (d.messages||[]).forEach(m=>appendMessage(m.role==='assistant'?'agent':'user', m.content));
+    if(!(d.messages||[]).length) msgs.innerHTML=REQ_WELCOME;
+    hideToolPanel(); scrollToBottom();
+  } catch(e){}
+}
+function reqNewChat() {
+  CURRENT_CHAT_REQ=null;
+  document.getElementById('chatMessages').innerHTML=REQ_WELCOME;
+  hideToolPanel();
+  const sel=document.getElementById('reqChatSelect'); if(sel) sel.value='';
+}
+function clearChat(){ reqNewChat(); }
+
+// Init: remember welcome, load past chats.
+REQ_WELCOME=document.getElementById('chatMessages').innerHTML;
+reqLoadChats();
 </script>
 
 <style>

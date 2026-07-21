@@ -1860,19 +1860,53 @@ def requester_send_reminder():
     return jsonify({"success": ok})
 
 
+@app.route("/api/requester/chats")
+@require_login
+def requester_chats_list():
+    import chats
+    return jsonify({"chats": chats.list_chats("requester", _chat_owner("requester"))})
+
+
+@app.route("/api/requester/chats/<int:cid>")
+@require_login
+def requester_chat_get(cid):
+    import chats
+    if not chats.owns(cid, "requester", _chat_owner("requester")):
+        return jsonify({"error": "Chat not found."}), 404
+    ch = chats.get_chat(cid)
+    return jsonify({"id": ch["id"], "title": ch["title"],
+                    "messages": [{"role": m.get("role"), "content": m.get("content", "")}
+                                 for m in ch["messages"]]})
+
+
+@app.route("/api/requester/chats/<int:cid>", methods=["DELETE"])
+@require_login
+def requester_chat_delete(cid):
+    import chats
+    chats.delete_chat(cid, _chat_owner("requester"))
+    return jsonify({"success": True})
+
+
 @app.route("/api/requester/chat", methods=["POST"])
 @require_login
 def requester_chat():
+    import chats
     data = request.get_json(force=True)
     user_msg = (data.get("message") or "").strip()
     if not user_msg:
         return jsonify({"error": "Empty message"}), 400
 
-    history = session.get("requester_history", [])
+    owner = _chat_owner("requester")
+    chat_id = data.get("chat_id")
+    if not (chat_id and str(chat_id).isdigit() and chats.owns(int(chat_id), "requester", owner)):
+        chat_id = chats.create_chat("requester", owner)
+    chat_id = int(chat_id)
+    ch = chats.get_chat(chat_id)
+    history = [{"role": m.get("role"), "content": m.get("content", "")}
+               for m in (ch["messages"] if ch else [])]
     history.append({"role": "user", "content": user_msg})
 
-    reply = "Agent error."
-    tool_calls = []
+    reply, tool_calls = "Agent error.", []
     try:
         import agent_requester as ag
         result = ag.chat(history)
@@ -1883,10 +1917,11 @@ def requester_chat():
         log.exception("Requester agent error")
         reply = f"Agent error: {exc}"
 
-    history.append({"role": "assistant", "content": reply})
-    session["requester_history"] = history[-40:]
-    session.modified = True
-    return jsonify({"reply": reply, "tool_calls": tool_calls})
+    chats.append_messages(chat_id,
+                          [{"role": "user", "content": user_msg},
+                           {"role": "assistant", "content": reply}],
+                          title_hint=user_msg)
+    return jsonify({"reply": reply, "tool_calls": tool_calls, "chat_id": chat_id})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
