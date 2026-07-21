@@ -2228,71 +2228,62 @@ def create_aks_cluster(
         if not rg_res.get("success"):
             return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
 
-        pool = {
-            "name": (node_pool_name or "nodepool1")[:12],
-            "mode": "System",
-            "vm_size": node_size,
-            "os_type": "Linux",
-            "type": "VirtualMachineScaleSets",
-            "vnet_subnet_id": subnet_id,
-            "orchestrator_version": kubernetes_version,
-            "enable_auto_scaling": bool(autoscaling),
-        }
+        # Build the request with the SDK model classes — passing a raw dict sends
+        # snake_case keys on the wire (e.g. 'dns_prefix'), which Azure rejects.
+        from azure.mgmt.containerservice.models import (
+            ManagedCluster, ManagedClusterAgentPoolProfile, ContainerServiceNetworkProfile,
+            ManagedClusterAPIServerAccessProfile, ManagedClusterAADProfile,
+            ManagedClusterAutoUpgradeProfile, ManagedClusterIdentity)
+
+        pool_name = (node_pool_name or "nodepool1")[:12]
+        pool = ManagedClusterAgentPoolProfile(
+            name=pool_name, mode="System", vm_size=node_size, os_type="Linux",
+            type="VirtualMachineScaleSets", vnet_subnet_id=subnet_id,
+            orchestrator_version=kubernetes_version, enable_auto_scaling=bool(autoscaling))
         if autoscaling:
-            pool.update({"count": int(min_count), "min_count": int(min_count),
-                         "max_count": int(max_count)})
+            pool.count, pool.min_count, pool.max_count = int(min_count), int(min_count), int(max_count)
         else:
-            pool["count"] = int(node_count)
+            pool.count = int(node_count)
 
-        net = {
-            "network_plugin": cfg.AKS_NETWORK_PLUGIN or "azure",
-            "network_policy": (cfg.AKS_NETWORK_POLICY
-                               if cfg.AKS_NETWORK_POLICY not in ("", "none") else None),
-            "pod_cidr": cfg.AKS_POD_CIDR or None,
-            "service_cidr": cfg.AKS_SERVICE_CIDR or None,
-            "dns_service_ip": cfg.AKS_DNS_SERVICE_IP or None,
-            "outbound_type": cfg.AKS_OUTBOUND_TYPE or "loadBalancer",
-            "load_balancer_sku": cfg.AKS_LB_SKU or "standard",
-        }
+        net = ContainerServiceNetworkProfile(
+            network_plugin=cfg.AKS_NETWORK_PLUGIN or "azure",
+            network_policy=(cfg.AKS_NETWORK_POLICY if cfg.AKS_NETWORK_POLICY not in ("", "none") else None),
+            pod_cidr=cfg.AKS_POD_CIDR or None, service_cidr=cfg.AKS_SERVICE_CIDR or None,
+            dns_service_ip=cfg.AKS_DNS_SERVICE_IP or None,
+            outbound_type=cfg.AKS_OUTBOUND_TYPE or "loadBalancer",
+            load_balancer_sku=cfg.AKS_LB_SKU or "standard")
         if cfg.AKS_NETWORK_PLUGIN_MODE:
-            net["network_plugin_mode"] = cfg.AKS_NETWORK_PLUGIN_MODE
-        net = {k: v for k, v in net.items() if v is not None}
+            net.network_plugin_mode = cfg.AKS_NETWORK_PLUGIN_MODE
 
-        params = {
-            "location": location,
-            "dns_prefix": _aks_dns_prefix(cluster_name),
-            "kubernetes_version": kubernetes_version,
-            "identity": {"type": "SystemAssigned"},
-            "agent_pool_profiles": [pool],
-            "network_profile": net,
-            "api_server_access_profile": {
-                "enable_private_cluster": bool(cfg.AKS_PRIVATE_CLUSTER)},
-            "disable_local_accounts": bool(cfg.AKS_DISABLE_LOCAL_ACCOUNTS),
-            "auto_upgrade_profile": {
-                "upgrade_channel": (cfg.AKS_UPGRADE_CHANNEL
-                                    if cfg.AKS_UPGRADE_CHANNEL not in ("", "none") else None),
-                "node_os_upgrade_channel": cfg.AKS_NODE_OS_UPGRADE_CHANNEL or None},
-        }
+        mc = ManagedCluster(
+            location=location, identity=ManagedClusterIdentity(type="SystemAssigned"),
+            dns_prefix=_aks_dns_prefix(cluster_name), kubernetes_version=kubernetes_version,
+            agent_pool_profiles=[pool], network_profile=net,
+            api_server_access_profile=ManagedClusterAPIServerAccessProfile(
+                enable_private_cluster=bool(cfg.AKS_PRIVATE_CLUSTER)),
+            disable_local_accounts=bool(cfg.AKS_DISABLE_LOCAL_ACCOUNTS),
+            auto_upgrade_profile=ManagedClusterAutoUpgradeProfile(
+                upgrade_channel=(cfg.AKS_UPGRADE_CHANNEL if cfg.AKS_UPGRADE_CHANNEL not in ("", "none") else None),
+                node_os_upgrade_channel=cfg.AKS_NODE_OS_UPGRADE_CHANNEL or None))
         if cfg.AKS_ENABLE_AAD:
-            params["aad_profile"] = {"managed": True,
-                                     "enable_azure_rbac": bool(cfg.AKS_ENABLE_AZURE_RBAC)}
+            mc.aad_profile = ManagedClusterAADProfile(
+                managed=True, enable_azure_rbac=bool(cfg.AKS_ENABLE_AZURE_RBAC))
 
         log.info("Kicking off AKS '%s' (%s, %s) in %s/%s",
                  cluster_name, kubernetes_version, node_size, resource_group, location)
         # begin_* sends the initial PUT (raising on invalid params) and returns a
         # poller we deliberately drop — provisioning continues server-side.
-        client.managed_clusters.begin_create_or_update(
-            resource_group, cluster_name, params)
+        client.managed_clusters.begin_create_or_update(resource_group, cluster_name, mc)
 
         scale_desc = (f"autoscale {min_count}–{max_count}" if autoscaling
                       else f"{node_count} node(s)")
         msg = (f"AKS cluster '{cluster_name}' provisioning started "
-               f"(Kubernetes {kubernetes_version}, pool '{pool['name']}' {node_size} · {scale_desc}). "
+               f"(Kubernetes {kubernetes_version}, pool '{pool_name}' {node_size} · {scale_desc}). "
                f"This takes several minutes — use 'Check Cluster State' to watch progress.")
         if rg_res.get("created"):
             msg = f"RG '{resource_group}' created. " + msg
         after = {"name": cluster_name, "location": location,
-                 "kubernetes_version": kubernetes_version, "node_pools": [pool["name"]]}
+                 "kubernetes_version": kubernetes_version, "node_pools": [pool_name]}
         change = {"target": f"AKS {cluster_name} @ {resource_group}",
                   "before": before, "after": after}
         if not before:      # only a brand-new cluster has a clean revert (delete it)
