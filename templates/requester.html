@@ -670,9 +670,23 @@
                       <div class="field-help">Mandatory — the subscription the cluster is deployed into. Also used to fetch live VNets/versions/sizes.</div>
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label-custom">Region</label>
-                      <input type="text" class="form-input-custom" data-detail="region" id="aks_region" placeholder="blank = default region">
-                      <div class="field-help">Azure region for the cluster. Leave blank to use the org default.</div>
+                      <label class="form-label-custom">Region *</label>
+                      <div style="display:flex;gap:6px;">
+                        <select class="form-input-custom" data-detail="region" id="aks_region" onchange="onAksRegionChange()" style="flex:1;">
+                          <option value="uaenorth" selected>UAE North (standard)</option>
+                          <option value="uaecentral">UAE Central</option>
+                          <option value="westeurope">West Europe</option>
+                          <option value="northeurope">North Europe</option>
+                          <option value="eastus">East US</option>
+                        </select>
+                        <button type="button" class="btn-secondary-custom" style="white-space:nowrap;font-size:11px;padding:0 11px;" onclick="aksFetchRegions(this)" title="Fetch all regions from Azure"><i class="bi bi-cloud-download"></i></button>
+                      </div>
+                      <div class="field-help">Standard is <strong>UAE North</strong>. Choose another only if genuinely required — use the button to fetch all available regions.</div>
+                    </div>
+                    <div class="col-12" id="aksRegionJustifyWrap" style="display:none;">
+                      <label class="form-label-custom">Justification for non-standard region *</label>
+                      <input type="text" class="form-input-custom" data-detail="region_justification" placeholder="Why is a region other than UAE North needed?">
+                      <div class="field-help">Required when deploying outside the standard UAE North region.</div>
                     </div>
 
                     <div class="col-12" style="margin-top:2px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -1125,7 +1139,7 @@ function selectType(t) {
         holder.appendChild(document.getElementById('zpaFieldsTemplate').content.cloneNode(true));
       }
     }
-    if (t === 'aks_cluster') { onAksTierChange(); onAksZpaChange(); }
+    if (t === 'aks_cluster') { onAksTierChange(); onAksZpaChange(); onAksRegionChange(); }
   }
   showResult('newReqResult', '');
 }
@@ -1133,6 +1147,26 @@ function selectType(t) {
 function onAksZpaChange() {
   const el = document.getElementById('aks_zpa'); if (!el) return;
   document.getElementById('aksZpaHint').style.display = (el.value === 'yes') ? '' : 'none';
+}
+
+function onAksRegionChange() {
+  const el = document.getElementById('aks_region'); if (!el) return;
+  document.getElementById('aksRegionJustifyWrap').style.display = (el.value !== 'uaenorth') ? '' : 'none';
+}
+async function aksFetchRegions(btn) {
+  const sub = (document.getElementById('aks_subscription').value || '').trim();
+  const sel = document.getElementById('aks_region');
+  const o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  try {
+    const d = await (await fetch(`/api/azure/regions?subscription=${encodeURIComponent(sub)}`)).json();
+    if (d.success && d.locations && d.locations.length) {
+      const cur = sel.value;
+      sel.innerHTML = d.locations.map(l => `<option value="${l.name}">${l.display}${l.name === 'uaenorth' ? ' (standard)' : ''}</option>`).join('');
+      if ([...sel.options].some(x => x.value === cur)) sel.value = cur; else sel.value = 'uaenorth';
+      onAksRegionChange();
+    }
+  } catch (e) { /* keep the curated list */ }
+  btn.disabled = false; btn.innerHTML = o;
 }
 
 // ── Auto-name resources from project + env (<type>-<project>-<env>-prs-aen-NNN) ──
@@ -1325,6 +1359,10 @@ async function submitServiceRequest() {
         'Autoscaling needs Min ≥ 1 and Max ≥ Min.'));
     } else if (!(parseInt(details.node_count, 10) >= 1)) {
       return showResult('newReqResult', resultBox('error', 'Node Count must be at least 1.'));
+    }
+    if ((details.region || 'uaenorth') !== 'uaenorth' && !(details.region_justification || '').trim()) {
+      return showResult('newReqResult', resultBox('error',
+        'A justification is required to deploy outside the standard region (UAE North).'));
     }
   }
 

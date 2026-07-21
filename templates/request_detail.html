@@ -298,8 +298,10 @@
             {{ ak.get('cluster_name') }} @ {{ ak.get('resource_group') }}<br>
             VNET {{ ak.get('vnet_name') }} / subnet {{ ak.get('subnet_name') }}<br>
             Kubernetes {{ ak.get('k8s_version') or '(default)' }} · {{ ak.get('tier') or 'Free' }} tier ·
+            region {{ ak.get('region') or 'uaenorth' }}{% if (ak.get('region') or 'uaenorth') != 'uaenorth' %} <span style="color:#f59e0b;">(non-standard)</span>{% endif %} ·
             pool {{ ak.get('node_pool_name') }} ({{ ak.get('node_size') or '(default)' }},
             {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %})<br>
+            {% if ak.get('region_justification') %}Region justification: {{ ak.get('region_justification') }}<br>{% endif %}
             ZPA R&amp;D access: {% if ak.get('zpa_rnd_access') == 'yes' %}<span style="color:#7edb56;">yes — link private DNS zone to hub</span>{% else %}no{% endif %}
           </div>
           <button class="btn btn-glass w-100 mb-2" onclick="checkAksStatus(this)">
@@ -320,6 +322,16 @@
                 <div><div class="aks-ov-lbl">Tier (pricing)</div>
                   <select id="ov_tier" class="aks-ov">
                     {% for t in ['Free','Standard','Premium'] %}<option value="{{ t }}" {% if (ak.get('tier') or 'Free')==t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+                  </select></div>
+                <div><div class="aks-ov-lbl">Region</div>
+                  {% set _r = ak.get('region') or 'uaenorth' %}
+                  <select id="ov_region" class="aks-ov">
+                    <option value="uaenorth" {% if _r=='uaenorth' %}selected{% endif %}>UAE North (standard)</option>
+                    {% if _r not in ['uaenorth','uaecentral','westeurope','northeurope','eastus'] %}<option value="{{ _r }}" selected>{{ _r }}</option>{% endif %}
+                    <option value="uaecentral" {% if _r=='uaecentral' %}selected{% endif %}>UAE Central</option>
+                    <option value="westeurope" {% if _r=='westeurope' %}selected{% endif %}>West Europe</option>
+                    <option value="northeurope" {% if _r=='northeurope' %}selected{% endif %}>North Europe</option>
+                    <option value="eastus" {% if _r=='eastus' %}selected{% endif %}>East US</option>
                   </select></div>
                 <div><div class="aks-ov-lbl">Node size</div>
                   <select id="ov_size" class="aks-ov">
@@ -463,7 +475,7 @@
           function deployAks(btn) {
             const scale = document.getElementById('ov_scale').value;
             const extra = { k8s_version: document.getElementById('ov_k8s').value, tier: document.getElementById('ov_tier').value,
-              node_size: document.getElementById('ov_size').value, autoscaling: scale };
+              node_size: document.getElementById('ov_size').value, region: document.getElementById('ov_region').value, autoscaling: scale };
             if (scale === 'enabled') { extra.min_count = document.getElementById('ov_min').value; extra.max_count = document.getElementById('ov_max').value; }
             else { extra.node_count = document.getElementById('ov_count').value; }
             runAction('aks_deploy', btn, extra);

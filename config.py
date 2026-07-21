@@ -18,6 +18,15 @@ import settings_store
 load_dotenv()
 
 
+# Fallback lists for the AKS form before Azure is queried — the live
+# "Fetch from Azure" lookups are the source of truth for versions/sizes.
+AKS_FALLBACK_VERSIONS = ["1.34.8", "1.33.4", "1.32.8"]
+AKS_FALLBACK_SIZES = ["Standard_D8ds_v5", "Standard_D4ds_v5",
+                      "Standard_D16ds_v5", "Standard_D2ds_v5"]
+# The organisation-standard region shown to requesters (UAE North).
+AKS_STANDARD_REGION = "uaenorth"
+
+
 # ── UI categories (tab order) ───────────────────────────────────────────────
 
 CATEGORIES = {
@@ -157,15 +166,8 @@ SETTINGS_SPEC = {
                                  help="Used for deep-links in Teams/email notifications."),
 
     # ── AKS Defaults ──
-    "AKS_DEFAULT_SUBSCRIPTION_ID": _f("aks", "Default subscription ID",
-                                      help="Where AKS clusters are created when the request doesn't "
-                                           "specify one. Blank = default spoke, then hub subscription."),
-    "AKS_K8S_VERSION_OPTIONS":  _f("aks", "Kubernetes version choices", "1.34.8,1.33.4,1.32.8",
-                                   help="Comma-separated list shown in the requester dropdown. Put the "
-                                        "Azure-recommended version FIRST — it becomes the default."),
-    "AKS_NODE_SIZE_OPTIONS":    _f("aks", "Node size choices",
-                                   "Standard_D8ds_v5,Standard_D4ds_v5,Standard_D16ds_v5,Standard_D2ds_v5",
-                                   help="Comma-separated VM sizes for the node pool dropdown. First = default."),
+    # Kubernetes versions, node sizes and the subscription are fetched live from
+    # Azure per request, so they are no longer configured here.
     "AKS_DEFAULT_TIER":         _f("aks", "Default cluster tier (pricing)", "Free",
                                    options=["Free", "Standard", "Premium"],
                                    help="Control-plane SKU tier. Free = no uptime SLA (dev/test); "

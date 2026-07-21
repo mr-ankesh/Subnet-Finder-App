@@ -2493,6 +2493,30 @@ def list_vnets(subscription_id: str) -> dict:
         return {"success": False, "message": str(exc)[:200]}
 
 
+def list_locations(subscription_id: str) -> dict:
+    """Azure regions available to a subscription (name + display name). Uses the
+    ARM REST API directly — the subscriptions SDK client isn't always packaged."""
+    if not subscription_id:
+        return {"success": False, "message": "Subscription ID is required."}
+    try:
+        import requests
+        token = _get_credential().get_token("https://management.azure.com/.default").token
+        url = (f"https://management.azure.com/subscriptions/{subscription_id}"
+               f"/locations?api-version=2022-12-01")
+        resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        resp.raise_for_status()
+        locs = []
+        for l in resp.json().get("value", []):
+            if (l.get("metadata") or {}).get("regionType", "Physical") != "Physical":
+                continue
+            locs.append({"name": l.get("name"), "display": l.get("displayName") or l.get("name")})
+        locs.sort(key=lambda x: x["display"])
+        return {"success": True, "locations": locs}
+    except Exception as exc:
+        log.error("list_locations failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
 def list_subnets(subscription_id: str, resource_group: str, vnet_name: str) -> dict:
     """Subnets in a VNet (name + address prefix)."""
     if not all([subscription_id, resource_group, vnet_name]):

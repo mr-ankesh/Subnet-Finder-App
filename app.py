@@ -12,7 +12,8 @@ import auth_oidc as oidc
 import changes
 import search
 import settings_store
-from config import cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view
+from config import (cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view,
+                    AKS_FALLBACK_VERSIONS, AKS_FALLBACK_SIZES, AKS_STANDARD_REGION)
 from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus, RequestType, FwCollection
 from naming import render_name
 import notifications
@@ -346,11 +347,12 @@ def inject_globals():
                               or session.get("is_allocator") or session.get("is_itadmin")),
             # AKS request form: version/size choices + the defaults applied for
             # everything the requester doesn't pick (shown as a read-only note).
-            "aks_k8s_options": [v.strip() for v in (cfg.AKS_K8S_VERSION_OPTIONS or "").split(",") if v.strip()],
-            "aks_node_sizes":  [v.strip() for v in (cfg.AKS_NODE_SIZE_OPTIONS or "").split(",") if v.strip()],
+            "aks_k8s_options": list(AKS_FALLBACK_VERSIONS),
+            "aks_node_sizes":  list(AKS_FALLBACK_SIZES),
+            "aks_default_region": AKS_STANDARD_REGION,
             "aks_defaults": {"node_count": cfg.AKS_DEFAULT_NODE_COUNT,
                              "min": cfg.AKS_DEFAULT_MIN_COUNT, "max": cfg.AKS_DEFAULT_MAX_COUNT,
-                             "tier": cfg.AKS_DEFAULT_TIER,
+                             "tier": cfg.AKS_DEFAULT_TIER, "region": AKS_STANDARD_REGION,
                              "plugin": cfg.AKS_NETWORK_PLUGIN, "plugin_mode": cfg.AKS_NETWORK_PLUGIN_MODE,
                              "policy": cfg.AKS_NETWORK_POLICY, "pod_cidr": cfg.AKS_POD_CIDR,
                              "service_cidr": cfg.AKS_SERVICE_CIDR, "dns_ip": cfg.AKS_DNS_SERVICE_IP,
@@ -1351,9 +1353,9 @@ def it_connector_status():
 def azure_aks_options():
     """Current AKS versions, node sizes and tiers for a subscription/region."""
     import azure_tools
-    sub = (request.args.get("subscription", "").strip() or cfg.AKS_DEFAULT_SUBSCRIPTION_ID
+    sub = (request.args.get("subscription", "").strip()
            or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
-    region = request.args.get("region", "").strip() or cfg.DEFAULT_AZURE_REGION
+    region = request.args.get("region", "").strip() or AKS_STANDARD_REGION
     if not sub:
         return jsonify({"error": "Enter a Subscription ID first."}), 400
     ver = azure_tools.list_aks_versions(sub, region)
@@ -1364,6 +1366,19 @@ def azure_aks_options():
         "sizes": siz.get("sizes", []), "sizes_total": siz.get("total"),
         "sizes_error": None if siz.get("success") else siz.get("message"),
     })
+
+
+@app.route("/api/azure/regions")
+@require_login
+def azure_regions():
+    """Azure regions available to a subscription (for the region picker)."""
+    import azure_tools
+    sub = (request.args.get("subscription", "").strip()
+           or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
+    if not sub:
+        return jsonify({"error": "Enter a Subscription ID first."}), 400
+    res = azure_tools.list_locations(sub)
+    return jsonify(res), (200 if res.get("success") else 400)
 
 
 @app.route("/api/azure/vnets")
@@ -1497,6 +1512,10 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
             return {"error": "Cluster name must be 2–63 characters: letters, digits, '-', '_' or '.'."}, 400
         if details.get("tier") not in ("Free", "Standard", "Premium"):
             return {"error": "Pick a cluster tier: Free, Standard or Premium."}, 400
+        region = (details.get("region") or AKS_STANDARD_REGION).strip()
+        if region != AKS_STANDARD_REGION and not (details.get("region_justification") or "").strip():
+            return {"error": f"A justification is required to deploy outside the standard "
+                             f"region ({AKS_STANDARD_REGION})."}, 400
         scale = (details.get("autoscaling") or "disabled").lower()
         if scale == "enabled":
             try:
@@ -2283,7 +2302,7 @@ def admin_azure_action(req_id):
 
     # ── AKS cluster actions — read-only status poll + non-blocking deploy ──
     if action in ("aks_check", "aks_deploy", "aks_link_dns"):
-        sub  = (details.get("subscription_id") or cfg.AKS_DEFAULT_SUBSCRIPTION_ID
+        sub  = (details.get("subscription_id")
                 or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
         rg   = details.get("resource_group", "")
         name = details.get("cluster_name", "")
@@ -2333,9 +2352,9 @@ def admin_azure_action(req_id):
             return jsonify({"error": "Request details are missing the VNET / subnet."}), 400
         subnet_id = (f"/subscriptions/{vnet_sub}/resourceGroups/{vnet_rg}"
                      f"/providers/Microsoft.Network/virtualNetworks/{vnet}/subnets/{subnet}")
-        region = details.get("region") or cfg.DEFAULT_AZURE_REGION
-        k8s_opts = [v.strip() for v in (cfg.AKS_K8S_VERSION_OPTIONS or "").split(",") if v.strip()]
-        size_opts = [v.strip() for v in (cfg.AKS_NODE_SIZE_OPTIONS or "").split(",") if v.strip()]
+        region = (payload.get("region") or details.get("region") or AKS_STANDARD_REGION)
+        k8s_opts = list(AKS_FALLBACK_VERSIONS)
+        size_opts = list(AKS_FALLBACK_SIZES)
         # Admin overrides from the deploy panel win over the request's stored values.
         def _ov(key, default=None):
             v = payload.get(key)
