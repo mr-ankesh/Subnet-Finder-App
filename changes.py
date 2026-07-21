@@ -179,6 +179,8 @@ def _revert_dispatch(op: str, p: dict) -> dict:
         return azure_tools.delete_spoke_vnet(p["sub"], p["rg"], p["vnet"])
     if op == "delete_aks_cluster":
         return azure_tools.delete_aks_cluster(p["sub"], p["rg"], p["cluster"])
+    if op == "delete_privatedns_link":
+        return azure_tools.remove_privatedns_link(p["sub"], p["zone_rg"], p["zone"], p["link"])
     if op == "restore_vnet":
         return azure_tools.restore_vnet(p["sub"], p["rg"], p["vnet"], p["location"],
                                         p.get("address_space", []), p.get("subnets", []))

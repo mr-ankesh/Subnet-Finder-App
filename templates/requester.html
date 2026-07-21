@@ -745,6 +745,20 @@
                              value="{{ aks_defaults.max }}">
                     </div>
 
+                    <div class="col-12" style="margin-top:2px;">
+                      <label class="form-label-custom">Will you need to access this cluster via ZPA R&amp;D in future? *</label>
+                      <select class="form-input-custom" data-detail="zpa_rnd_access" id="aks_zpa" onchange="onAksZpaChange()">
+                        <option value="no">No</option>
+                        <option value="yes">Yes</option>
+                      </select>
+                      <div id="aksZpaHint" style="display:none;border:1px solid rgba(126,219,86,.35);background:rgba(126,219,86,.08);border-radius:10px;padding:10px 12px;font-size:11.5px;color:var(--text-dim);line-height:1.7;margin-top:8px;">
+                        <i class="bi bi-check-circle-fill me-1" style="color:#7edb56;"></i>
+                        Thank you for confirming. We'll prepare the required Azure-side dependency — linking the
+                        cluster's private-endpoint DNS zone to the hub — as part of this deployment. Please note that
+                        ZPA R&amp;D connectivity itself must be requested separately from IT via <strong>HALO</strong>.
+                      </div>
+                    </div>
+
                     <div class="col-12">
                       <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:11.5px;color:var(--text-muted);line-height:1.7;">
                         <span style="color:var(--text-dim);font-weight:600;"><i class="bi bi-shield-check me-1"></i>Standard settings applied automatically:</span>
@@ -1071,9 +1085,14 @@ function selectType(t) {
         holder.appendChild(document.getElementById('zpaFieldsTemplate').content.cloneNode(true));
       }
     }
-    if (t === 'aks_cluster') onAksTierChange();
+    if (t === 'aks_cluster') { onAksTierChange(); onAksZpaChange(); }
   }
   showResult('newReqResult', '');
+}
+
+function onAksZpaChange() {
+  const el = document.getElementById('aks_zpa'); if (!el) return;
+  document.getElementById('aksZpaHint').style.display = (el.value === 'yes') ? '' : 'none';
 }
 
 function onAksScaleChange() {

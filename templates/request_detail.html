@@ -299,7 +299,8 @@
             VNET {{ ak.get('vnet_name') }} / subnet {{ ak.get('subnet_name') }}<br>
             Kubernetes {{ ak.get('k8s_version') or '(default)' }} · {{ ak.get('tier') or 'Free' }} tier ·
             pool {{ ak.get('node_pool_name') }} ({{ ak.get('node_size') or '(default)' }},
-            {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %})
+            {% if (ak.get('autoscaling') or 'disabled') == 'enabled' %}autoscale {{ ak.get('min_count') }}–{{ ak.get('max_count') }}{% else %}{{ ak.get('node_count') }} node(s){% endif %})<br>
+            ZPA R&amp;D access: {% if ak.get('zpa_rnd_access') == 'yes' %}<span style="color:#7edb56;">yes — link private DNS zone to hub</span>{% else %}no{% endif %}
           </div>
           <button class="btn btn-glass w-100 mb-2" onclick="checkAksStatus(this)">
             <i class="bi bi-clipboard-pulse me-2"></i>1 · Check Cluster State
@@ -350,12 +351,25 @@
             <i class="bi bi-rocket-takeoff me-2"></i>2 · Deploy AKS Cluster
           </button>
           {% endif %}
+          {% if ak.get('zpa_rnd_access') == 'yes' %}
+          {% if 'aks_link_dns' in done_actions %}
+          <button class="btn btn-glass w-100 mt-2 action-done" disabled>
+            <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>3 · Private DNS zone linked to hub — Done
+          </button>
+          {% else %}
+          <button class="btn btn-glass w-100 mt-2" onclick="runAction('aks_link_dns', this)">
+            <i class="bi bi-diagram-3 me-2"></i>3 · Link Private DNS Zone to Hub
+          </button>
+          {% endif %}
+          {% endif %}
           <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
             1 is read-only and shows the live cluster state with a timestamp — keep it open with
             <strong>auto-refresh</strong> (or hit Refresh) and the request <strong>auto-completes</strong> the moment
             Azure reports <em>Succeeded</em>. Deploy starts provisioning and returns immediately — a cluster
             takes several minutes to build. If the cluster already exists you'll be shown its state with the
             option to proceed without changes.
+            {% if ak.get('zpa_rnd_access') == 'yes' %}<br><strong>Step 3</strong> links the cluster's private-endpoint
+            DNS zone to the hub — run it once the cluster is <em>Succeeded</em>; the request completes after it.{% endif %}
           </div>
           <div id="actionResults" style="display:none;margin-top:10px;"></div>
         </div>

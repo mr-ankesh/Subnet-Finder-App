@@ -1419,7 +1419,8 @@ TYPE_REQUIRED_DETAILS = {
                                     "created_by_admin", "manual_changes"],
     RequestType.DNS:               ["dns_kind", "zone"],
     RequestType.AKS_CLUSTER:       ["cluster_name", "resource_group", "subscription_id",
-                                    "vnet_name", "subnet_name", "node_pool_name", "tier"],
+                                    "vnet_name", "subnet_name", "node_pool_name", "tier",
+                                    "zpa_rnd_access"],
     RequestType.OTHER:             ["description"],
 }
 
@@ -2281,7 +2282,7 @@ def admin_azure_action(req_id):
         return jsonify(res), (200 if res.get("success") else 207)
 
     # ── AKS cluster actions — read-only status poll + non-blocking deploy ──
-    if action in ("aks_check", "aks_deploy"):
+    if action in ("aks_check", "aks_deploy", "aks_link_dns"):
         sub  = (details.get("subscription_id") or cfg.AKS_DEFAULT_SUBSCRIPTION_ID
                 or cfg.SPOKE_SUBSCRIPTION_ID or cfg.HUB_SUBSCRIPTION_ID)
         rg   = details.get("resource_group", "")
@@ -2289,13 +2290,11 @@ def admin_azure_action(req_id):
         if not rg or not name:
             return jsonify({"error": "Request details are missing the cluster name / resource group."}), 400
 
-        if action == "aks_check":
-            res = azure_tools.get_aks_cluster_status(sub, rg, name)
-            # Cluster finished provisioning → complete the request (once it was deployed here).
-            if (res.get("success") and res.get("provisioning_state") == "Succeeded"
-                    and "aks_deploy" in _done_actions(req)
-                    and req.status not in RequestType.TERMINALS
-                    and req.status != RequestStatus.COMPLETED):
+        def _maybe_complete_aks(res):
+            """Complete the request when the cluster is Succeeded and every required
+            AKS step (deploy, and the DNS link when ZPA access was requested) is done."""
+            if (req.status not in RequestType.TERMINALS and req.status != RequestStatus.COMPLETED
+                    and _required_actions(req) <= _done_actions(req)):
                 req.status = RequestStatus.COMPLETED
                 req.updated_at = datetime.utcnow()
                 db.session.commit()
@@ -2303,10 +2302,26 @@ def admin_azure_action(req_id):
                     notifications.notify_status_changed(req)
                 except Exception:
                     pass
-                res["message"] = str(res.get("message", "")) + " — cluster is ready; request completed."
+                res["message"] = str(res.get("message", "")) + " — request completed."
                 res["completed"] = True
+
+        if action == "aks_check":
+            res = azure_tools.get_aks_cluster_status(sub, rg, name)
+            if res.get("success") and res.get("provisioning_state") == "Succeeded":
+                if "aks_link_dns" in _required_actions(req) and "aks_link_dns" not in _done_actions(req):
+                    res["message"] = str(res.get("message", "")) + \
+                        " — cluster ready. Next: run 'Link Private DNS Zone to Hub' to finish (ZPA R&D dependency)."
+                else:
+                    _maybe_complete_aks(res)
             res["already_completed"] = (req.status == RequestStatus.COMPLETED)
             _audit_azure(res)
+            return jsonify(res), (200 if res.get("success") else 207)
+
+        if action == "aks_link_dns":
+            res = azure_tools.link_aks_private_dns_to_hub(sub, rg, name)
+            _audit_azure(res)
+            if res.get("success"):
+                _maybe_complete_aks(res)
             return jsonify(res), (200 if res.get("success") else 207)
 
         # aks_deploy — kick off (or accept an already-existing) cluster
@@ -2751,7 +2766,10 @@ def _required_actions(req) -> set:
         return {"nmo_zpa_route", "nmo_spoke_udr", "nmo_nsg_add",
                 "nmo_fw_allow_add", "nmo_fw_deny_add"}
     if t == RequestType.AKS_CLUSTER:
-        return {"aks_deploy"}
+        req_set = {"aks_deploy"}
+        if str(d.get("zpa_rnd_access") or "").lower() == "yes":
+            req_set.add("aks_link_dns")     # link the private DNS zone to the hub
+        return req_set
     return set()
 
 

@@ -2396,6 +2396,85 @@ def _rg_from_id(resource_id: str) -> str:
     return m.group(1) if m else ""
 
 
+def _sub_from_id(resource_id: str) -> str:
+    m = re.search(r"/subscriptions/([^/]+)/", resource_id or "", re.I)
+    return m.group(1) if m else ""
+
+
+@_guard
+def link_aks_private_dns_to_hub(subscription_id: str, resource_group: str,
+                                cluster_name: str) -> dict:
+    """Link a private AKS cluster's API-server private DNS zone to the hub VNet
+    so the hub (and its spokes) can resolve the cluster's private endpoint.
+    The system-managed zone lives in the cluster's node resource group."""
+    try:
+        mc = _containerservice_client(subscription_id).managed_clusters.get(
+            resource_group, cluster_name)
+        apsp = getattr(mc, "api_server_access_profile", None)
+        if not (apsp and getattr(apsp, "enable_private_cluster", False)):
+            return {"success": False,
+                    "message": "This cluster is public — there is no API-server private DNS zone to link."}
+        node_rg = getattr(mc, "node_resource_group", "") or ""
+        pdz = getattr(apsp, "private_dns_zone", None) or ""
+
+        if pdz and pdz.lower() not in ("system", "none"):
+            zone_sub = _sub_from_id(pdz) or subscription_id
+            zone_rg = _rg_from_id(pdz)
+            zone_name = pdz.rstrip("/").split("/")[-1]
+        else:
+            zone_sub, zone_rg, zone_name = subscription_id, node_rg, None
+            pc = _privatedns_client(zone_sub)
+            for z in pc.private_zones.list_by_resource_group(node_rg):
+                if "privatelink" in (z.name or "") and "azmk8s.io" in (z.name or ""):
+                    zone_name = z.name
+                    break
+            if not zone_name:
+                return {"success": False,
+                        "message": f"AKS private DNS zone not found in {node_rg} — has the cluster "
+                                   f"finished provisioning? Run 'Check Cluster State' first."}
+
+        pc = _privatedns_client(zone_sub)
+        link_name = ("hub-" + cluster_name)[:80]
+        try:
+            pc.virtual_network_links.get(zone_rg, zone_name, link_name)
+            return {"success": True, "kept_existing": True,
+                    "message": f"Private DNS zone '{zone_name}' is already linked to the hub "
+                               f"(link '{link_name}')."}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+        pc.virtual_network_links.begin_create_or_update(
+            zone_rg, zone_name, link_name,
+            {"location": "global", "virtual_network": {"id": _hub_vnet_id()},
+             "registration_enabled": False}).result()
+        return {"success": True,
+                "change": {"target": f"privatedns link {zone_name}/{link_name}", "before": None,
+                           "after": {"zone": zone_name, "link": link_name, "hub": cfg.HUB_VNET_NAME},
+                           "revert_op": "delete_privatedns_link",
+                           "revert_params": {"sub": zone_sub, "zone_rg": zone_rg,
+                                             "zone": zone_name, "link": link_name}},
+                "message": f"Linked AKS private DNS zone '{zone_name}' to the hub VNet "
+                           f"'{cfg.HUB_VNET_NAME}' (link '{link_name}')."}
+    except Exception as exc:
+        log.error("link_aks_private_dns_to_hub failed: %s", exc)
+        return {"success": False, "message": str(exc)[:250]}
+
+
+@_guard
+def remove_privatedns_link(subscription_id: str, zone_rg: str, zone_name: str,
+                           link_name: str) -> dict:
+    """Remove a private DNS zone's VNet link (revert for the AKS→hub link)."""
+    try:
+        pc = _privatedns_client(subscription_id)
+        pc.virtual_network_links.begin_delete(zone_rg, zone_name, link_name).result()
+        return {"success": True, "message": f"Removed hub link '{link_name}' from '{zone_name}'."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "message": f"Link '{link_name}' already absent."}
+        log.error("remove_privatedns_link failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
 def list_vnets(subscription_id: str) -> dict:
     """All VNets visible in a subscription (name, RG, region, address space)."""
     if not subscription_id:
