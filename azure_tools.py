@@ -1475,6 +1475,93 @@ def _fqdn_covers(existing_list, requested) -> bool:
     return False
 
 
+def _match_entries(entries, query):
+    """How a rule's address list relates to the queried IP/CIDR. Returns the
+    strongest of: exact | covered (a LARGER rule subnet contains the query) |
+    any ('*') | partial (overlap / rule covers only part of the query), or None."""
+    import ipaddress
+    rank = {"partial": 1, "any": 2, "covered": 3, "exact": 4}
+    best = None
+
+    def _better(cand):
+        return cand and (best is None or rank[cand["type"]] > rank[best["type"]])
+
+    for raw in (entries or []):
+        e = str(raw).strip()
+        cand = None
+        if e in ("*", "0.0.0.0/0"):
+            cand = {"type": "any", "entry": e}
+        elif "-" in e and "/" not in e:                       # IP range a-b
+            try:
+                lo, hi = [ipaddress.ip_address(x.strip()) for x in e.split("-", 1)]
+                q_lo, q_hi = query.network_address, query.broadcast_address
+                if lo <= q_lo and q_hi <= hi:
+                    cand = {"type": "covered", "entry": e}
+                elif not (q_hi < lo or hi < q_lo):
+                    cand = {"type": "partial", "entry": e}
+            except (ValueError, TypeError):
+                cand = None
+        else:
+            try:
+                net = ipaddress.ip_network(e, strict=False)
+                if net.version == query.version:
+                    if net == query:
+                        cand = {"type": "exact", "entry": e}
+                    elif query.subnet_of(net):
+                        cand = {"type": "covered", "entry": e}   # larger subnet allowed
+                    elif net.subnet_of(query) or net.overlaps(query):
+                        cand = {"type": "partial", "entry": e}
+            except (ValueError, TypeError):
+                cand = None
+        if _better(cand):
+            best = cand
+    return best
+
+
+def find_firewall_rules_for_address(address: str) -> dict:
+    """Find every firewall-policy rule whose source OR destination applies to the
+    given IP/CIDR — including when a LARGER subnet in a rule covers it. Read-only,
+    runs for real even in dry-run."""
+    import ipaddress
+    addr = str(address or "").strip()
+    if not addr:
+        return {"success": False, "message": "Enter an IP address or CIDR (e.g. 10.1.2.3 or 10.1.0.0/16)."}
+    try:
+        query = ipaddress.ip_network(addr, strict=False)
+    except ValueError:
+        return {"success": False, "message": f"'{addr}' is not a valid IP address or CIDR."}
+    if not (cfg.FIREWALL_POLICY_NAME and cfg.FIREWALL_POLICY_RG):
+        return {"success": False, "message": "Firewall policy is not configured (Settings → Firewall)."}
+    try:
+        client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        matches = []
+        for rcg in _iter_rcgs(client):
+            for rc in (rcg.rule_collections or []):
+                if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
+                    continue
+                action = getattr(getattr(rc, "action", None), "type", None) or ""
+                for r in (rc.rules or []):
+                    src_m = _match_entries(r.source_addresses, query)
+                    dst_m = None
+                    if r.rule_type != "ApplicationRule":
+                        dst_m = _match_entries(r.destination_addresses, query)
+                    if src_m or dst_m:
+                        d = _describe_fw_rule(r, rc.name)
+                        d.update({"rcg": rcg.name, "action": action,
+                                  "match_source": src_m, "match_destination": dst_m,
+                                  "priority": getattr(rc, "priority", None)})
+                        matches.append(d)
+        order = {"exact": 0, "covered": 1, "any": 2, "partial": 3}
+        matches.sort(key=lambda m: min(order.get((m.get("match_source") or {}).get("type"), 9),
+                                       order.get((m.get("match_destination") or {}).get("type"), 9)))
+        return {"success": True, "address": addr, "matches": matches,
+                "message": (f"{len(matches)} firewall rule(s) currently apply to {addr}."
+                            if matches else f"No firewall rules currently apply to {addr}.")}
+    except Exception as exc:
+        log.error("find_firewall_rules_for_address failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
 def _ports_cover(existing_ports, requested_ports) -> bool:
     ranges = []
     for p in (existing_ports or []):

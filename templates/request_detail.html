@@ -202,6 +202,15 @@
           <button class="btn btn-glass w-100 mb-2" onclick="runFwCheck(this)">
             <i class="bi bi-clipboard-pulse me-2"></i>1 · Check Policy &amp; Rule Status
           </button>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;">
+            <label style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Look up existing rules for an IP / CIDR</label>
+            <div style="display:flex;gap:6px;margin-top:5px;">
+              <input type="text" id="fwLookupAddr" class="form-input-custom" style="flex:1;font-size:12px;" placeholder="e.g. 10.110.5.36 or 10.110.0.0/16" value="{{ fwd.get('source') or fwd.get('destination') or '' }}">
+              <button class="btn btn-glass btn-sm" style="white-space:nowrap;" onclick="fwLookup(this)"><i class="bi bi-search me-1"></i>Fetch rules</button>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:5px;">Finds every rule whose source or destination applies — including when a <strong>larger subnet</strong> already covers this address.</div>
+            <div id="fwLookupResults" style="display:none;margin-top:8px;"></div>
+          </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
             <div>
               <label style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Rule Collection Group *</label>
@@ -1881,6 +1890,43 @@ function fwRenderCoverage(cov) {
   });
   html += `<div style="font-size:12.5px;font-weight:600;margin-top:6px;color:${cov.fully_covered ? '#7edb56' : 'var(--text-dim)'};">${cov.message}</div></div>`;
   return html;
+}
+
+// ── Firewall rule lookup by IP/CIDR (with larger-subnet coverage) ──────────
+function fwMatchBadge(m) {
+  if (!m) return '';
+  const map = { exact: ['#7edb56', 'exact match'], covered: ['#60a5fa', 'covered by ' + m.entry],
+    any: ['#f59e0b', 'any (*)'], partial: ['#f59e0b', 'partial · ' + m.entry] };
+  const [c, l] = map[m.type] || ['#999', m.type];
+  return `<span style="background:${c}22;color:${c};border:1px solid ${c}55;border-radius:5px;padding:0 6px;font-size:10px;white-space:nowrap;">${l}</span>`;
+}
+function fwMatchCard(m) {
+  const act = m.action === 'Deny' ? '#f87171' : '#7edb56';
+  const dest = m.kind === 'application' ? (m.fqdns || []).join(', ') : (m.destinations || []).join(', ');
+  return `<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:11.5px;">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+      <span style="font-weight:600;color:#fff;font-family:var(--mono);">${m.name}</span>
+      <span style="color:${act};font-weight:700;">${m.action || ''}</span></div>
+    <div style="color:var(--text-muted);margin-top:3px;">${m.rcg} / ${m.collection} · ${m.kind} rule</div>
+    <div style="margin-top:5px;font-family:var(--mono);color:var(--text-dim);line-height:1.7;">
+      <div>src ${(m.sources || []).join(', ') || '—'} ${fwMatchBadge(m.match_source)}</div>
+      <div>${m.kind === 'application' ? 'fqdn' : 'dst'} ${dest || '—'} ${fwMatchBadge(m.match_destination)}</div>
+      <div>${m.kind === 'application' ? '' : 'ports ' + ((m.ports || []).join(', ') || '—') + ' · '}proto ${(m.protocols || []).join(', ') || '—'}</div>
+    </div></div>`;
+}
+async function fwLookup(btn) {
+  const addr = (document.getElementById('fwLookupAddr').value || '').trim();
+  const box = document.getElementById('fwLookupResults'); box.style.display = 'block';
+  if (!addr) { box.innerHTML = '<span style="color:#f59e0b;font-size:12px;">Enter an IP address or CIDR.</span>'; return; }
+  const o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Searching the firewall policy…</span>';
+  try {
+    const d = await (await fetch(`/api/admin/firewall/lookup?address=${encodeURIComponent(addr)}`)).json();
+    if (!d.success) box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error || d.message || 'Failed.'}</span>`;
+    else if (!(d.matches || []).length) box.innerHTML = `<span style="font-size:12px;color:#7edb56;"><i class="bi bi-check-circle me-1"></i>${d.message}</span>`;
+    else box.innerHTML = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;"><i class="bi bi-info-circle me-1"></i>${d.message}</div>` + d.matches.map(fwMatchCard).join('');
+  } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
+  btn.disabled = false; btn.innerHTML = o;
 }
 
 async function runFwCheck(btn) {

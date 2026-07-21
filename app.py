@@ -1394,6 +1394,16 @@ def azure_vnets():
     return jsonify(res), (200 if res.get("success") else 400)
 
 
+@app.route("/api/admin/firewall/lookup")
+@require_admin
+def admin_firewall_lookup():
+    """Find firewall rules that apply to an IP/CIDR — including when a larger
+    subnet in a rule covers it."""
+    import azure_tools
+    res = azure_tools.find_firewall_rules_for_address(request.args.get("address", "").strip())
+    return jsonify(res), (200 if res.get("success") else 400)
+
+
 @app.route("/api/azure/subnets")
 @require_login
 def azure_subnets():
