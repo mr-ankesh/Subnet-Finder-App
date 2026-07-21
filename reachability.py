@@ -338,11 +338,126 @@ def _ssh_run_many(c: dict, commands: list, timeout: int = 15) -> list:
         return [{"success": False, "connect_failed": True, "message": str(exc)[:200]}]
 
 
+# ── Metric parsing helpers (all read-only: /proc, free, df, systemctl show) ──
+
+def _num(s, cast=float, default=None):
+    try:
+        return cast(str(s).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_free_b(text: str):
+    for line in (text or "").splitlines():
+        if line.lower().startswith("mem:"):
+            p = line.split()
+            total = _num(p[1], int) if len(p) > 1 else None
+            avail = _num(p[6], int) if len(p) > 6 else None
+            if total:
+                avail = avail if avail is not None else _num(p[3], int, 0)
+                used = total - (avail or 0)
+                mb = 1048576
+                return {"total_mb": round(total / mb), "used_mb": round(used / mb),
+                        "available_mb": round((avail or 0) / mb),
+                        "used_pct": round(used / total * 100, 1)}
+    return None
+
+
+def _parse_df(text: str):
+    lines = [l for l in (text or "").splitlines() if l.strip()]
+    if len(lines) < 2:
+        return None
+    p = lines[1].split()
+    if len(p) < 6:
+        return None
+    gb = 1048576  # KB → GB
+    total_k, used_k, avail_k = _num(p[1], int), _num(p[2], int), _num(p[3], int)
+    pct = _num((p[4] or "").rstrip("%"), int)
+    if not total_k:
+        return None
+    return {"total_gb": round(total_k / gb, 1), "used_gb": round((used_k or 0) / gb, 1),
+            "avail_gb": round((avail_k or 0) / gb, 1),
+            "used_pct": pct if pct is not None else round((used_k or 0) / total_k * 100),
+            "mount": p[5]}
+
+
+def _parse_kv(text: str):
+    out = {}
+    for line in (text or "").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _parse_timedatectl(text: str):
+    info = {}
+    for line in (text or "").splitlines():
+        low = line.lower()
+        if "local time:" in low:
+            info["local"] = line.split(":", 1)[1].strip()
+        elif "time zone:" in low:
+            info["timezone"] = line.split(":", 1)[1].strip()
+        elif "synchronized:" in low:
+            info["synced"] = "yes" in low
+        elif "ntp service:" in low and "synced" not in info:
+            info["ntp"] = line.split(":", 1)[1].strip()
+    return info or None
+
+
+def _cpu_line(text: str):
+    for line in (text or "").splitlines():
+        if line.startswith("cpu "):
+            return [n for n in (_num(x, int) for x in line.split()[1:]) if n is not None]
+    return None
+
+
+def _net_ifaces(text: str):
+    out = {}
+    for line in (text or "").splitlines():
+        if ":" not in line:
+            continue
+        name, rest = line.split(":", 1)
+        name = name.strip()
+        nums = [_num(x, int, 0) for x in rest.split()]
+        if name and len(nums) >= 9:
+            out[name] = (nums[0], nums[8])       # rx_bytes, tx_bytes
+    return out
+
+
+def _parse_sample(text: str, interval: float = 1.0):
+    """Two /proc/stat + /proc/net/dev snapshots → (cpu_pct, bandwidth)."""
+    if "@@@SPLIT@@@" not in (text or ""):
+        return None, None
+    a, b = text.split("@@@SPLIT@@@", 1)
+    cpu_pct = None
+    c1, c2 = _cpu_line(a), _cpu_line(b)
+    if c1 and c2 and len(c1) >= 5 and len(c2) >= 5:
+        idle1, idle2 = c1[3] + c1[4], c2[3] + c2[4]
+        dt, di = sum(c2) - sum(c1), idle2 - idle1
+        if dt > 0:
+            cpu_pct = round(max(0.0, min(100.0, 100.0 * (1 - di / dt))), 1)
+    bw = None
+    n1, n2 = _net_ifaces(a), _net_ifaces(b)
+    best = None
+    for ifc, (rx2, tx2) in n2.items():
+        if ifc == "lo" or ifc not in n1:
+            continue
+        rx, tx = rx2 - n1[ifc][0], tx2 - n1[ifc][1]
+        if best is None or (rx + tx) > best[0]:
+            best = (rx + tx, ifc, rx, tx)
+    if best:
+        _, ifc, rx, tx = best
+        bw = {"iface": ifc, "rx_kbps": round(max(rx, 0) / interval / 1024, 1),
+              "tx_kbps": round(max(tx, 0) / interval / 1024, 1)}
+    return cpu_pct, bw
+
+
 def vm_status(source: str, instance: str = "primary") -> dict:
-    """Richer per-VM health (the dashboard's 'More status'): uptime/load, disk,
-    memory, the ZPA connector service state and clock sync. Each check runs as
-    its own command over one connection — anything the SSH user can't run is
-    reported as unavailable rather than breaking the rest."""
+    """Structured per-VM health for the dashboard's 'More status': CPU, RAM,
+    bandwidth, disk, the ZPA connector service and clock/time — all read-only
+    (reads /proc, free, df, systemctl show, timedatectl). Gathered over one SSH
+    connection; anything unreadable is listed in 'unavailable'."""
     if source not in SOURCES or instance not in INSTANCES:
         return {"success": False, "message": "Unknown connector."}
     if not configured(source, instance):
@@ -350,26 +465,68 @@ def vm_status(source: str, instance: str = "primary") -> dict:
     c = _source_cfg(source, instance)
     svc = cfg.ZPA_CONNECTOR_SERVICE or "zpa-connector"
     svcq = shlex.quote(svc)
-    checks_spec = [
-        ("Uptime & load",            "uptime"),
-        ("Disk usage (root)",        "df -h /"),
-        ("Memory (MB)",              "free -m"),
-        ("Connector service state",  f"systemctl is-active {svcq}; systemctl is-enabled {svcq}"),
-        ("Connector service detail", f"systemctl status {svcq} --no-pager -n 0"),
-        ("Clock / time sync",        "timedatectl"),
+    cmds = [
+        "uptime -p",
+        "cat /proc/loadavg",
+        "nproc",
+        "free -b",
+        "df -Pk /",
+        f"systemctl show {svcq} --property=ActiveState,SubState,UnitFileState,MainPID,MemoryCurrent,ActiveEnterTimestamp",
+        "timedatectl",
+        "head -1 /proc/stat; cat /proc/net/dev; sleep 1; printf '@@@SPLIT@@@\\n'; head -1 /proc/stat; cat /proc/net/dev",
     ]
-    results = _ssh_run_many(c, [cmd for _, cmd in checks_spec], timeout=15)
-    if results and results[0].get("connect_failed"):
+    res = _ssh_run_many(c, cmds, timeout=20)
+    if res and res[0].get("connect_failed"):
         return {"success": False, "label": c["label"], "host": c["host"],
-                "message": f"SSH to the VM failed: {results[0].get('message')}"}
-    checks = []
-    for (label, _cmd), r in zip(checks_spec, results):
-        if not r.get("success"):
-            checks.append({"label": label, "ok": False,
-                           "output": f"Could not run — {r.get('message', 'no access')}"})
-            continue
-        body = (r["stdout"].strip() + ("\n" + r["stderr"].strip() if r["stderr"].strip() else "")).strip()
-        checks.append({"label": label, "ok": r.get("exit_code") == 0,
-                       "output": body or "(no output — the SSH user may not be permitted to run this)"})
-    return {"success": True, "label": c["label"], "host": c["host"],
-            "service_name": svc, "checks": checks}
+                "message": f"SSH to the VM failed: {res[0].get('message')}"}
+
+    def out(i):
+        r = res[i] if i < len(res) else {}
+        return (r.get("stdout") or "").strip() if r.get("success") else ""
+
+    metrics, unavailable = {}, []
+
+    uptime = out(0)
+    if uptime:
+        metrics["uptime"] = uptime
+    else:
+        unavailable.append("uptime")
+
+    la = out(1).split()
+    cores = _num(out(2), int)
+    cpu = {}
+    if len(la) >= 3:
+        cpu.update({"load1": _num(la[0]), "load5": _num(la[1]), "load15": _num(la[2])})
+    if cores:
+        cpu["cores"] = cores
+
+    mem = _parse_free_b(out(3))
+    (metrics.__setitem__("memory", mem) if mem else unavailable.append("memory"))
+
+    disk = _parse_df(out(4))
+    (metrics.__setitem__("disk", disk) if disk else unavailable.append("disk"))
+
+    kv = _parse_kv(out(5))
+    if kv:
+        mem_b = _num(kv.get("MemoryCurrent"), int)
+        pid = kv.get("MainPID")
+        metrics["service"] = {
+            "name": svc, "active": kv.get("ActiveState"), "sub": kv.get("SubState"),
+            "enabled": kv.get("UnitFileState"),
+            "pid": pid if pid and pid != "0" else None,
+            "memory_mb": round(mem_b / 1048576) if mem_b and mem_b < (1 << 62) else None,
+            "since": kv.get("ActiveEnterTimestamp") or None}
+    else:
+        unavailable.append("service")
+
+    tinfo = _parse_timedatectl(out(6))
+    (metrics.__setitem__("time", tinfo) if tinfo else unavailable.append("time"))
+
+    cpu_pct, bw = _parse_sample(out(7))
+    if cpu_pct is not None:
+        cpu["usage_pct"] = cpu_pct
+    (metrics.__setitem__("cpu", cpu) if cpu else unavailable.append("cpu"))
+    (metrics.__setitem__("bandwidth", bw) if bw else unavailable.append("bandwidth"))
+
+    return {"success": True, "label": c["label"], "host": c["host"], "instance": instance,
+            "service_name": svc, "metrics": metrics, "unavailable": unavailable}

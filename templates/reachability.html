@@ -118,6 +118,10 @@
   .hv-card { border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:rgba(255,255,255,.03); }
   .hv-dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:7px; }
   .hv-status { font-size:12px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
+  .m-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+  .m-tile { border:1px solid var(--border); border-radius:12px; padding:11px 13px; background:rgba(255,255,255,.04); }
+  .m-head { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); margin-bottom:7px; }
+  .m-sub { font-size:11px; color:var(--text-muted); margin-top:7px; }
 </style>
 <script>
 // Which instances are configured (from the server) — drives the Secondary toggle.
@@ -174,6 +178,81 @@ async function loadHealth() {
   }).join('');
 }
 
+// Metric tile helpers
+function mUsageColor(p) { return p >= 90 ? '#f87171' : (p >= 70 ? '#f59e0b' : '#7edb56'); }
+function mBar(pct, color) {
+  const p = Math.min(100, Math.max(0, pct || 0));
+  return `<div style="height:6px;background:rgba(255,255,255,.08);border-radius:4px;overflow:hidden;margin-top:7px;">
+            <div style="height:100%;width:${p}%;background:${color};border-radius:4px;transition:width .5s;"></div></div>`;
+}
+function mTile(icon, label, body) {
+  return `<div class="m-tile">
+    <div class="m-head"><i class="bi bi-${icon} me-1"></i>${label}</div>${body}</div>`;
+}
+function fmtGB(mb) { return mb == null ? '—' : (mb / 1024).toFixed(1) + ' GB'; }
+function fmtRate(kbps) { return kbps == null ? '—' : (kbps >= 1024 ? (kbps / 1024).toFixed(1) + ' MB/s' : kbps + ' KB/s'); }
+
+function renderMetrics(m) {
+  let t = '';
+  // CPU
+  const cpu = m.cpu;
+  if (cpu) {
+    const p = cpu.usage_pct;
+    t += mTile('cpu', 'CPU',
+      `<div style="font-size:22px;font-weight:700;color:#fff;line-height:1;">${p != null ? p + '<span style="font-size:12px;color:var(--text-muted);">%</span>' : '—'}</div>
+       ${p != null ? mBar(p, mUsageColor(p)) : ''}
+       <div class="m-sub">load ${cpu.load1 ?? '—'} · ${cpu.load5 ?? '—'} · ${cpu.load15 ?? '—'} · ${cpu.cores ?? '?'} core(s)</div>`);
+  }
+  // RAM
+  const mem = m.memory;
+  if (mem) {
+    t += mTile('memory', 'Memory',
+      `<div style="font-size:22px;font-weight:700;color:#fff;line-height:1;">${mem.used_pct}<span style="font-size:12px;color:var(--text-muted);">%</span></div>
+       ${mBar(mem.used_pct, mUsageColor(mem.used_pct))}
+       <div class="m-sub">${fmtGB(mem.used_mb)} / ${fmtGB(mem.total_mb)} used · ${fmtGB(mem.available_mb)} free</div>`);
+  }
+  // Disk
+  const disk = m.disk;
+  if (disk) {
+    t += mTile('hdd', 'Disk (' + (disk.mount || '/') + ')',
+      `<div style="font-size:22px;font-weight:700;color:#fff;line-height:1;">${disk.used_pct}<span style="font-size:12px;color:var(--text-muted);">%</span></div>
+       ${mBar(disk.used_pct, mUsageColor(disk.used_pct))}
+       <div class="m-sub">${disk.used_gb} / ${disk.total_gb} GB used · ${disk.avail_gb} GB free</div>`);
+  }
+  // Bandwidth
+  const bw = m.bandwidth;
+  if (bw) {
+    t += mTile('speedometer2', 'Bandwidth (' + bw.iface + ')',
+      `<div style="display:flex;gap:14px;margin-top:2px;">
+         <div><div style="font-size:15px;font-weight:700;color:#7edb56;"><i class="bi bi-arrow-down-short"></i>${fmtRate(bw.rx_kbps)}</div><div class="m-sub">receive</div></div>
+         <div><div style="font-size:15px;font-weight:700;color:#60a5fa;"><i class="bi bi-arrow-up-short"></i>${fmtRate(bw.tx_kbps)}</div><div class="m-sub">transmit</div></div>
+       </div>`);
+  }
+  // Connector service
+  const s = m.service;
+  if (s) {
+    const up = s.active === 'active' && s.sub === 'running';
+    const col = up ? '#7edb56' : '#f87171';
+    t += mTile('hdd-rack', 'Connector Service',
+      `<div style="display:flex;align-items:center;gap:8px;">
+         <span class="hv-dot" style="background:${col};box-shadow:0 0 8px ${col};"></span>
+         <span style="font-size:14px;font-weight:700;color:${col};">${s.active || '?'}${s.sub ? ' / ' + s.sub : ''}</span></div>
+       <div class="m-sub" style="line-height:1.7;margin-top:6px;">
+         ${s.enabled ? 'startup: <span style="color:var(--text-dim);">' + s.enabled + '</span><br>' : ''}
+         ${s.pid ? 'PID ' + s.pid + (s.memory_mb != null ? ' · ' + s.memory_mb + ' MB' : '') + '<br>' : (s.memory_mb != null ? s.memory_mb + ' MB<br>' : '')}
+         ${s.since ? 'since ' + s.since : ''}</div>`);
+  }
+  // Uptime & time
+  const tm = m.time || {};
+  t += mTile('clock-history', 'Uptime & Time',
+    `<div style="font-size:13px;font-weight:600;color:#fff;">${m.uptime || '—'}</div>
+     <div class="m-sub" style="line-height:1.7;margin-top:6px;">
+       ${tm.local ? 'local: ' + tm.local + '<br>' : ''}
+       ${tm.timezone ? 'tz: ' + tm.timezone + '<br>' : ''}
+       ${tm.synced != null ? 'clock: <span style="color:' + (tm.synced ? '#7edb56' : '#f59e0b') + ';">' + (tm.synced ? 'NTP synced' : 'NOT synced') + '</span>' : ''}</div>`);
+  return `<div class="m-grid">${t}</div>`;
+}
+
 async function moreStatus(source, instance, idKey, btn) {
   const box = document.getElementById('more_' + idKey);
   if (box.style.display === 'block') { box.style.display = 'none'; return; }
@@ -187,13 +266,12 @@ async function moreStatus(source, instance, idKey, btn) {
     })).json();
     if (!d.success) { box.innerHTML = `<span style="font-size:11.5px;color:#f87171;">${d.message || 'Could not fetch status.'}</span>`; }
     else {
-      box.innerHTML = (d.checks || []).map(ch => `
-        <div style="margin-bottom:8px;">
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:${ch.ok ? '#7edb56' : '#f59e0b'};">
-            <i class="bi bi-${ch.ok ? 'check-circle' : 'exclamation-triangle'} me-1"></i>${ch.label}</div>
-          <div class="r-out" style="max-height:160px;margin-top:4px;font-size:11.5px;">${(ch.output || '').replace(/</g,'&lt;')}</div>
-        </div>`).join('') +
-        `<div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">Service checked: <span style="font-family:var(--mono);">${d.service_name}</span></div>`;
+      let html = renderMetrics(d.metrics || {});
+      if ((d.unavailable || []).length) {
+        html += `<div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;">
+                   <i class="bi bi-info-circle me-1"></i>Not available (SSH user may lack access): ${d.unavailable.join(', ')}.</div>`;
+      }
+      box.innerHTML = html;
     }
   } catch (e) { box.innerHTML = '<span style="font-size:11.5px;color:#f87171;">Network error.</span>'; }
   btn.disabled = false; btn.innerHTML = orig;
