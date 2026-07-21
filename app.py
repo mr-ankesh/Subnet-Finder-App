@@ -1279,7 +1279,7 @@ def help_admin():
 
 # ── Reachability Tester (IT team) ───────────────────────────────────────────
 
-@app.route("/it/reachability")
+@app.route("/it/zpa-analyzer")
 @require_itadmin
 def it_reachability():
     import reachability
