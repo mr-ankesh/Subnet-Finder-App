@@ -59,6 +59,18 @@
       {% endif %}
 
       <div class="glass-card mb-3">
+        <div class="card-header-custom" style="display:flex;justify-content:space-between;align-items:center;">
+          <span><i class="bi bi-chat-left-text"></i> Your Chats</span>
+          <button class="btn-icon-sm" onclick="newChat()" title="Start a new chat"><i class="bi bi-plus-lg"></i></button>
+        </div>
+        <div class="card-body-custom" style="padding:0.5rem;">
+          <div id="chatList" style="display:flex;flex-direction:column;gap:4px;max-height:300px;overflow-y:auto;">
+            <div class="text-muted small" style="padding:6px;">Loading…</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="glass-card mb-3">
         <div class="card-header-custom">
           <i class="bi bi-lightning-charge"></i> Quick Commands
         </div>
@@ -129,8 +141,8 @@
             </div>
           </div>
           <div class="chat-actions">
-            <button class="btn-icon-sm" onclick="clearChat()" title="Clear conversation">
-              <i class="bi bi-trash3"></i>
+            <button class="btn-icon-sm" onclick="newChat()" title="New chat">
+              <i class="bi bi-plus-lg"></i>
             </button>
           </div>
         </div>
@@ -308,8 +320,7 @@
     appendTypingIndicator();
 
     try {
-      const payload = { message: text };
-      if (REQ_ID) payload.request_id = REQ_ID;
+      const payload = { message: text, chat_id: CURRENT_CHAT };
 
       const resp = await fetch('/api/agent/chat', {
         method: 'POST',
@@ -336,6 +347,9 @@
 
       appendMessage('agent', data.reply || '(no response)');
 
+      // Persisted now — track the (possibly new) chat and refresh the sidebar.
+      if (data.chat_id) { CURRENT_CHAT = data.chat_id; loadChatList(); }
+
     } catch (err) {
       removeTypingIndicator();
       appendMessage('agent', `Connection error: ${err.message}`);
@@ -344,17 +358,59 @@
     setLoading(false);
   }
 
-  async function clearChat() {
-    if (!confirm('Clear the conversation history?')) return;
-    await fetch('/agent/clear', { method: 'POST' });
-    const msgs = document.getElementById('chatMessages');
-    // Keep only the first welcome message
-    while (msgs.children.length > 1) {
-      msgs.removeChild(msgs.lastChild);
-    }
-    hideToolPanel();
-    showToast('Conversation cleared', 'info');
+  // ── Persistent chats ──────────────────────────────────────────────────────
+  let CURRENT_CHAT = null;
+  let WELCOME_HTML = '';
+
+  async function loadChatList() {
+    try {
+      const d = await (await fetch('/api/agent/chats')).json();
+      const list = document.getElementById('chatList');
+      const items = d.chats || [];
+      if (!items.length) { list.innerHTML = '<div class="text-muted small" style="padding:6px;">No saved chats yet — start typing below.</div>'; return; }
+      list.innerHTML = items.map(c => `
+        <div class="chat-list-item ${c.id === CURRENT_CHAT ? 'active' : ''}" onclick="openChat(${c.id})">
+          <div style="flex:1;min-width:0;">
+            <div class="chat-list-title">${escapeHtml(c.title || 'New chat')}</div>
+            <div class="chat-list-meta">${c.updated_ts || ''} · ${c.count} msg</div>
+          </div>
+          <button class="chat-del" title="Delete chat" onclick="event.stopPropagation();deleteChat(${c.id})"><i class="bi bi-trash3"></i></button>
+        </div>`).join('');
+    } catch (e) { /* leave as-is */ }
   }
+
+  async function openChat(id) {
+    try {
+      const d = await (await fetch(`/api/agent/chats/${id}`)).json();
+      if (d.error) { showToast('Chat not found', 'danger'); return; }
+      CURRENT_CHAT = id;
+      const msgs = document.getElementById('chatMessages');
+      msgs.innerHTML = '';
+      (d.messages || []).forEach(m => appendMessage(m.role === 'assistant' ? 'agent' : 'user', m.content));
+      if (!(d.messages || []).length) msgs.innerHTML = WELCOME_HTML;
+      hideToolPanel();
+      loadChatList();
+      scrollToBottom();
+    } catch (e) { showToast('Could not open chat', 'danger'); }
+  }
+
+  function newChat() {
+    CURRENT_CHAT = null;
+    document.getElementById('chatMessages').innerHTML = WELCOME_HTML;
+    hideToolPanel();
+    loadChatList();
+  }
+
+  async function deleteChat(id) {
+    if (!confirm('Delete this chat? This cannot be undone.')) return;
+    await fetch(`/api/agent/chats/${id}`, { method: 'DELETE' });
+    if (CURRENT_CHAT === id) newChat(); else loadChatList();
+    showToast('Chat deleted', 'info');
+  }
+
+  // Init: remember the welcome bubble, then load the user's chat list.
+  WELCOME_HTML = document.getElementById('chatMessages').innerHTML;
+  loadChatList();
 </script>
 
 <style>
@@ -666,6 +722,24 @@
   transition: all 0.2s;
 }
 .btn-outline-sm:hover { background: rgba(255,255,255,0.07); color: #fff; }
+
+.chat-list-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0.45rem 0.55rem; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: all 0.15s;
+}
+.chat-list-item:hover { background: rgba(255,255,255,0.05); }
+.chat-list-item.active { background: rgba(0,120,212,0.15); border-color: rgba(0,120,212,0.35); }
+.chat-list-title {
+  font-size: 0.8rem; color: rgba(255,255,255,0.85);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chat-list-meta { font-size: 0.66rem; color: rgba(255,255,255,0.4); margin-top: 1px; }
+.chat-del {
+  background: none; border: none; color: rgba(255,255,255,0.3);
+  cursor: pointer; padding: 2px 4px; font-size: 0.8rem; flex-shrink: 0; border-radius: 5px;
+}
+.chat-del:hover { color: #f87171; background: rgba(248,113,113,0.1); }
 
 .quick-cmds { display: flex; flex-direction: column; gap: 0.4rem; }
 .quick-cmd {

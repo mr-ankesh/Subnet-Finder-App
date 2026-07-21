@@ -217,6 +217,10 @@ with app.app_context():
     # Change ledger (undo history)
     changes.ensure_table()
 
+    # Persistent agent chats
+    import chats
+    chats.ensure_table()
+
 # Keycloak OIDC — registers the app; the client is built lazily from live
 # settings, so enabling/configuring SSO in the portal needs no restart.
 oidc.init_oidc(app)
@@ -364,6 +368,23 @@ def inject_globals():
 def current_actor() -> str:
     """Display name for the audit trail: admin's login name, or 'Admin'."""
     return session.get("admin_name") or "Admin"
+
+
+def _chat_owner(kind: str) -> str:
+    """Stable per-user key that owns persistent agent chats. Uses the Keycloak
+    identity when signed in; otherwise the admin name, or a per-session id for an
+    anonymous requester."""
+    if session.get("sso"):
+        return (session.get("sso_email") or session.get("sso_user")
+                or session.get("admin_name") or "sso-user")
+    if kind == "admin":
+        return session.get("admin_name") or "admin"
+    uid = session.get("chat_uid")
+    if not uid:
+        import uuid as _uuid
+        uid = "anon-" + _uuid.uuid4().hex[:12]
+        session["chat_uid"] = uid
+    return uid
 
 
 def _sso_identity(client_name: str = "", client_email: str = ""):
@@ -3414,49 +3435,72 @@ def request_terminate(req_id):
 def agent_page():
     req_id = request.args.get("req")
     req_obj = SpokeRequest.query.get(int(req_id)) if req_id and req_id.isdigit() else None
-    session.setdefault("agent_history", [])
     return render_template("agent.html", request_obj=req_obj)
 
 
-@app.route("/agent/clear", methods=["POST"])
+@app.route("/api/agent/chats")
 @require_admin
-def agent_clear():
-    session.pop("agent_history", None)
-    return jsonify({"message": "Conversation cleared."})
+def agent_chats_list():
+    import chats
+    return jsonify({"chats": chats.list_chats("admin", _chat_owner("admin"))})
+
+
+@app.route("/api/agent/chats/<int:cid>")
+@require_admin
+def agent_chat_get(cid):
+    import chats
+    if not chats.owns(cid, "admin", _chat_owner("admin")):
+        return jsonify({"error": "Chat not found."}), 404
+    ch = chats.get_chat(cid)
+    return jsonify({"id": ch["id"], "title": ch["title"],
+                    "messages": [{"role": m.get("role"), "content": m.get("content", "")}
+                                 for m in ch["messages"]]})
+
+
+@app.route("/api/agent/chats/<int:cid>", methods=["DELETE"])
+@require_admin
+def agent_chat_delete(cid):
+    import chats
+    chats.delete_chat(cid, _chat_owner("admin"))
+    return jsonify({"success": True})
 
 
 @app.route("/api/agent/chat", methods=["POST"])
 @require_admin
 def agent_chat():
+    import chats
     try:
         data = request.get_json(force=True)
         user_msg = (data.get("message") or "").strip()
         if not user_msg:
             return jsonify({"error": "Empty message"}), 400
 
-        history = session.get("agent_history", [])
+        owner = _chat_owner("admin")
+        chat_id = data.get("chat_id")
+        if not (chat_id and str(chat_id).isdigit() and chats.owns(int(chat_id), "admin", owner)):
+            chat_id = chats.create_chat("admin", owner)
+        chat_id = int(chat_id)
+        ch = chats.get_chat(chat_id)
+        history = [{"role": m.get("role"), "content": m.get("content", "")}
+                   for m in (ch["messages"] if ch else [])]
         history.append({"role": "user", "content": user_msg})
 
-        reply = "Agent error."
-        tool_calls = []
+        reply, tool_calls = "Agent error.", []
         try:
             import agent_admin as ag
             result = ag.chat(history)
             reply = result.get("reply", "")
-            # Sanitise tool_calls — ensure every field is JSON-serialisable
             for tc in result.get("tool_calls", []):
-                tool_calls.append({
-                    "tool":   str(tc.get("tool", "")),
-                    "status": str(tc.get("status", "")),
-                })
+                tool_calls.append({"tool": str(tc.get("tool", "")), "status": str(tc.get("status", ""))})
         except Exception as exc:
             log.exception("Admin agent error")
             reply = f"Agent error: {exc}"
 
-        history.append({"role": "assistant", "content": reply})
-        session["agent_history"] = history[-40:]
-        session.modified = True
-        return jsonify({"reply": reply, "tool_calls": tool_calls})
+        chats.append_messages(chat_id,
+                              [{"role": "user", "content": user_msg},
+                               {"role": "assistant", "content": reply}],
+                              title_hint=user_msg)
+        return jsonify({"reply": reply, "tool_calls": tool_calls, "chat_id": chat_id})
     except Exception as exc:
         log.exception("Admin agent chat route error")
         return jsonify({"error": str(exc)}), 500
