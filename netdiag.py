@@ -16,6 +16,7 @@ Everything here is READ-ONLY. Important limits are noted in each step:
 """
 import ipaddress
 import logging
+import re
 
 import azure_tools
 from config import cfg
@@ -234,6 +235,17 @@ def _llm_available() -> bool:
     return False
 
 
+def _clean_llm(text: str) -> str:
+    """Drop reasoning-model chain-of-thought (<think>…</think>) that some models
+    emit before the answer, so only the final English answer is shown."""
+    if not text:
+        return text
+    text = re.sub(r"(?is)<think>.*?</think>", "", text)          # closed blocks
+    text = re.sub(r"(?is)^.*?</think>", "", text)                # dangling open block
+    text = text.replace("<think>", "").replace("</think>", "")
+    return text.strip()
+
+
 def _llm_complete(system: str, user: str) -> str:
     """One-shot completion via the configured LLM (reuses the admin agent's client)."""
     import agent_admin as ag
@@ -243,12 +255,14 @@ def _llm_complete(system: str, user: str) -> str:
         resp = client.messages.create(
             model=cfg.ANTHROPIC_MODEL or "claude-sonnet-4-6", max_tokens=700,
             system=system, messages=[{"role": "user", "content": user}])
-        return "".join(getattr(b, "text", "") for b in resp.content
-                       if getattr(b, "type", "") == "text").strip()
-    resp = client.chat.completions.create(
-        model=cfg.OPENAI_MODEL or "gpt-4o", max_tokens=700,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
-    return (resp.choices[0].message.content or "").strip()
+        text = "".join(getattr(b, "text", "") for b in resp.content
+                       if getattr(b, "type", "") == "text")
+    else:
+        resp = client.chat.completions.create(
+            model=cfg.OPENAI_MODEL or "gpt-4o", max_tokens=700,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
+        text = resp.choices[0].message.content or ""
+    return _clean_llm(text)
 
 
 def summarize(report: dict, details: dict) -> str:
@@ -263,7 +277,9 @@ def summarize(report: dict, details: dict) -> str:
         "You are a senior Azure network engineer helping an operations admin triage a "
         "connectivity ticket in an Azure hub-and-spoke network (Azure Firewall in the hub, "
         "user-defined routes on spoke subnets, Azure Private DNS). You are given an automated, "
-        "read-only diagnosis. Write a SHORT plain-language answer (max ~130 words, no preamble): "
+        "read-only diagnosis. Respond in ENGLISH ONLY. Do NOT include any reasoning, chain-of-thought "
+        "or <think> tags — output only the final answer. Write a SHORT plain-language answer "
+        "(max ~130 words, no preamble): "
         "(1) what is MOST LIKELY wrong (or that the path looks healthy), citing the specific findings, "
         "and (2) a concrete recommended fix / next action for the admin. Remember the checks read "
         "control-plane config and can't see the source VM/pod or Azure system/BGP routes, so hedge "
