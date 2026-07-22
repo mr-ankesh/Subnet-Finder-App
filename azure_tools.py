@@ -2789,3 +2789,48 @@ def subnet_details(subnet_id: str) -> dict:
     except Exception as exc:
         log.error("subnet_details failed: %s", exc)
         return {"found": False, "message": str(exc)[:150]}
+
+
+def resolve_private_fqdn(fqdn: str) -> dict:
+    """Resolve an FQDN through the hub private DNS zones → IP(s). Returns
+    {resolved, ip:[...], zone, record, ...} or an explanation why it won't resolve."""
+    fqdn = str(fqdn or "").strip().lower().rstrip(".")
+    info = private_dns_for_fqdn(fqdn)
+    if not info.get("checked"):
+        return {"resolved": False, "zone": None, "message": info.get("message", "DNS check unavailable.")}
+    zone = info.get("zone")
+    if not zone:
+        return {"resolved": False, "zone": None,
+                "message": "No private DNS zone in the hub covers this name."}
+    record_name = fqdn[:-len(zone)].rstrip(".") if fqdn.endswith(zone) else fqdn
+    record_name = record_name or "@"
+    a = get_dns_record_status(zone, "A", record_name)
+    if a.get("success") and a.get("record_exists"):
+        return {"resolved": True, "zone": zone, "record": record_name,
+                "ip": a["record"]["values"], "hub_linked": info.get("hub_linked"),
+                "source_linked": info.get("source_linked")}
+    cn = get_dns_record_status(zone, "CNAME", record_name)
+    if cn.get("success") and cn.get("record_exists"):
+        return {"resolved": False, "zone": zone, "record": record_name,
+                "cname": cn["record"]["values"],
+                "message": f"'{fqdn}' is a CNAME → {', '.join(cn['record']['values'])}; "
+                           f"resolve that target."}
+    return {"resolved": False, "zone": zone, "record": record_name,
+            "hub_linked": info.get("hub_linked"), "source_linked": info.get("source_linked"),
+            "message": f"Private zone '{zone}' exists but has no A record for '{record_name}' "
+                       f"— the name will not resolve internally."}
+
+
+def vnet_peerings(subscription_id: str, resource_group: str, vnet_name: str) -> dict:
+    """List a VNet's peerings (name, state, remote VNet)."""
+    try:
+        client = _network_client(subscription_id)
+        out = []
+        for p in client.virtual_network_peerings.list(resource_group, vnet_name):
+            rid = (p.remote_virtual_network.id if p.remote_virtual_network else "") or ""
+            out.append({"name": p.name, "state": str(p.peering_state or ""),
+                        "remote_id": rid.lower(), "remote": rid.split("/")[-1] if rid else ""})
+        return {"success": True, "peerings": out}
+    except Exception as exc:
+        log.error("vnet_peerings failed: %s", exc)
+        return {"success": False, "message": str(exc)[:150]}

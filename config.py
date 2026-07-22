@@ -78,6 +78,10 @@ SETTINGS_SPEC = {
                                      "requests to check zone availability."),
     "DNS_ZONE_SUBSCRIPTION_ID": _f("hub", "Private DNS zones subscription ID",
                                    help="Blank = hub subscription."),
+    "PRIVATE_DNS_SUFFIXES":  _f("hub", "Private domain suffixes", "presight.ai,privatelink,internal",
+                                help="Comma-separated domain suffixes treated as PRIVATE by the network "
+                                     "diagnosis (resolved via private DNS, then traced internally). Any name "
+                                     "containing 'privatelink' is always treated as private."),
 
     # ── Firewall ──
     "FIREWALL_POLICY_NAME":           _f("firewall", "Firewall policy name"),
