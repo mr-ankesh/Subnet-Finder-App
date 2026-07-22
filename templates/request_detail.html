@@ -528,6 +528,7 @@
           </div>
           <div id="niResults" style="display:none;margin-top:10px;"></div>
         </div>
+        {% if ni.get('auto_diagnosis') %}<script>window.NI_AUTO = {{ ni.get('auto_diagnosis') | tojson }};</script>{% endif %}
         {% endif %}
 
         {# ── NMO ZPA routing actions ── #}
@@ -1929,29 +1930,44 @@ function niStep(s) {
     <div><div style="font-size:12.5px;font-weight:600;color:#fff;">${s.title}</div>
       <div style="font-size:11.5px;color:var(--text-dim);line-height:1.6;">${(s.detail || '').replace(/</g,'&lt;')}</div></div></div>`;
 }
+function niEsc(t) { return (t || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function niRenderReport(d, autoNote) {
+  const vmap = { clear: ['#7edb56', 'check-circle-fill', 'No blocking issue found'],
+    attention: ['#f59e0b', 'exclamation-triangle-fill', 'Needs attention'],
+    blocked: ['#f87171', 'x-octagon-fill', 'Traffic blocked'] };
+  const [vc, vi, vl] = vmap[d.verdict] || vmap.attention;
+  let html = autoNote ? `<div style="font-size:10.5px;color:var(--text-muted);margin-bottom:6px;"><i class="bi bi-clock-history me-1"></i>${autoNote}</div>` : '';
+  html += `<div style="border:1px solid ${vc}66;background:${vc}14;border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+      <div style="font-size:14px;font-weight:700;color:${vc};"><i class="bi bi-${vi} me-1"></i>${vl}</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:5px;">${niEsc(d.cause)}</div></div>`;
+  if (d.ai_summary) {
+    html += `<div style="border:1px solid rgba(99,102,241,.4);background:rgba(99,102,241,.08);border-radius:10px;padding:11px 13px;margin-bottom:8px;">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#a5b4fc;margin-bottom:5px;"><i class="bi bi-robot me-1"></i>AI analysis &amp; recommended fix</div>
+        <div style="font-size:12px;color:var(--text-dim);line-height:1.65;white-space:pre-wrap;">${niEsc(d.ai_summary)}</div></div>`;
+  }
+  html += (d.steps || []).map(niStep).join('');
+  return html;
+}
 async function runDiagnose(btn) {
   const box = document.getElementById('niResults'); box.style.display = 'block';
   const live = document.getElementById('niLive').checked;
   const o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Diagnosing…';
-  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Tracing the path — source, routing, DNS, firewall, return route…</span>';
+  box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Tracing the path and generating analysis…</span>';
   try {
     const d = await (await fetch(`/api/admin/requests/${REQ_ID}/diagnose`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_live: live }) })).json();
-    if (d.error) { box.innerHTML = `<span style="color:var(--danger);font-size:12px;">${d.error}</span>`; }
-    else {
-      const vmap = { clear: ['#7edb56', 'check-circle-fill', 'No blocking issue found'],
-        attention: ['#f59e0b', 'exclamation-triangle-fill', 'Needs attention'],
-        blocked: ['#f87171', 'x-octagon-fill', 'Traffic blocked'] };
-      const [vc, vi, vl] = vmap[d.verdict] || vmap.attention;
-      let html = `<div style="border:1px solid ${vc}66;background:${vc}14;border-radius:10px;padding:12px 14px;margin-bottom:8px;">
-          <div style="font-size:14px;font-weight:700;color:${vc};"><i class="bi bi-${vi} me-1"></i>${vl}</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:5px;">${(d.cause || '').replace(/</g,'&lt;')}</div></div>`;
-      html += (d.steps || []).map(niStep).join('');
-      box.innerHTML = html;
-    }
+    box.innerHTML = d.error ? `<span style="color:var(--danger);font-size:12px;">${d.error}</span>` : niRenderReport(d);
   } catch (e) { box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>'; }
   btn.disabled = false; btn.innerHTML = o;
 }
+// Show the auto-diagnosis computed at submit, if present.
+(function () {
+  if (window.NI_AUTO) {
+    const box = document.getElementById('niResults');
+    if (box) { box.style.display = 'block';
+      box.innerHTML = niRenderReport(window.NI_AUTO, 'Auto-diagnosis at submit (' + (window.NI_AUTO.ts || '') + ') — click "Check & Identify the Issue" to re-run with AI analysis & live tests.'); }
+  }
+})();
 
 // ── Firewall rule lookup by IP/CIDR (with larger-subnet coverage) ──────────
 function fwMatchBadge(m) {

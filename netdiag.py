@@ -225,6 +225,61 @@ def diagnose(details: dict, run_live: bool = False) -> dict:
             "meta": {"source": source, "destination": dest, "port": port}}
 
 
+def _llm_available() -> bool:
+    p = (cfg.AGENT_PROVIDER or "").lower()
+    if p == "anthropic":
+        return bool(cfg.ANTHROPIC_API_KEY)
+    if p in ("openai", "byom"):
+        return bool(cfg.OPENAI_API_KEY or cfg.OPENAI_BASE_URL)
+    return False
+
+
+def _llm_complete(system: str, user: str) -> str:
+    """One-shot completion via the configured LLM (reuses the admin agent's client)."""
+    import agent_admin as ag
+    provider = (cfg.AGENT_PROVIDER or "").lower()
+    client = ag._get_client()
+    if provider == "anthropic":
+        resp = client.messages.create(
+            model=cfg.ANTHROPIC_MODEL or "claude-sonnet-4-6", max_tokens=700,
+            system=system, messages=[{"role": "user", "content": user}])
+        return "".join(getattr(b, "text", "") for b in resp.content
+                       if getattr(b, "type", "") == "text").strip()
+    resp = client.chat.completions.create(
+        model=cfg.OPENAI_MODEL or "gpt-4o", max_tokens=700,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
+    return (resp.choices[0].message.content or "").strip()
+
+
+def summarize(report: dict, details: dict) -> str:
+    """Ask the LLM for a plain-language explanation + recommended fix. Returns
+    None if no LLM is configured or the call fails (best-effort)."""
+    if not _llm_available():
+        return None
+    d = details or {}
+    findings = "\n".join(f"- [{s['status'].upper()}] {s['title']}: {s['detail']}"
+                         for s in report.get("steps", []))
+    system = (
+        "You are a senior Azure network engineer helping an operations admin triage a "
+        "connectivity ticket in an Azure hub-and-spoke network (Azure Firewall in the hub, "
+        "user-defined routes on spoke subnets, Azure Private DNS). You are given an automated, "
+        "read-only diagnosis. Write a SHORT plain-language answer (max ~130 words, no preamble): "
+        "(1) what is MOST LIKELY wrong (or that the path looks healthy), citing the specific findings, "
+        "and (2) a concrete recommended fix / next action for the admin. Remember the checks read "
+        "control-plane config and can't see the source VM/pod or Azure system/BGP routes, so hedge "
+        "appropriately and suggest what to verify on the source when the path looks clear.")
+    user = (f"Reported issue: {d.get('issue') or '(none given)'}\n"
+            f"Source: {d.get('source') or d.get('source_resource') or '(none)'} ({d.get('source_kind') or 'ip'})\n"
+            f"Destination: {d.get('destination') or '(none)'}"
+            + (f" port {d.get('dest_port')}" if d.get('dest_port') else "") + "\n"
+            f"Overall verdict: {report.get('verdict')}\n\nFindings:\n{findings}")
+    try:
+        return _llm_complete(system, user)
+    except Exception as exc:
+        log.error("netdiag.summarize failed: %s", exc)
+        return None
+
+
 def _verdict(steps: list) -> dict:
     """Roll the step statuses up into an overall verdict + likely cause."""
     fails = [s for s in steps if s["status"] == "fail"]

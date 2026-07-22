@@ -1440,9 +1440,12 @@ def request_diagnose(req_id):
     except Exception as exc:
         log.exception("network diagnosis failed")
         return jsonify({"error": f"Diagnosis failed: {exc}"}), 500
+    # Plain-language explanation + recommended fix from the LLM (best-effort).
+    report["ai_summary"] = netdiag.summarize(report, req.get_details())
     audit.record("network_diagnosis", actor=current_actor(), actor_role="admin", request_id=req.id,
                  summary=f"Connectivity diagnosis — verdict: {report.get('verdict')}",
-                 data={"verdict": report.get("verdict"), "run_live": run_live})
+                 data={"verdict": report.get("verdict"), "run_live": run_live,
+                       "ai": bool(report.get("ai_summary"))})
     if req.status == RequestStatus.SUBMITTED:
         req.status = RequestStatus.IN_PROGRESS
         req.updated_at = datetime.utcnow()
@@ -1627,7 +1630,36 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
         notifications.notify_request_submitted(req)
     except Exception:
         pass
+    # Network-issue tickets: run the connectivity diagnosis in the background so
+    # the admin sees findings the moment they open the request.
+    if request_type == RequestType.NETWORK_ISSUE:
+        _spawn_network_diagnosis(req_id, details)
     return {"success": True, "request_id": req_id}, 200
+
+
+def _spawn_network_diagnosis(req_id, details):
+    """Compute the connectivity diagnosis off the request thread and store it on
+    the ticket (control-plane only — no live tests / no LLM at submit time)."""
+    import threading
+
+    def _run():
+        with app.app_context():
+            try:
+                import netdiag
+                report = netdiag.diagnose(details, run_live=False)
+                r = SpokeRequest.query.get(req_id)
+                if r:
+                    d = r.get_details()
+                    d["auto_diagnosis"] = {
+                        "verdict": report.get("verdict"), "cause": report.get("cause"),
+                        "steps": report.get("steps"),
+                        "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}
+                    r.set_details(d)
+                    db.session.commit()
+            except Exception:
+                log.exception("auto network diagnosis failed for #%s", req_id)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _subnets_fit(vnet_prefix: int, subnets: list) -> bool:
