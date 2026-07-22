@@ -1418,10 +1418,17 @@ def azure_vnets():
 @app.route("/api/admin/firewall/lookup")
 @require_admin
 def admin_firewall_lookup():
-    """Find firewall rules that apply to an IP/CIDR — including when a larger
-    subnet in a rule covers it."""
+    """Find firewall rules that apply. With both source and destination, matches
+    the src→dst pair (source side covers source AND destination side covers
+    destination); otherwise falls back to a single-address (coverage) lookup."""
     import azure_tools
-    res = azure_tools.find_firewall_rules_for_address(request.args.get("address", "").strip())
+    src = request.args.get("source", "").strip()
+    dst = request.args.get("destination", "").strip()
+    if src and dst:
+        res = azure_tools.find_firewall_rules_for_pair(src, dst)
+    else:
+        res = azure_tools.find_firewall_rules_for_address(
+            request.args.get("address", "").strip() or src or dst)
     return jsonify(res), (200 if res.get("success") else 400)
 
 
@@ -1483,7 +1490,7 @@ def requester_clear():
 
 # Required keys inside `details` for each non-VNET request type
 TYPE_REQUIRED_DETAILS = {
-    RequestType.FIREWALL_POLICY:   ["action", "rule_kind", "destination"],
+    RequestType.FIREWALL_POLICY:   ["action", "rule_kind", "source", "destination", "justification"],
     RequestType.HUB_INTEGRATION:   ["subscription_id", "resource_group", "vnet_name",
                                     "region", "address_space"],
     RequestType.ZPA_RND_ROUTING:   ["spoke_vnet_name", "spoke_cidr"],
@@ -1523,6 +1530,9 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     if request_type == RequestType.FIREWALL_POLICY:
         _s, dests, _ip, _po, _ap, perrors = _fw_params(details)
         fw_action = (details.get("action") or "add").lower()
+        # The existing rule name is required only when modifying a rule.
+        if fw_action == "modify" and not details.get("rule_name"):
+            return {"error": "Existing rule name is required to modify a rule."}, 400
         if perrors and fw_action in ("add", "modify"):
             return {"error": "; ".join(perrors)}, 400
         if (details.get("rule_kind") == "application" and fw_action in ("add", "modify")):

@@ -321,7 +321,7 @@
                   <div class="row g-3">
                     <div class="col-md-4">
                       <label class="form-label-custom">Action *</label>
-                      <select class="form-input-custom" data-detail="action">
+                      <select class="form-input-custom" data-detail="action" id="fw_action" onchange="onFwActionChange()">
                         <option value="add">Add new rule</option>
                         <option value="modify">Modify existing rule</option>
                         <option value="delete">Delete rule</option>
@@ -334,9 +334,10 @@
                         <option value="application">Application rule (HTTP/HTTPS FQDN)</option>
                       </select>
                     </div>
-                    <div class="col-md-4">
-                      <label class="form-label-custom">Existing Rule Name <span style="color:rgba(255,255,255,.4);font-weight:400;">(modify/delete)</span></label>
-                      <input type="text" class="form-input-custom" data-detail="rule_name" placeholder="e.g. myvnet-allow-internet">
+                    <div class="col-md-4" id="fw_rulename_wrap" style="display:none;">
+                      <label class="form-label-custom">Existing Rule Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="rule_name" placeholder="the rule to modify">
+                      <div class="field-help">Only needed to modify an existing rule.</div>
                     </div>
                     <div class="col-md-6">
                       <label class="form-label-custom" id="fw_src_label">Source Address(es) *</label>
@@ -361,8 +362,8 @@
                       </div>
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label-custom">Business Justification</label>
-                      <input type="text" class="form-input-custom" data-detail="justification" placeholder="Why is this rule needed?">
+                      <label class="form-label-custom">Business Justification *</label>
+                      <input type="text" class="form-input-custom" data-detail="justification" placeholder="Why is this rule needed? (required)">
                     </div>
                   </div>
                 </div>
@@ -1208,6 +1209,7 @@ function selectType(t) {
     }
     if (t === 'aks_cluster') { onAksTierChange(); onAksZpaChange(); onAksRegionChange(); }
     if (t === 'network_issue') onNiSrcKind();
+    if (t === 'firewall_policy') onFwActionChange();
   }
   showResult('newReqResult', '');
 }
@@ -1400,12 +1402,18 @@ async function submitServiceRequest() {
       else if (el.value.trim() !== '') details[key] = el.value.trim();
     });
   }
-  if (currentType === 'firewall_policy' && details.rule_kind === 'application'
-      && (details.action || 'add') !== 'delete') {
-    const ips = (details.destination || '').split(',').map(s => s.trim()).filter(looksLikeIp);
-    if (ips.length) {
-      return showResult('newReqResult', resultBox('error',
-        `Application rules only accept FQDN destinations (e.g. *.presight.ai) — these are IPs: ${ips.join(', ')}. Choose a network rule for IP destinations.`));
+  if (currentType === 'firewall_policy') {
+    const act = details.action || 'add';
+    if (!(details.source || '').trim()) return showResult('newReqResult', resultBox('error', 'Source address(es) are required.'));
+    if (!(details.destination || '').trim()) return showResult('newReqResult', resultBox('error', 'Destination is required.'));
+    if (!(details.justification || '').trim()) return showResult('newReqResult', resultBox('error', 'Business justification is required.'));
+    if (act === 'modify' && !(details.rule_name || '').trim()) return showResult('newReqResult', resultBox('error', 'Existing rule name is required to modify a rule.'));
+    if (details.rule_kind === 'application' && act !== 'delete') {
+      const ips = (details.destination || '').split(',').map(s => s.trim()).filter(looksLikeIp);
+      if (ips.length) {
+        return showResult('newReqResult', resultBox('error',
+          `Application rules only accept FQDN destinations (e.g. *.presight.ai) — these are IPs: ${ips.join(', ')}. Choose a network rule for IP destinations.`));
+      }
     }
   }
   if (currentType === 'dns') {
@@ -1572,6 +1580,11 @@ function onFwKindChange() {
   document.getElementById('fw_pp_input').placeholder = isApp
     ? 'e.g. http:8080, https:443' : 'e.g. TCP/443, UDP/53';
   document.getElementById('fw_app_note').style.display = isApp ? '' : 'none';
+}
+
+function onFwActionChange() {
+  const act = document.getElementById('fw_action').value;
+  document.getElementById('fw_rulename_wrap').style.display = (act === 'modify') ? '' : 'none';
 }
 
 function looksLikeIp(s) {

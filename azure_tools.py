@@ -2834,3 +2834,56 @@ def vnet_peerings(subscription_id: str, resource_group: str, vnet_name: str) -> 
     except Exception as exc:
         log.error("vnet_peerings failed: %s", exc)
         return {"success": False, "message": str(exc)[:150]}
+
+
+def find_firewall_rules_for_pair(source: str, destination: str) -> dict:
+    """Rules where the SOURCE side covers `source` AND the DESTINATION side covers
+    `destination` (both, coverage-aware) — i.e. rules that actually apply to the
+    src→dst pair, not just any rule containing one address. Destination may be an
+    IP/CIDR (network-rule destinations) or an FQDN (application-rule FQDNs)."""
+    src = str(source or "").strip()
+    dst = str(destination or "").strip()
+    if not src or not dst:
+        return {"success": False, "message": "Both source and destination are required."}
+    try:
+        src_q = ipaddress.ip_network(src, strict=False)
+    except ValueError:
+        return {"success": False, "message": f"Source '{src}' must be an IP or CIDR."}
+    dst_is_ip = _is_cidr(dst)
+    dst_q = ipaddress.ip_network(dst, strict=False) if dst_is_ip else None
+    dst_fqdn = None if dst_is_ip else dst.lower().rstrip(".")
+    if not (cfg.FIREWALL_POLICY_NAME and cfg.FIREWALL_POLICY_RG):
+        return {"success": False, "message": "Firewall policy is not configured (Settings → Firewall)."}
+    try:
+        client = _network_client(cfg.HUB_SUBSCRIPTION_ID)
+        matches = []
+        for rcg in _iter_rcgs(client):
+            for rc in (rcg.rule_collections or []):
+                if rc.rule_collection_type != "FirewallPolicyFilterRuleCollection":
+                    continue
+                action = getattr(getattr(rc, "action", None), "type", None) or ""
+                for r in (rc.rules or []):
+                    src_m = _match_entries(r.source_addresses, src_q)
+                    if not src_m:
+                        continue
+                    dst_m = None
+                    if r.rule_type == "ApplicationRule":
+                        if dst_fqdn and _fqdn_covers(r.target_fqdns, dst_fqdn):
+                            dst_m = {"type": "fqdn", "entry": ", ".join(list(r.target_fqdns or [])[:5])}
+                    elif dst_q is not None:
+                        dst_m = _match_entries(r.destination_addresses, dst_q)
+                    if dst_m:
+                        d = _describe_fw_rule(r, rc.name)
+                        d.update({"rcg": rcg.name, "action": action,
+                                  "match_source": src_m, "match_destination": dst_m})
+                        matches.append(d)
+        rank = {"exact": 0, "covered": 1, "fqdn": 1, "any": 2, "partial": 3}
+        matches.sort(key=lambda m: rank.get((m.get("match_source") or {}).get("type"), 9)
+                     + rank.get((m.get("match_destination") or {}).get("type"), 9))
+        return {"success": True, "source": src, "destination": dst, "matches": matches,
+                "message": (f"{len(matches)} rule(s) apply to {src} → {dst}." if matches
+                            else f"No firewall rule matches {src} → {dst} (source and destination together) "
+                                 f"— traffic would be denied by default.")}
+    except Exception as exc:
+        log.error("find_firewall_rules_for_pair failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
