@@ -298,6 +298,10 @@
                 <textarea class="form-input-custom" id="f_purpose" rows="2" placeholder="e.g. Dev environment for Project X"></textarea>
               </div>
               <div class="col-12">
+                <label class="form-label-custom">Business Justification *</label>
+                <textarea class="form-input-custom" id="f_justification" rows="2" placeholder="Why is this needed? (business reason — required)"></textarea>
+              </div>
+              <div class="col-12">
                 <button class="btn-primary-custom" onclick="submitNewRequest()">
                   <i class="bi bi-send"></i> Submit Request
                 </button>
@@ -360,10 +364,6 @@
                         Azure does not allow IP addresses here. Wildcards are fine (e.g. <code>*.presight.ai</code>).
                         For IP destinations, choose a network rule.
                       </div>
-                    </div>
-                    <div class="col-md-6">
-                      <label class="form-label-custom">Business Justification *</label>
-                      <input type="text" class="form-input-custom" data-detail="justification" placeholder="Why is this rule needed? (required)">
                     </div>
                   </div>
                 </div>
@@ -463,10 +463,6 @@
                     <div class="col-md-6">
                       <label class="form-label-custom">Spoke Subscription ID</label>
                       <input type="text" class="form-input-custom" data-detail="spoke_subscription_id" placeholder="00000000-0000-0000-0000-000000000000">
-                    </div>
-                    <div class="col-md-6">
-                      <label class="form-label-custom">Justification</label>
-                      <input type="text" class="form-input-custom" data-detail="justification" placeholder="Why does this spoke need ZPA routing?">
                     </div>
                   </div>
                 </template>
@@ -914,6 +910,10 @@
                 <div class="col-12">
                   <label class="form-label-custom">Summary / Purpose *</label>
                   <textarea class="form-input-custom" id="g_purpose" rows="2" placeholder="One-line summary of this request"></textarea>
+                </div>
+                <div class="col-12">
+                  <label class="form-label-custom">Business Justification *</label>
+                  <textarea class="form-input-custom" id="g_justification" rows="2" placeholder="Why is this needed? (business reason — required for every request)"></textarea>
                 </div>
                 <div class="col-12">
                   <button class="btn-primary-custom" onclick="submitServiceRequest()">
@@ -1391,9 +1391,11 @@ async function submitServiceRequest() {
   const name    = document.getElementById('g_name').value.trim();
   const email   = document.getElementById('g_email').value.trim();
   const purpose = document.getElementById('g_purpose').value.trim();
+  const justification = document.getElementById('g_justification').value.trim();
   if (!name || !purpose) return showResult('newReqResult', resultBox('error', 'Name and Summary are required.'));
+  if (!justification) return showResult('newReqResult', resultBox('error', 'Business justification is required.'));
 
-  const details = {};
+  const details = { justification };
   const section = document.getElementById('section-' + currentType);
   if (section) {
     section.querySelectorAll('[data-detail]').forEach(el => {
@@ -1690,10 +1692,12 @@ async function submitNewRequest() {
   const cidr    = document.getElementById('f_cidr').value;
   const hub     = document.getElementById('f_hub').checked;
   const purpose = document.getElementById('f_purpose').value.trim();
+  const justification = document.getElementById('f_justification').value.trim();
   const mode    = deployMode();
   if (!name || !purpose) return showResult('newReqResult', resultBox('error', 'Name and Purpose are required.'));
+  if (!justification) return showResult('newReqResult', resultBox('error', 'Business justification is required.'));
 
-  const payload = { cidr_needed: cidr, purpose, requester_name: name, requester_email: email,
+  const payload = { cidr_needed: cidr, purpose, justification, requester_name: name, requester_email: email,
                     ip_range: pool, hub_integration: hub, deployment_mode: mode };
 
   if (mode === 'admin') {

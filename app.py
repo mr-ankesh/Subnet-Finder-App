@@ -1522,6 +1522,9 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
         return {"error": "Name and a short summary/purpose are required."}, 400
 
     details = {k: v for k, v in (details or {}).items() if v not in (None, "")}
+    # Business justification is mandatory for every request type, portal-wide.
+    if not str(details.get("justification") or "").strip():
+        return {"error": "A business justification is required."}, 400
     missing = [k for k in TYPE_REQUIRED_DETAILS.get(request_type, []) if not details.get(k)]
     if missing:
         return {"error": "Missing required fields: " + ", ".join(missing)}, 400
@@ -1689,6 +1692,7 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
     from db_utils import create_spoke_request, get_spoke_request
     cidr_needed   = str(data.get("cidr_needed", "")).strip()
     purpose       = str(data.get("purpose", "")).strip()
+    justification = str(data.get("justification", "")).strip()
     requester_name = str(data.get("requester_name", "")).strip()
     requester_email = str(data.get("requester_email", "")).strip()
     # Keycloak identity wins (ties the request to the signed-in requester).
@@ -1701,6 +1705,8 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
         deployment_mode = "self"
     if not all([cidr_needed, purpose, requester_name, ip_range]):
         return {"error": "All fields are required."}, 400
+    if not justification:
+        return {"error": "A business justification is required."}, 400
     if ip_range not in ["10.110.0.0/16", "10.119.0.0/16"]:
         return {"error": "Invalid IP range."}, 400
 
@@ -1768,7 +1774,7 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
                 return {"error": "Application rules only accept FQDN destinations "
                                  "(e.g. *.presight.ai) — these are IPs: " + ", ".join(bad)}, 400
 
-    details_payload = {}
+    details_payload = {"justification": justification}
     if subnets:
         details_payload["subnets"] = subnets
     if internet_access:
