@@ -34,6 +34,8 @@
   .si-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); }
   .si-value { font-size:24px; font-weight:700; color:#fff; margin-top:5px; }
   .si-card { border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.03); overflow:hidden; }
+  .si-card.over { border-color:rgba(248,113,113,.5); box-shadow:inset 3px 0 0 #f87171; }
+  .over-pill { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:2px 9px; border-radius:10px; color:#f87171; background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.4); white-space:nowrap; }
   .si-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; background:rgba(255,255,255,.02); border-bottom:1px solid var(--border); flex-wrap:wrap; }
   .si-body { padding:14px 16px; display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
   .si-f label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted); display:block; margin-bottom:3px; }
@@ -100,20 +102,39 @@ function utilBar(spend, budget) {
     <div class="si-bar"><div style="height:100%;width:${Math.min(100,pct)}%;background:${c};"></div></div></div>`;
 }
 
+// Amount a subscription is over its budget (spend − budget), or null if it has
+// no budget/spend or is within budget. Drives the top-of-page ordering.
+function overage(s) {
+  const b = num(s.inventory.budget);
+  if (b == null || s.spend == null || s.spend <= b) return null;
+  return s.spend - b;
+}
+
 function renderCards() {
   const q = (document.getElementById('siFilter').value || '').toLowerCase();
   const list = SUBS.filter(s => !q || (s.name + ' ' + s.id + ' ' + (s.inventory.technical_owner||'') + ' ' + (s.inventory.financial_owner||'')).toLowerCase().includes(q));
+  // Over-budget subscriptions float to the top, ordered by how far over they are
+  // (largest overage first); everything else keeps its existing (name) order.
+  list.sort((a, b) => {
+    const oa = overage(a), ob = overage(b);
+    if (oa != null && ob != null) return ob - oa;
+    if (oa != null) return -1;
+    if (ob != null) return 1;
+    return 0;
+  });
   if (!list.length) { document.getElementById('siCards').innerHTML = '<div style="font-size:13px;color:var(--text-muted);">No subscriptions match.</div>'; return; }
   document.getElementById('siCards').innerHTML = list.map((s, i) => {
     const idx = SUBS.indexOf(s);
     const inv = s.inventory;
-    return `<div class="si-card" data-idx="${idx}">
+    const over = overage(s);
+    return `<div class="si-card${over != null ? ' over' : ''}" data-idx="${idx}">
       <div class="si-head">
         <div style="min-width:0;">
           <div style="font-size:14px;font-weight:600;color:#fff;">${s.name}</div>
           <div style="font-size:11px;font-family:var(--mono);color:var(--text-muted);">${s.id}</div>
         </div>
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          ${over != null ? `<span class="over-pill"><i class="bi bi-exclamation-triangle-fill"></i> Over by ${money(over)}</span>` : ''}
           <span class="state-pill">${s.state || 'Unknown'}</span>
           <div style="text-align:right;"><div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;">Spend MTD</div>
             <div style="font-size:15px;font-weight:700;color:#fff;">${!COST_OK ? 'n/a' : (SPEND_LOADED ? money(s.spend) : '<span style="color:var(--text-muted);font-weight:400;">…</span>')}</div></div>
