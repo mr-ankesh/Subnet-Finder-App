@@ -221,6 +221,10 @@ with app.app_context():
     import chats
     chats.ensure_table()
 
+    # Subscription inventory (owner/budget metadata)
+    import subinventory
+    subinventory.ensure_table()
+
 # Keycloak OIDC — registers the app; the client is built lazily from live
 # settings, so enabling/configuring SSO in the portal needs no restart.
 oidc.init_oidc(app)
@@ -1495,6 +1499,63 @@ def api_cost_trend():
 def admin_settings_test_cost():
     import costmgmt
     return jsonify(costmgmt.test_connection())
+
+
+# ── Subscription inventory (Azure facts + owner/budget metadata) ───────────
+
+def _inventory_data():
+    import subinventory, costmgmt, azure_tools
+    stored = subinventory.all_records()
+    currency, cost_available = "", costmgmt.configured()
+    subs = []
+    if cost_available:
+        try:
+            s = costmgmt.summary("MonthToDate")
+            subs = [{"id": x["id"], "name": x["name"], "state": x.get("state"), "spend": x.get("cost")}
+                    for x in s.get("subscriptions", [])]
+            currency = s.get("currency", "")
+        except Exception:
+            log.exception("inventory: cost summary failed")
+            cost_available = False
+    if not subs:
+        r = azure_tools.list_subscriptions()
+        subs = [{**x, "spend": None} for x in (r.get("subscriptions", []) if r.get("success") else [])]
+    for sub in subs:
+        inv = stored.get(sub["id"], {})
+        sub["inventory"] = {k: (inv.get(k) or "") for k in subinventory.FIELDS}
+        sub["updated_by"], sub["updated_ts"] = inv.get("updated_by"), inv.get("updated_ts")
+    return {"subscriptions": subs, "currency": currency, "cost_available": cost_available}
+
+
+@app.route("/subscriptions")
+@require_superadmin
+def subscription_inventory_page():
+    return render_template("subscriptions.html", currency=cfg.COST_CURRENCY or "$")
+
+
+@app.route("/api/subscriptions/inventory")
+@require_superadmin
+def api_subscription_inventory():
+    try:
+        return jsonify({"success": True, **_inventory_data()})
+    except Exception as exc:
+        log.exception("subscription inventory failed")
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.route("/api/subscriptions/inventory", methods=["POST"])
+@require_superadmin
+def api_subscription_inventory_save():
+    import subinventory
+    data = request.get_json(force=True) or {}
+    sid = str(data.get("subscription_id", "")).strip()
+    if not sid:
+        return jsonify({"error": "subscription_id is required."}), 400
+    subinventory.upsert(sid, data, actor=current_actor())
+    audit.record("subscription_inventory", actor=current_actor(), actor_role="admin",
+                 summary=f"Updated inventory for subscription {sid}",
+                 data={"subscription_id": sid})
+    return jsonify({"success": True})
 
 
 @app.route("/api/admin/requests/<int:req_id>/diagnose", methods=["POST"])

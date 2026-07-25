@@ -66,6 +66,9 @@
             <i class="bi bi-robot"></i> Admin Agent
           </a>
           {% if is_superadmin %}
+          <a href="{{ url_for('subscription_inventory_page') }}" class="nav-link {% if request.endpoint == 'subscription_inventory_page' %}active{% endif %}">
+            <i class="bi bi-card-checklist"></i> Subscriptions
+          </a>
           <a href="{{ url_for('cost_dashboard') }}" class="nav-link {% if request.endpoint == 'cost_dashboard' %}active{% endif %}">
             <i class="bi bi-cash-coin"></i> Cost
           </a>

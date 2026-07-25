@@ -2887,3 +2887,22 @@ def find_firewall_rules_for_pair(source: str, destination: str) -> dict:
     except Exception as exc:
         log.error("find_firewall_rules_for_pair failed: %s", exc)
         return {"success": False, "message": str(exc)[:200]}
+
+
+def list_subscriptions() -> dict:
+    """Subscriptions the automation SP can see (ARM REST). Used for the
+    subscription inventory when the cost SP isn't configured."""
+    try:
+        import requests
+        token = _get_credential().get_token("https://management.azure.com/.default").token
+        resp = requests.get("https://management.azure.com/subscriptions?api-version=2022-12-01",
+                            headers={"Authorization": f"Bearer {token}"}, timeout=20)
+        resp.raise_for_status()
+        subs = [{"id": s.get("subscriptionId"),
+                 "name": s.get("displayName") or s.get("subscriptionId"),
+                 "state": s.get("state")} for s in resp.json().get("value", [])]
+        subs.sort(key=lambda s: s["name"].lower())
+        return {"success": True, "subscriptions": subs}
+    except Exception as exc:
+        log.error("list_subscriptions failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}

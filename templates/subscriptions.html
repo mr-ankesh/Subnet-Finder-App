@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Subscription Inventory | Network Copilot{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <div class="p-eyebrow" style="margin-bottom:10px;">Governance · Ownership</div>
+    <h1 class="alloc-page-title">Subscription Inventory</h1>
+    <p class="alloc-page-sub">Subscription facts are fetched from Azure — you fill the ownership and budget. Spend appears when the cost service principal is configured.</p>
+  </div>
+</div>
+
+<div style="max-width:1100px;margin:0 auto;padding:26px 24px 60px;">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px;">
+    <div class="si-tile"><div class="si-label">Subscriptions</div><div class="si-value" id="tSubs">—</div></div>
+    <div class="si-tile"><div class="si-label">Total budget</div><div class="si-value" id="tBudget">—</div></div>
+    <div class="si-tile"><div class="si-label">Total spend (MTD)</div><div class="si-value" id="tSpend">—</div></div>
+    <div class="si-tile"><div class="si-label">Over budget</div><div class="si-value" id="tOver">—</div></div>
+  </div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+    <input type="search" id="siFilter" class="form-input-custom" style="max-width:280px;font-size:12.5px;" placeholder="Filter by name, owner, ID…" oninput="renderCards()">
+    <span id="siNote" style="font-size:11px;color:var(--text-muted);"></span>
+  </div>
+  <div id="siCards" style="display:flex;flex-direction:column;gap:12px;">
+    <div style="font-size:13px;color:var(--text-muted);">Loading subscriptions from Azure…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .si-tile { border:1px solid var(--border); border-radius:14px; padding:14px 16px; background:rgba(255,255,255,.03); }
+  .si-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); }
+  .si-value { font-size:24px; font-weight:700; color:#fff; margin-top:5px; }
+  .si-card { border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.03); overflow:hidden; }
+  .si-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; background:rgba(255,255,255,.02); border-bottom:1px solid var(--border); flex-wrap:wrap; }
+  .si-body { padding:14px 16px; display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
+  .si-f label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted); display:block; margin-bottom:3px; }
+  .si-in { width:100%; font-size:12.5px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:7px; color:var(--text); padding:6px 9px; }
+  .si-bar { height:6px; background:rgba(255,255,255,.08); border-radius:4px; overflow:hidden; margin-top:6px; width:150px; }
+  .si-save { font-size:12px; background:var(--p-grad-h,linear-gradient(90deg,#0700c4,#10b5b0,#7edb56)); color:#fff; border:none; border-radius:8px; padding:6px 14px; cursor:pointer; }
+  .si-save:disabled { opacity:.5; }
+  .state-pill { font-size:10px; text-transform:uppercase; letter-spacing:.4px; padding:1px 8px; border-radius:10px; border:1px solid var(--border); color:var(--text-dim); }
+</style>
+<script>
+const CUR = {{ currency|tojson }};
+let SUBS = [], CCY = '', COST_OK = false;
+
+function money(v){ if (v==null||v==='') return '—'; return CUR + Number(v).toLocaleString(undefined,{maximumFractionDigits:0}) + (CCY?(' '+CCY):''); }
+function num(v){ const n = parseFloat(String(v).replace(/[^0-9.]/g,'')); return isNaN(n)?null:n; }
+
+async function load() {
+  try {
+    const d = await (await fetch('/api/subscriptions/inventory')).json();
+    if (d.error) { document.getElementById('siCards').innerHTML = `<div style="color:#f87171;font-size:13px;">${d.error}</div>`; return; }
+    SUBS = d.subscriptions || []; CCY = d.currency || ''; COST_OK = d.cost_available;
+    document.getElementById('siNote').textContent = COST_OK ? 'Spend is live from Cost Management (month-to-date).' : 'Configure the cost SP (Settings → Cost / Billing) to see spend & budget utilisation.';
+    renderTiles(); renderCards();
+  } catch (e) { document.getElementById('siCards').innerHTML = '<div style="color:#f87171;font-size:13px;">Could not load subscriptions.</div>'; }
+}
+
+function renderTiles() {
+  let budget = 0, spend = 0, over = 0, hasBudget = false;
+  SUBS.forEach(s => {
+    const b = num(s.inventory.budget), sp = s.spend;
+    if (b != null) { budget += b; hasBudget = true; if (sp != null && sp > b) over++; }
+    if (sp != null) spend += sp;
+  });
+  document.getElementById('tSubs').textContent = SUBS.length;
+  document.getElementById('tBudget').textContent = hasBudget ? money(budget) : '—';
+  document.getElementById('tSpend').textContent = COST_OK ? money(spend) : 'n/a';
+  document.getElementById('tOver').textContent = hasBudget && COST_OK ? over : '—';
+}
+
+function utilBar(spend, budget) {
+  const b = num(budget);
+  if (b == null || b === 0 || spend == null) return '';
+  const pct = Math.round(spend / b * 100);
+  const c = pct >= 100 ? '#f87171' : (pct >= 80 ? '#f59e0b' : '#7edb56');
+  return `<div style="text-align:right;"><div style="font-size:11px;color:${c};font-weight:600;">${pct}% of budget</div>
+    <div class="si-bar"><div style="height:100%;width:${Math.min(100,pct)}%;background:${c};"></div></div></div>`;
+}
+
+function renderCards() {
+  const q = (document.getElementById('siFilter').value || '').toLowerCase();
+  const list = SUBS.filter(s => !q || (s.name + ' ' + s.id + ' ' + (s.inventory.technical_owner||'') + ' ' + (s.inventory.financial_owner||'')).toLowerCase().includes(q));
+  if (!list.length) { document.getElementById('siCards').innerHTML = '<div style="font-size:13px;color:var(--text-muted);">No subscriptions match.</div>'; return; }
+  document.getElementById('siCards').innerHTML = list.map((s, i) => {
+    const idx = SUBS.indexOf(s);
+    const inv = s.inventory;
+    return `<div class="si-card" data-idx="${idx}">
+      <div class="si-head">
+        <div style="min-width:0;">
+          <div style="font-size:14px;font-weight:600;color:#fff;">${s.name}</div>
+          <div style="font-size:11px;font-family:var(--mono);color:var(--text-muted);">${s.id}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <span class="state-pill">${s.state || 'Unknown'}</span>
+          <div style="text-align:right;"><div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;">Spend MTD</div>
+            <div style="font-size:15px;font-weight:700;color:#fff;">${COST_OK ? money(s.spend) : 'n/a'}</div></div>
+          ${utilBar(s.spend, inv.budget)}
+        </div>
+      </div>
+      <div class="si-body">
+        <div class="si-f"><label>Technical owner</label><input class="si-in" data-k="technical_owner" value="${(inv.technical_owner||'').replace(/"/g,'&quot;')}" placeholder="name / team"></div>
+        <div class="si-f"><label>Financial owner</label><input class="si-in" data-k="financial_owner" value="${(inv.financial_owner||'').replace(/"/g,'&quot;')}" placeholder="name / team"></div>
+        <div class="si-f"><label>Monthly budget (${CUR})</label><input class="si-in" data-k="budget" value="${(inv.budget||'').replace(/"/g,'&quot;')}" placeholder="e.g. 5000" inputmode="decimal"></div>
+        <div class="si-f"><label>Cost centre</label><input class="si-in" data-k="cost_center" value="${(inv.cost_center||'').replace(/"/g,'&quot;')}" placeholder="e.g. CC-1042"></div>
+        <div class="si-f"><label>Environment</label>
+          <select class="si-in" data-k="environment">
+            ${['','Production','Non-Production','Dev','Test','Sandbox','Shared'].map(o => `<option value="${o}" ${(inv.environment||'')===o?'selected':''}>${o||'—'}</option>`).join('')}
+          </select></div>
+        <div class="si-f"><label>Criticality</label>
+          <select class="si-in" data-k="criticality">
+            ${['','Low','Medium','High','Critical'].map(o => `<option value="${o}" ${(inv.criticality||'')===o?'selected':''}>${o||'—'}</option>`).join('')}
+          </select></div>
+        <div class="si-f" style="grid-column:1/-1;"><label>Notes</label><input class="si-in" data-k="notes" value="${(inv.notes||'').replace(/"/g,'&quot;')}" placeholder="free text"></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:12px;">
+          <button class="si-save" onclick="saveCard(${idx}, this)"><i class="bi bi-save me-1"></i>Save</button>
+          <span style="font-size:10.5px;color:var(--text-muted);">${s.updated_by ? ('last updated by ' + s.updated_by + ' · ' + (s.updated_ts||'')) : 'not yet set'}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function saveCard(idx, btn) {
+  const card = btn.closest('.si-card');
+  const payload = { subscription_id: SUBS[idx].id };
+  card.querySelectorAll('[data-k]').forEach(el => payload[el.dataset.k] = el.value.trim());
+  const o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Saving…';
+  try {
+    const d = await (await fetch('/api/subscriptions/inventory', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })).json();
+    if (d.success) {
+      SUBS[idx].inventory = { technical_owner:payload.technical_owner, financial_owner:payload.financial_owner, budget:payload.budget, cost_center:payload.cost_center, environment:payload.environment, criticality:payload.criticality, notes:payload.notes };
+      renderTiles();
+      btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Saved';
+      showToast('Subscription inventory saved', 'success');
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = o; }, 1400);
+    } else { btn.disabled = false; btn.innerHTML = o; showToast(d.error || 'Save failed', 'danger'); }
+  } catch (e) { btn.disabled = false; btn.innerHTML = o; showToast('Network error', 'danger'); }
+}
+
+load();
+</script>
+{% endblock %}
