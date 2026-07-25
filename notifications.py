@@ -3,6 +3,7 @@ Teams notification helpers — Power Automate Workflows webhook (Adaptive Card f
 """
 import json
 import logging
+import re
 import smtplib
 from email.message import EmailMessage
 
@@ -65,17 +66,20 @@ def _url(path: str) -> str | None:
     return f"{base.rstrip('/')}{path}"
 
 
-# ── Email (SMTP) — direct-to-requester notifications ──────────────────────
-def _send_email(to_addr: str, subject: str, body_text: str) -> bool:
+# ── Email (SMTP) ──────────────────────────────────────────────────────────
+def _send_email(to, subject: str, body_text: str) -> bool:
+    """Send to one address or a list. No-op (returns False) if SMTP unconfigured."""
+    recipients = [to] if isinstance(to, str) else list(to or [])
+    recipients = list(dict.fromkeys(r.strip() for r in recipients if r and r.strip()))
     if not cfg.SMTP_HOST:
-        log.info("SMTP_HOST not set — email to %s skipped.", to_addr)
+        log.info("SMTP_HOST not set — email skipped (%s).", ", ".join(recipients) or "no recipients")
         return False
-    if not to_addr:
+    if not recipients:
         return False
     try:
         msg = EmailMessage()
         msg["From"] = cfg.SMTP_FROM or cfg.SMTP_USER or "noreply@localhost"
-        msg["To"] = to_addr
+        msg["To"] = ", ".join(recipients)
         msg["Subject"] = subject
         msg.set_content(body_text)
         with smtplib.SMTP(cfg.SMTP_HOST, cfg.SMTP_PORT, timeout=15) as s:
@@ -84,21 +88,90 @@ def _send_email(to_addr: str, subject: str, body_text: str) -> bool:
             if cfg.SMTP_USER:
                 s.login(cfg.SMTP_USER, cfg.SMTP_PASSWORD)
             s.send_message(msg)
-        log.info("Email sent to %s: %s", to_addr, subject)
+        log.info("Email sent to %s: %s", msg["To"], subject)
         return True
     except Exception as exc:
-        log.error("Email to %s failed: %s", to_addr, exc)
+        log.error("Email to %s failed: %s", ", ".join(recipients), exc)
         return False
 
 
-def _email_requester(req, subject: str, body_text: str) -> bool:
-    """Best-effort email to the request's requester (no-op if no email/SMTP)."""
-    to_addr = getattr(req, "requester_email", None)
-    if not to_addr:
+def _notify_emails() -> list:
+    """Corporate recipient list from NOTIFY_EMAILS (comma/semicolon separated)."""
+    raw = (cfg.NOTIFY_EMAILS or "").replace(";", ",")
+    return [e.strip() for e in raw.split(",") if e.strip()]
+
+
+# ── Intelligent drafting — LLM writes the email for the specific case ─────
+def _parse_draft(text: str, fallback_subject: str) -> tuple:
+    """Split an LLM draft of the form 'Subject: …\\n\\n<body>' into (subject, body)."""
+    text = (text or "").strip()
+    m = re.match(r"(?is)^\s*subject:\s*(.+?)\r?\n+(.*)$", text)
+    if m:
+        return (m.group(1).strip() or fallback_subject), m.group(2).strip()
+    return fallback_subject, text or ""
+
+
+def _draft_email(event: str, req, facts: list, fallback_subject: str, fallback_body: str) -> tuple:
+    """Ask the LLM to write a notification email tailored to this case. Best-effort:
+    returns the provided template fallbacks if drafting is disabled or fails."""
+    if not cfg.NOTIFY_AI_DRAFT:
+        return fallback_subject, fallback_body
+    try:
+        import netdiag  # reuses the admin agent's client + <think>-stripping
+        if not netdiag._llm_available():
+            return fallback_subject, fallback_body
+        type_label = req.type_label() if hasattr(req, "type_label") else "Network request"
+        status = req.status_label() if hasattr(req, "status_label") else ""
+        factlines = "\n".join(f"- {f['title']}: {f['value']}" for f in (facts or [])
+                              if f.get("value") not in (None, "", False))
+        link = _url(f"/requests/{req.id}") or ""
+        system = (
+            "You are Network Copilot, the notification assistant for Presight R&D's Azure "
+            "hub-and-spoke network operations portal. Write a SHORT, professional internal "
+            "notification email about a change to a network request, for the network operations "
+            "team (and the requester, who is copied). Respond in ENGLISH ONLY. Do NOT include any "
+            "reasoning, chain-of-thought or <think> tags. Output EXACTLY a first line "
+            "'Subject: <concise subject>', then a blank line, then the body: plain text, 2-5 short "
+            "sentences, no markdown, no greeting to a named person, no signature block. Clearly "
+            "state what happened, the most relevant details, and any action the team must take. "
+            "Use ONLY the facts provided — do not invent details.")
+        user = (f"Event: {event}\n"
+                f"Request ID: #{req.id}\n"
+                f"Type: {type_label}\n"
+                f"Current status: {status or '(n/a)'}\n"
+                f"Requester: {getattr(req, 'requester_name', '') or '(unknown)'}\n"
+                f"Purpose: {getattr(req, 'purpose', '') or '(none)'}\n"
+                f"Key details:\n{factlines or '(none)'}\n")
+        subject, body = _parse_draft(netdiag._llm_complete(system, user), fallback_subject)
+        if link and link not in body:
+            body += f"\n\nView the request: {link}"
+        return subject, (body or fallback_body)
+    except Exception as exc:
+        log.error("email draft failed, using template: %s", exc)
+        return fallback_subject, fallback_body
+
+
+def _email_case(req, event: str, fallback_subject: str, fallback_body: str,
+                facts: list = None, to_requester: bool = True) -> bool:
+    """Send a case notification email to the corporate recipients (+ the requester
+    when to_requester), with the body drafted intelligently for this event."""
+    recipients = _notify_emails()
+    if to_requester:
+        r = getattr(req, "requester_email", None)
+        if r:
+            recipients = recipients + [r]
+    if not recipients or not cfg.SMTP_HOST:
         return False
     link = _url(f"/requests/{req.id}") or ""
-    footer = f"\n\nTrack your request: {link}" if link else ""
-    return _send_email(to_addr, subject, body_text + footer)
+    footer = f"\n\nView the request: {link}" if link and link not in fallback_body else ""
+    subject, body = _draft_email(event, req, facts, fallback_subject, fallback_body + footer)
+    return _send_email(recipients, subject, body)
+
+
+# Back-compat shim: existing callers that only reach the requester.
+def _email_requester(req, subject: str, body_text: str) -> bool:
+    return _email_case(req, event=subject, fallback_subject=subject,
+                       fallback_body=body_text, facts=None, to_requester=True)
 
 
 # ── Generic: any request type submitted (non-VNET types) ─────────────────
@@ -115,9 +188,10 @@ def notify_request_submitted(req) -> bool:
     for k, v in list(details.items())[:6]:      # keep the card compact
         if v not in (None, "", False):
             facts.append({"title": k.replace("_", " ").title(), "value": str(v)})
-    _email_requester(req, f"[Network Copilot] {type_label} request received — #{req.id}",
-                     f"Hi {req.requester_name},\n\nYour {type_label} request #{req.id} has been "
-                     f"submitted and is awaiting admin review.\n\nSummary: {req.purpose}")
+    _email_case(req, f"A new {type_label} request was submitted and awaits admin review",
+                f"[Network Copilot] {type_label} request received — #{req.id}",
+                f"Your {type_label} request #{req.id} has been submitted and is awaiting admin "
+                f"review.\n\nSummary: {req.purpose}", facts=facts)
     return _post(_adaptive_card(
         title=f"New {type_label} Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",
@@ -137,9 +211,9 @@ def notify_status_changed(req) -> bool:
         {"title": "New Status", "value": status_label},
         {"title": "Requester",  "value": req.requester_name},
     ]
-    _email_requester(req, f"[Network Copilot] Request #{req.id} → {status_label}",
-                     f"Hi {req.requester_name},\n\nYour {type_label} request #{req.id} "
-                     f"is now: {status_label}.")
+    _email_case(req, f"Request status changed to '{status_label}'",
+                f"[Network Copilot] Request #{req.id} → {status_label}",
+                f"{type_label} request #{req.id} is now: {status_label}.", facts=facts)
     return _post(_adaptive_card(
         title=f"Request #{req.id} ({type_label}) → {status_label}",
         subtitle="Presight R&D · Network Copilot",
@@ -160,6 +234,11 @@ def notify_cidr_requested(req) -> bool:
         {"title": "Purpose",         "value": req.purpose},
         {"title": "Hub Integration", "value": "Yes" if req.hub_integration else "No"},
     ]
+    _email_case(req, "A new spoke CIDR request was submitted; admin needs to assign a subnet",
+                f"[Network Copilot] New CIDR request — #{req.id}",
+                f"A new spoke CIDR request #{req.id} from {req.requester_name} is awaiting subnet "
+                f"assignment.\n\nCIDR needed: /{req.cidr_needed}\nPool: {req.ip_range}\n"
+                f"Purpose: {req.purpose}", facts=facts)
     return _post(_adaptive_card(
         title=f"New CIDR Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",
@@ -178,9 +257,10 @@ def notify_cidr_assigned(req, subnet: str) -> bool:
         {"title": "Pool",         "value": req.ip_range},
     ]
     body = f"Subnet **{subnet}** has been assigned to request #{req.id}. Requester can now deploy the spoke VNET."
-    _email_requester(req, f"[Network Copilot] CIDR {subnet} assigned — Request #{req.id}",
-                     f"Hi {req.requester_name},\n\nYour spoke CIDR request #{req.id} has been "
-                     f"assigned the subnet {subnet}. You can now deploy your spoke VNET.")
+    _email_case(req, f"Subnet {subnet} was assigned; the requester can now deploy the spoke VNET",
+                f"[Network Copilot] CIDR {subnet} assigned — Request #{req.id}",
+                f"Spoke CIDR request #{req.id} has been assigned the subnet {subnet}. "
+                f"The requester can now deploy the spoke VNET.", facts=facts)
     return _post(_adaptive_card(
         title=f"CIDR Assigned — Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",
@@ -197,9 +277,10 @@ def notify_vnet_created(req) -> bool:
         {"title": "Subnet",        "value": req.allocated_subnet or "—"},
         {"title": "Hub Required",  "value": "Yes" if req.hub_integration else "No"},
     ]
-    _email_requester(req, f"[Network Copilot] VNET created — Request #{req.id}",
-                     f"Hi {req.requester_name},\n\nYour spoke VNET for request #{req.id} "
-                     f"(subnet {req.allocated_subnet or '—'}) has been created.")
+    _email_case(req, "The requester confirmed their spoke VNET is created",
+                f"[Network Copilot] VNET created — Request #{req.id}",
+                f"The spoke VNET for request #{req.id} (subnet {req.allocated_subnet or '—'}) "
+                f"has been created.", facts=facts)
     return _post(_adaptive_card(
         title=f"VNET Created — Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",
@@ -224,6 +305,10 @@ def notify_hub_integration_needed(req) -> bool:
             {"title": "Address Space",  "value": vi.address_space or "—"},
             {"title": "VPN/ZPA Access", "value": "Yes" if vi.vpn_zpa_access else "No"},
         ]
+    _email_case(req, "The requester provided VNET details and is requesting hub integration; admin action required",
+                f"[Network Copilot] Hub integration requested — Request #{req.id}",
+                f"Request #{req.id} from {req.requester_name} has provided its VNET details and is "
+                f"requesting hub integration. Admin action is required to proceed.", facts=facts)
     return _post(_adaptive_card(
         title=f"Hub Integration Needed — Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",
@@ -240,9 +325,9 @@ def notify_hub_in_progress(req) -> bool:
         {"title": "Requester",  "value": req.requester_name},
         {"title": "Subnet",     "value": req.allocated_subnet or "—"},
     ]
-    _email_requester(req, f"[Network Copilot] Hub integration started — Request #{req.id}",
-                     f"Hi {req.requester_name},\n\nHub integration for your spoke VNET "
-                     f"(request #{req.id}) has started.")
+    _email_case(req, "Admin started hub integration for the spoke VNET",
+                f"[Network Copilot] Hub integration started — Request #{req.id}",
+                f"Hub integration for the spoke VNET (request #{req.id}) has started.", facts=facts)
     return _post(_adaptive_card(
         title=f"Hub Integration In Progress — Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",
@@ -262,10 +347,12 @@ def notify_hub_integrated(req, actions_taken: list = None) -> bool:
     action_text = ""
     if actions_taken:
         action_text = "\n\n" + "  \n".join(f"• {a}" for a in actions_taken)
-    _email_requester(req, f"[Network Copilot] Request #{req.id} complete — hub integrated",
-                     f"Hi {req.requester_name},\n\nYour spoke VNET (request #{req.id}, subnet "
-                     f"{getattr(req, 'allocated_subnet', None) or '—'}) is fully integrated with the hub. "
-                     f"Onboarding is complete.")
+        facts.append({"title": "Actions taken", "value": "; ".join(actions_taken)})
+    _email_case(req, "Hub integration completed — the spoke VNET is fully onboarded",
+                f"[Network Copilot] Request #{req.id} complete — hub integrated",
+                f"The spoke VNET (request #{req.id}, subnet "
+                f"{getattr(req, 'allocated_subnet', None) or '—'}) is fully integrated with the hub. "
+                f"Onboarding is complete.", facts=facts)
     return _post(_adaptive_card(
         title=f"Hub Integration Complete — Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",
@@ -277,6 +364,9 @@ def notify_hub_integrated(req, actions_taken: list = None) -> bool:
 
 # ── Generic / reminder ────────────────────────────────────────────────────
 def notify_custom(title: str, message: str, level: str = "info") -> bool:
+    # A custom message is already written, so send it verbatim (no LLM redraft)
+    # to the corporate recipients in addition to Teams.
+    _send_email(_notify_emails(), f"[Network Copilot] {title}", message)
     return _post(_adaptive_card(
         title=title,
         subtitle="Presight R&D · Network Copilot",
@@ -291,6 +381,11 @@ def notify_reminder(req, message: str) -> bool:
         {"title": "Status",     "value": req.status_label()},
         {"title": "Message",    "value": message},
     ]
+    _email_case(req, "The requester is following up on a pending request",
+                f"[Network Copilot] Reminder — Request #{req.id}",
+                f"{req.requester_name} is following up on request #{req.id} "
+                f"(status: {req.status_label()}).\n\nMessage: {message}",
+                facts=facts, to_requester=False)
     return _post(_adaptive_card(
         title=f"Reminder — Request #{req.id}",
         subtitle="Presight R&D · Network Copilot",

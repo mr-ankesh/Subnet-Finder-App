@@ -186,6 +186,14 @@ SETTINGS_SPEC = {
                                  help="Stored encrypted. Leave blank on save to keep the current value."),
     "SMTP_FROM":              _f("notifications", "From address", help="Defaults to SMTP user when blank."),
     "SMTP_USE_TLS":           _f("notifications", "Use STARTTLS", "true", type="bool"),
+    "NOTIFY_EMAILS":          _f("notifications", "Notification recipients (corporate)",
+                                 help="Comma-separated corporate email addresses (e.g. your network-ops "
+                                      "distribution list) that receive every request notification, in "
+                                      "addition to the requester. Blank = only the requester is emailed."),
+    "NOTIFY_AI_DRAFT":        _f("notifications", "AI-draft notification emails", "true", type="bool",
+                                 help="When on, notification emails are written by the configured LLM based "
+                                      "on the specific case (falls back to templates if the LLM is "
+                                      "unavailable). Requires an agent provider under AI Agent settings."),
     "SUBNET_FINDER_BASE_URL": _f("notifications", "App base URL", "http://localhost:8080",
                                  help="Used for deep-links in Teams/email notifications."),
 
