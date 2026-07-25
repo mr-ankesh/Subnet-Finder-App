@@ -79,16 +79,24 @@ A **second app registration**, isolated from automation. On every subscription
 - It needs **no** write, network, or resource access — keep it read-only.
 - Verify from **Settings → Cost / Billing → Test Cost SP**.
 
-> **Fast spend for many subscriptions — set a management group.**
-> With no management group configured the portal fetches spend with **one Cost
-> Management query per subscription**. That is fine for a handful, but with dozens
-> Azure **throttles** the queries (HTTP 429) and the dashboard/inventory spend
-> loads slowly. Set **Cost / Billing → Management group ID (fast spend)**
-> (`COST_MANAGEMENT_GROUP`) to a management group the cost SP can read — all
-> subscription spend then comes back in a **single** grouped query. Grant the cost
-> SP **Cost Management Reader** at that management group (the tenant **root** MG,
-> whose ID equals the tenant ID, covers everything). Spend results are also cached
-> for ~10 minutes so the two pages share one lookup.
+> **Fast spend for many subscriptions — grant the cost SP a management group.**
+> Fetching spend with **one Cost Management query per subscription** is fine for a
+> handful, but with dozens Azure **throttles** the queries (HTTP 429) and spend
+> loads slowly. Instead, grant the cost SP **Cost Management Reader** at a
+> **management group** that contains your subscriptions — all subscription spend
+> then comes back in a **single** grouped query.
+>
+> - The tenant **root** MG covers everything, but many tenants don't allow role
+>   assignments there. Any **intermediate** management group that sits above your
+>   subscriptions works just as well — grant Cost Management Reader on that.
+> - **You don't need to enter the ID.** Leave **Cost / Billing → Management group
+>   ID (fast spend)** (`COST_MANAGEMENT_GROUP`) blank and the portal
+>   auto-discovers the hierarchy (via `getEntities`) and uses the highest group it
+>   can actually read — skipping groups it only sees but can't query. Set an ID
+>   only to pin a specific group and skip discovery.
+> - Discovery needs `Microsoft.Management/managementGroups/read`, which **Cost
+>   Management Reader includes**. Spend results are cached ~10 minutes so both
+>   pages share one lookup.
 
 ---
 

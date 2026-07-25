@@ -117,28 +117,109 @@ def _cols(props):
     return {c.get("name"): i for i, c in enumerate(props.get("columns", []))}
 
 
+def _mg_tree() -> dict:
+    """All management groups the cost SP can see, as {name: {display, parent, depth}}.
+
+    getEntities (unlike the plain list) returns each group's parent, so we can
+    reconstruct the hierarchy and walk it top-down.
+    """
+    resp = requests.post(
+        f"{_ARM}/providers/Microsoft.Management/getEntities?api-version=2020-05-01",
+        headers=_headers(), timeout=25)
+    resp.raise_for_status()
+    mgs = {}
+    for e in resp.json().get("value", []):
+        if e.get("type") != "Microsoft.Management/managementGroups":
+            continue
+        name = e.get("name")
+        if not name:
+            continue
+        props = e.get("properties", {}) or {}
+        parent_id = (props.get("parent") or {}).get("id") or ""
+        mgs[name] = {"id": name, "display": props.get("displayName") or name,
+                     "parent": parent_id.rsplit("/", 1)[-1] if parent_id else ""}
+
+    def depth(n, seen=()):
+        p = mgs.get(n, {}).get("parent")
+        return 0 if not p or p not in mgs or p in seen else 1 + depth(p, seen + (n,))
+    for n, m in mgs.items():
+        m["depth"] = depth(n)
+    return mgs
+
+
+def list_management_groups() -> list:
+    """The root-most management groups the cost SP can see (shallowest first)."""
+    mgs = _mg_tree()
+    roots = [m for m in mgs.values() if m["parent"] not in mgs] or list(mgs.values())
+    roots.sort(key=lambda x: x["display"].lower())
+    return roots
+
+
+def _descendants(name: str, children: dict) -> set:
+    out, stack = set(), [name]
+    while stack:
+        n = stack.pop()
+        for c in children.get(n, ()):
+            if c not in out:
+                out.add(c)
+                stack.append(c)
+    return out
+
+
 def _mg_totals(timeframe: str) -> dict:
-    """{subscription_id: cost} for every subscription under the configured
-    management group, in a SINGLE query. Returns (totals, currency)."""
-    mg = (cfg.COST_MANAGEMENT_GROUP or "").strip()
-    if not mg:
-        return None
+    """{subscription_id: cost} for every subscription the cost SP can reach via
+    management-group queries. Returns {'totals', 'currency'} or None.
+
+    If a management group is configured explicitly, query just that. Otherwise
+    walk the discovered hierarchy TOP-DOWN: the tenant root is usually visible but
+    not cost-readable (401), while an intermediate group one level down is where
+    access was actually granted. So we try shallowest first and, whenever a query
+    succeeds, skip that group's whole subtree — covering every subscription in as
+    few calls as possible (typically one) instead of one call per subscription.
+    """
     body = {"type": "ActualCost", "timeframe": timeframe,
             "dataset": {"granularity": "None",
                         "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
                         "grouping": [{"type": "Dimension", "name": "SubscriptionId"}]}}
-    props = _mg_query(mg, body)
-    col, rows = _cols(props), props.get("rows", [])
-    ci = col.get("Cost", col.get("PreTaxCost", 0))
-    si = col.get("SubscriptionId", 1)
-    cu = col.get("Currency")
-    totals, currency = {}, ""
-    for r in rows:
-        sid = str(r[si]).lower() if si < len(r) else ""
-        totals[sid] = round(float(r[ci] or 0), 2)
-        if cu is not None and cu < len(r):
-            currency = r[cu]
-    return {"totals": totals, "currency": currency}
+
+    explicit = (cfg.COST_MANAGEMENT_GROUP or "").strip()
+    if explicit:
+        order, children = [explicit], {}
+    else:
+        try:
+            mgs = _mg_tree()
+        except Exception as exc:
+            log.warning("cost: management group discovery failed: %s", exc)
+            return None
+        if not mgs:
+            return None
+        children = {}
+        for n, m in mgs.items():
+            children.setdefault(m["parent"], []).append(n)
+        order = sorted(mgs, key=lambda n: mgs[n]["depth"])  # shallowest first
+
+    totals, currency, ok, covered = {}, "", False, set()
+    for mg in order:
+        if mg in covered:
+            continue
+        try:
+            props = _mg_query(mg, body)
+        except Exception as exc:
+            log.info("cost: MG %s not cost-readable (%s) — trying deeper", mg, str(exc)[:80])
+            continue
+        ok = True
+        covered |= _descendants(mg, children)  # this group's subtree is now covered
+        col, rows = _cols(props), props.get("rows", [])
+        ci = col.get("Cost", col.get("PreTaxCost", 0))
+        si = col.get("SubscriptionId", 1)
+        cu = col.get("Currency")
+        for r in rows:
+            sid = str(r[si]).lower() if si < len(r) else ""
+            if sid:
+                totals[sid] = round(float(r[ci] or 0), 2)
+            if cu is not None and cu < len(r):
+                currency = r[cu]
+    return {"totals": totals, "currency": currency} if ok else None
 
 
 def subscription_total(subscription_id: str, timeframe: str = "MonthToDate") -> dict:
