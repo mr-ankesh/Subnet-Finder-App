@@ -1432,6 +1432,71 @@ def admin_firewall_lookup():
     return jsonify(res), (200 if res.get("success") else 400)
 
 
+# ── Subscription cost dashboard (separate cost service principal) ──────────
+
+@app.route("/cost")
+@require_superadmin
+def cost_dashboard():
+    import costmgmt
+    return render_template("cost.html", cost_configured=costmgmt.configured(),
+                           currency=cfg.COST_CURRENCY or "$")
+
+
+@app.route("/api/cost/summary")
+@require_superadmin
+def api_cost_summary():
+    import costmgmt
+    if not costmgmt.configured():
+        return jsonify({"error": "Cost service principal not configured (Settings → Cost / Billing)."}), 400
+    try:
+        return jsonify({"success": True, **costmgmt.summary(request.args.get("timeframe", "MonthToDate"))})
+    except Exception as exc:
+        log.exception("cost summary failed")
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.route("/api/cost/breakdown")
+@require_superadmin
+def api_cost_breakdown():
+    import costmgmt
+    if not costmgmt.configured():
+        return jsonify({"error": "Cost service principal not configured."}), 400
+    sub = request.args.get("subscription", "").strip()
+    if not sub:
+        return jsonify({"error": "A subscription is required."}), 400
+    by = request.args.get("by", "service")
+    dim = "ResourceGroupName" if by == "rg" else "ServiceName"
+    try:
+        return jsonify({"success": True, "by": by,
+                        **costmgmt.cost_by_dimension(sub, dim, request.args.get("timeframe", "MonthToDate"))})
+    except Exception as exc:
+        log.exception("cost breakdown failed")
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.route("/api/cost/trend")
+@require_superadmin
+def api_cost_trend():
+    import costmgmt
+    if not costmgmt.configured():
+        return jsonify({"error": "Cost service principal not configured."}), 400
+    sub = request.args.get("subscription", "").strip()
+    if not sub:
+        return jsonify({"error": "A subscription is required."}), 400
+    try:
+        return jsonify({"success": True, **costmgmt.cost_daily(sub, request.args.get("timeframe", "MonthToDate"))})
+    except Exception as exc:
+        log.exception("cost trend failed")
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.route("/api/admin/settings/test-cost", methods=["POST"])
+@require_superadmin
+def admin_settings_test_cost():
+    import costmgmt
+    return jsonify(costmgmt.test_connection())
+
+
 @app.route("/api/admin/requests/<int:req_id>/diagnose", methods=["POST"])
 @require_admin
 def request_diagnose(req_id):

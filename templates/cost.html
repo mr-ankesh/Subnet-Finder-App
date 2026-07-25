@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}Cost Analysis | Network Copilot{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <div class="p-eyebrow" style="margin-bottom:10px;">Billing · Cost Management</div>
+    <h1 class="alloc-page-title">Subscription Cost Analysis</h1>
+    <p class="alloc-page-sub">Spend across all subscriptions the cost service principal can see — read-only, via a separate Cost Management identity.</p>
+  </div>
+</div>
+
+<div style="max-width:1100px;margin:0 auto;padding:26px 24px 60px;">
+{% if not cost_configured %}
+  <div class="glass-card"><div class="card-body-pad" style="text-align:center;padding:44px 24px;">
+    <i class="bi bi-cash-coin" style="font-size:34px;color:var(--text-muted);"></i>
+    <p style="font-size:15px;margin-top:12px;">The cost service principal isn't configured yet.</p>
+    <p style="font-size:13px;color:var(--text-muted);">Add a separate SP (with <strong>Cost Management Reader</strong> + <strong>Reader</strong>) in
+      <a href="{{ url_for('admin_settings') }}" style="color:#00BCF2;">Settings → Cost / Billing</a>, then reload.</p>
+  </div></div>
+{% else %}
+  <!-- Timeframe filter -->
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:18px;">
+    <span style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);">Period</span>
+    <div class="tf-group" id="tfGroup">
+      <button class="tf-btn active" data-tf="MonthToDate">Month to date</button>
+      <button class="tf-btn" data-tf="TheLastMonth">Last month</button>
+      <button class="tf-btn" data-tf="BillingMonthToDate">Billing MTD</button>
+      <button class="tf-btn" data-tf="TheLastBillingMonth">Last billing month</button>
+    </div>
+    <span id="asOf" style="font-size:11px;color:var(--text-muted);margin-left:auto;"></span>
+  </div>
+
+  <!-- Hero stat tiles -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:18px;">
+    <div class="stat-tile"><div class="stat-label">Total spend</div><div class="stat-value" id="statTotal">—</div><div class="stat-sub" id="statTotalSub"></div></div>
+    <div class="stat-tile"><div class="stat-label">Subscriptions</div><div class="stat-value" id="statSubs">—</div><div class="stat-sub">reported</div></div>
+    <div class="stat-tile"><div class="stat-label">Top subscription</div><div class="stat-value" id="statTop" style="font-size:18px;">—</div><div class="stat-sub" id="statTopCost"></div></div>
+  </div>
+
+  <!-- Spend by subscription -->
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar"><i class="bi bi-bar-chart-line"></i> Spend by subscription</div>
+    <div class="card-body-pad">
+      <div id="subBarWrap" style="position:relative;height:320px;"><canvas id="subBar"></canvas></div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:8px;"><i class="bi bi-hand-index me-1"></i>Click a bar to drill into a subscription.</div>
+    </div>
+  </div>
+
+  <!-- Per-subscription breakdown -->
+  <div class="glass-card" style="margin-bottom:18px;">
+    <div class="card-header-bar" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <span><i class="bi bi-pie-chart"></i> Subscription detail</span>
+      <select id="subSelect" class="form-input-custom" style="max-width:320px;font-size:12px;padding:5px 8px;"></select>
+    </div>
+    <div class="card-body-pad">
+      <div style="display:grid;grid-template-columns:1fr;gap:20px;">
+        <div>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <button class="tf-btn active" id="byService" onclick="setBreakdown('service')">By service</button>
+            <button class="tf-btn" id="byRg" onclick="setBreakdown('rg')">By resource group</button>
+          </div>
+          <div id="brkWrap" style="position:relative;height:300px;"><canvas id="brkBar"></canvas></div>
+        </div>
+        <div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:6px;">Daily trend</div>
+          <div id="trendWrap" style="position:relative;height:220px;"><canvas id="trendLine"></canvas></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Table view (accessibility channel) -->
+  <details class="glass-card" style="padding:0;">
+    <summary style="padding:12px 16px;cursor:pointer;font-size:12px;color:var(--text-dim);"><i class="bi bi-table me-1"></i>Table view — exact figures</summary>
+    <div class="card-body-pad" style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+        <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">
+          <th style="padding:6px 8px;">Subscription</th><th style="padding:6px 8px;">ID</th><th style="padding:6px 8px;">State</th><th style="padding:6px 8px;text-align:right;">Spend</th></tr></thead>
+        <tbody id="costTable"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <div id="costErr" style="display:none;margin-top:14px;font-size:12.5px;color:#f87171;"></div>
+{% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if cost_configured %}
+<style>
+  .viz { --mark:#3987e5; --grid:#2c2c2a; --axis:#383835; --muted:#898781; --ink:#fff; --ink2:#c3c2b7; }
+  .tf-group { display:inline-flex; gap:4px; }
+  .tf-btn { font-size:11.5px; background:rgba(255,255,255,.05); border:1px solid var(--border); color:var(--text-dim);
+    border-radius:7px; padding:5px 12px; cursor:pointer; transition:all .15s; }
+  .tf-btn:hover { color:#fff; border-color:rgba(57,135,229,.5); }
+  .tf-btn.active { background:rgba(57,135,229,.22); border-color:rgba(57,135,229,.6); color:#fff; }
+  .stat-tile { border:1px solid var(--border); border-radius:14px; padding:16px 18px; background:rgba(255,255,255,.03); }
+  .stat-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); }
+  .stat-value { font-size:30px; font-weight:700; color:#fff; margin-top:6px; line-height:1.1; }
+  .stat-sub { font-size:11.5px; color:var(--text-muted); margin-top:4px; }
+</style>
+<script>
+const CUR = {{ currency|tojson }};
+const MARK = '#3987e5', GRID = '#2c2c2a', MUTED = '#898781', INK2 = '#c3c2b7';
+let TF = 'MonthToDate', SUBS = [], CURRENT_SUB = null, BRK_BY = 'service';
+let subBarChart, brkChart, trendChart;
+
+function money(v, ccy) { if (v == null) return '—'; return (ccy ? '' : CUR) + Number(v).toLocaleString(undefined, {maximumFractionDigits:0}) + (ccy ? ' ' + ccy : ''); }
+function err(m) { const e = document.getElementById('costErr'); e.style.display = 'block'; e.textContent = m; }
+
+const baseOpts = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false },
+    tooltip: { callbacks: { label: (c) => ' ' + money(c.raw) } } },
+  scales: {
+    x: { grid: { color: GRID, drawBorder: false }, ticks: { color: MUTED, font: { size: 11 } } },
+    y: { grid: { display: false }, ticks: { color: INK2, font: { size: 11 } } }
+  }
+};
+
+async function loadSummary() {
+  document.getElementById('asOf').textContent = 'Loading…';
+  try {
+    const d = await (await fetch('/api/cost/summary?timeframe=' + TF)).json();
+    if (d.error) { err(d.error); return; }
+    SUBS = d.subscriptions || [];
+    const ccy = d.currency || '';
+    document.getElementById('statTotal').textContent = money(d.total, ccy);
+    document.getElementById('statTotalSub').textContent = 'across ' + SUBS.length + ' subscription(s)';
+    document.getElementById('statSubs').textContent = SUBS.length;
+    const top = SUBS.find(s => s.cost != null);
+    document.getElementById('statTop').textContent = top ? top.name : '—';
+    document.getElementById('statTopCost').textContent = top ? money(top.cost, ccy) : '';
+    document.getElementById('asOf').textContent = 'As of ' + (d.as_of || '');
+    renderSubBar(ccy);
+    renderTable(ccy);
+    // populate picker
+    const sel = document.getElementById('subSelect');
+    sel.innerHTML = SUBS.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+    sel.onchange = () => { CURRENT_SUB = sel.value; loadDetail(); };
+    CURRENT_SUB = (top || SUBS[0] || {}).id;
+    if (CURRENT_SUB) { sel.value = CURRENT_SUB; loadDetail(); }
+  } catch (e) { err('Could not load cost summary.'); }
+}
+
+function renderSubBar(ccy) {
+  const data = SUBS.filter(s => s.cost != null);
+  const labels = data.map(s => s.name);
+  if (subBarChart) subBarChart.destroy();
+  subBarChart = new Chart(document.getElementById('subBar'), {
+    type: 'bar',
+    data: { labels, datasets: [{ data: data.map(s => s.cost), backgroundColor: MARK, borderRadius: 4, barThickness: 'flex', maxBarThickness: 26 }] },
+    options: { ...baseOpts, indexAxis: 'y',
+      plugins: { ...baseOpts.plugins, tooltip: { callbacks: { label: (c) => ' ' + money(c.raw, ccy) } } },
+      onClick: (evt, els) => { if (els.length) { CURRENT_SUB = data[els[0].index].id; document.getElementById('subSelect').value = CURRENT_SUB; loadDetail(); } } }
+  });
+}
+
+function renderTable(ccy) {
+  document.getElementById('costTable').innerHTML = SUBS.map(s => `
+    <tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:6px 8px;color:#fff;">${s.name}</td>
+      <td style="padding:6px 8px;font-family:var(--mono);color:var(--text-muted);font-size:11px;">${s.id}</td>
+      <td style="padding:6px 8px;color:var(--text-dim);">${s.state || ''}</td>
+      <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums;color:${s.cost==null?'#f87171':'#fff'};">${s.cost==null?('n/a'):money(s.cost, ccy)}</td>
+    </tr>`).join('');
+}
+
+function setBreakdown(by) {
+  BRK_BY = by;
+  document.getElementById('byService').classList.toggle('active', by === 'service');
+  document.getElementById('byRg').classList.toggle('active', by === 'rg');
+  loadBreakdown();
+}
+
+async function loadDetail() { loadBreakdown(); loadTrend(); }
+
+async function loadBreakdown() {
+  if (!CURRENT_SUB) return;
+  try {
+    const d = await (await fetch(`/api/cost/breakdown?subscription=${encodeURIComponent(CURRENT_SUB)}&by=${BRK_BY}&timeframe=${TF}`)).json();
+    if (d.error) return;
+    const items = (d.items || []);
+    if (brkChart) brkChart.destroy();
+    brkChart = new Chart(document.getElementById('brkBar'), {
+      type: 'bar',
+      data: { labels: items.map(i => i.name), datasets: [{ data: items.map(i => i.cost), backgroundColor: MARK, borderRadius: 4, maxBarThickness: 22 }] },
+      options: { ...baseOpts, indexAxis: 'y',
+        plugins: { ...baseOpts.plugins, tooltip: { callbacks: { label: (c) => ' ' + money(c.raw, d.currency) } } } }
+    });
+  } catch (e) { /* ignore */ }
+}
+
+async function loadTrend() {
+  if (!CURRENT_SUB) return;
+  try {
+    const d = await (await fetch(`/api/cost/trend?subscription=${encodeURIComponent(CURRENT_SUB)}&timeframe=${TF}`)).json();
+    if (d.error) return;
+    const pts = d.points || [];
+    if (trendChart) trendChart.destroy();
+    trendChart = new Chart(document.getElementById('trendLine'), {
+      type: 'line',
+      data: { labels: pts.map(p => p.date.slice(5)), datasets: [{ data: pts.map(p => p.cost), borderColor: MARK, borderWidth: 2, pointRadius: 0, tension: .25, fill: false }] },
+      options: { ...baseOpts,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { ...baseOpts.plugins, tooltip: { callbacks: { label: (c) => ' ' + money(c.raw, d.currency) } } },
+        scales: { x: baseOpts.scales.x, y: { ...baseOpts.scales.x } } }
+    });
+  } catch (e) { /* ignore */ }
+}
+
+document.getElementById('tfGroup').addEventListener('click', (e) => {
+  const b = e.target.closest('.tf-btn'); if (!b) return;
+  document.querySelectorAll('#tfGroup .tf-btn').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); TF = b.dataset.tf; loadSummary();
+});
+
+document.querySelector('.viz-init') || document.body.classList.add('viz');
+loadSummary();
+</script>
+{% endif %}
+{% endblock %}
