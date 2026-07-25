@@ -1504,18 +1504,21 @@ def admin_settings_test_cost():
 # ── Subscription inventory (Azure facts + owner/budget metadata) ───────────
 
 def _inventory_data():
+    """Fast path: just the subscription list + stored owner/budget metadata.
+
+    Deliberately does NOT run the (slow) per-subscription Cost Management queries —
+    the page renders immediately from this, then pulls spend from
+    /api/subscriptions/spend so a slow cost API never blocks the whole page.
+    """
     import subinventory, costmgmt, azure_tools
     stored = subinventory.all_records()
-    currency, cost_available = "", costmgmt.configured()
+    cost_available = costmgmt.configured()
     subs = []
     if cost_available:
         try:
-            s = costmgmt.summary("MonthToDate")
-            subs = [{"id": x["id"], "name": x["name"], "state": x.get("state"), "spend": x.get("cost")}
-                    for x in s.get("subscriptions", [])]
-            currency = s.get("currency", "")
+            subs = [{**x, "spend": None} for x in costmgmt.list_subscriptions()]
         except Exception:
-            log.exception("inventory: cost summary failed")
+            log.exception("inventory: cost SP subscription list failed")
             cost_available = False
     if not subs:
         r = azure_tools.list_subscriptions()
@@ -1524,7 +1527,7 @@ def _inventory_data():
         inv = stored.get(sub["id"], {})
         sub["inventory"] = {k: (inv.get(k) or "") for k in subinventory.FIELDS}
         sub["updated_by"], sub["updated_ts"] = inv.get("updated_by"), inv.get("updated_ts")
-    return {"subscriptions": subs, "currency": currency, "cost_available": cost_available}
+    return {"subscriptions": subs, "currency": cfg.COST_CURRENCY or "", "cost_available": cost_available}
 
 
 @app.route("/subscriptions")
@@ -1541,6 +1544,24 @@ def api_subscription_inventory():
     except Exception as exc:
         log.exception("subscription inventory failed")
         return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.route("/api/subscriptions/spend")
+@require_superadmin
+def api_subscription_spend():
+    """Per-subscription month-to-date spend, loaded lazily by the inventory page so
+    the slow Cost Management queries never block the initial render."""
+    import costmgmt
+    if not costmgmt.configured():
+        return jsonify({"success": True, "cost_available": False, "spend": {}, "currency": ""})
+    try:
+        s = costmgmt.summary("MonthToDate")
+        spend = {x["id"]: x.get("cost") for x in s.get("subscriptions", [])}
+        return jsonify({"success": True, "cost_available": True, "spend": spend,
+                        "currency": s.get("currency", "")})
+    except Exception as exc:
+        log.exception("subscription spend failed")
+        return jsonify({"success": False, "error": str(exc)[:200]}), 500
 
 
 @app.route("/api/subscriptions/inventory", methods=["POST"])

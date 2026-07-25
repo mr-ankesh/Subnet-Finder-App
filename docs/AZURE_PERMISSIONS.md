@@ -79,6 +79,17 @@ A **second app registration**, isolated from automation. On every subscription
 - It needs **no** write, network, or resource access — keep it read-only.
 - Verify from **Settings → Cost / Billing → Test Cost SP**.
 
+> **Fast spend for many subscriptions — set a management group.**
+> With no management group configured the portal fetches spend with **one Cost
+> Management query per subscription**. That is fine for a handful, but with dozens
+> Azure **throttles** the queries (HTTP 429) and the dashboard/inventory spend
+> loads slowly. Set **Cost / Billing → Management group ID (fast spend)**
+> (`COST_MANAGEMENT_GROUP`) to a management group the cost SP can read — all
+> subscription spend then comes back in a **single** grouped query. Grant the cost
+> SP **Cost Management Reader** at that management group (the tenant **root** MG,
+> whose ID equals the tenant ID, covers everything). Spend results are also cached
+> for ~10 minutes so the two pages share one lookup.
+
 ---
 
 ## Setup checklist

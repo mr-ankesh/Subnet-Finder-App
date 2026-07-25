@@ -77,6 +77,11 @@ SETTINGS_SPEC = {
     "COST_SUBSCRIPTIONS":   _f("cost", "Subscriptions to report",
                                help="Comma-separated subscription IDs to include. Blank = auto-discover every "
                                     "subscription the cost SP can see."),
+    "COST_MANAGEMENT_GROUP": _f("cost", "Management group ID (fast spend)",
+                               help="Management group the cost SP can read. When set, all subscription spend "
+                                    "is fetched in ONE query grouped by subscription — far faster and avoids "
+                                    "Cost Management throttling. Blank = per-subscription queries (slow for many "
+                                    "subscriptions). Use the tenant root MG (= tenant ID) to cover everything."),
     "COST_CURRENCY":        _f("cost", "Currency symbol", "$",
                                help="Symbol shown in the dashboard (e.g. $, €, AED). Actual currency comes from Azure."),
 

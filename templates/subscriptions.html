@@ -45,7 +45,7 @@
 </style>
 <script>
 const CUR = {{ currency|tojson }};
-let SUBS = [], CCY = '', COST_OK = false;
+let SUBS = [], CCY = '', COST_OK = false, SPEND_LOADED = false;
 
 function money(v){ if (v==null||v==='') return '—'; return CUR + Number(v).toLocaleString(undefined,{maximumFractionDigits:0}) + (CCY?(' '+CCY):''); }
 function num(v){ const n = parseFloat(String(v).replace(/[^0-9.]/g,'')); return isNaN(n)?null:n; }
@@ -55,9 +55,27 @@ async function load() {
     const d = await (await fetch('/api/subscriptions/inventory')).json();
     if (d.error) { document.getElementById('siCards').innerHTML = `<div style="color:#f87171;font-size:13px;">${d.error}</div>`; return; }
     SUBS = d.subscriptions || []; CCY = d.currency || ''; COST_OK = d.cost_available;
-    document.getElementById('siNote').textContent = COST_OK ? 'Spend is live from Cost Management (month-to-date).' : 'Configure the cost SP (Settings → Cost / Billing) to see spend & budget utilisation.';
+    document.getElementById('siNote').textContent = COST_OK ? 'Loading month-to-date spend…' : 'Configure the cost SP (Settings → Cost / Billing) to see spend & budget utilisation.';
     renderTiles(); renderCards();
+    if (COST_OK) loadSpend();   // spend is slow — fetch it after the page is already up
   } catch (e) { document.getElementById('siCards').innerHTML = '<div style="color:#f87171;font-size:13px;">Could not load subscriptions.</div>'; }
+}
+
+async function loadSpend() {
+  try {
+    const d = await (await fetch('/api/subscriptions/spend')).json();
+    if (!d.success) throw new Error(d.error || 'spend failed');
+    const map = d.spend || {};
+    if (d.currency) CCY = d.currency;
+    SUBS.forEach(s => { if (s.id in map) s.spend = map[s.id]; });
+    SPEND_LOADED = true;
+    document.getElementById('siNote').textContent = 'Spend is live from Cost Management (month-to-date).';
+    renderTiles(); renderCards();
+  } catch (e) {
+    SPEND_LOADED = true;
+    document.getElementById('siNote').textContent = 'Spend unavailable right now — owner/budget fields still work.';
+    renderCards();
+  }
 }
 
 function renderTiles() {
@@ -69,8 +87,8 @@ function renderTiles() {
   });
   document.getElementById('tSubs').textContent = SUBS.length;
   document.getElementById('tBudget').textContent = hasBudget ? money(budget) : '—';
-  document.getElementById('tSpend').textContent = COST_OK ? money(spend) : 'n/a';
-  document.getElementById('tOver').textContent = hasBudget && COST_OK ? over : '—';
+  document.getElementById('tSpend').textContent = !COST_OK ? 'n/a' : (SPEND_LOADED ? money(spend) : '…');
+  document.getElementById('tOver').textContent = hasBudget && COST_OK && SPEND_LOADED ? over : '—';
 }
 
 function utilBar(spend, budget) {
@@ -98,7 +116,7 @@ function renderCards() {
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
           <span class="state-pill">${s.state || 'Unknown'}</span>
           <div style="text-align:right;"><div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;">Spend MTD</div>
-            <div style="font-size:15px;font-weight:700;color:#fff;">${COST_OK ? money(s.spend) : 'n/a'}</div></div>
+            <div style="font-size:15px;font-weight:700;color:#fff;">${!COST_OK ? 'n/a' : (SPEND_LOADED ? money(s.spend) : '<span style="color:var(--text-muted);font-weight:400;">…</span>')}</div></div>
           ${utilBar(s.spend, inv.budget)}
         </div>
       </div>
