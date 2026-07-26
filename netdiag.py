@@ -301,31 +301,66 @@ def _llm_available() -> bool:
     return False
 
 
+# Any CJK (Chinese / Japanese / Korean) character — the tell-tale of leaked
+# reasoning from models that "think" in another language before answering.
+_CJK = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿가-힣ｦ-ﾟ]")
+
+# Appended to EVERY system prompt so every AI module is English-only by default.
+_ENGLISH_GUARD = (
+    "\n\nOUTPUT RULES (critical, override anything above that conflicts): "
+    "Write the response in ENGLISH ONLY. Never output Chinese, Japanese, Korean or any "
+    "non-English characters. Do NOT reveal your reasoning, analysis, or restate the task. "
+    "If any thinking precedes your answer, end that thinking with a line reading exactly "
+    "'FINAL ANSWER:' and put ONLY the finished answer after it.")
+
+
+def _has_cjk(s: str) -> bool:
+    return bool(_CJK.search(s or ""))
+
+
 def _clean_llm(text: str) -> str:
-    """Drop reasoning-model chain-of-thought (<think>…</think>) that some models
-    emit before the answer, so only the final English answer is shown."""
+    """Return the model's final English answer, or '' if the output is leaked
+    reasoning / non-English.
+
+    Handles reasoning models three ways: strips <think>/<thinking>/<reasoning>/
+    <analysis> tag blocks; if a 'FINAL ANSWER:' marker is present, keeps only what
+    follows it (salvaging a clean English answer that trailed some reasoning); and
+    finally REJECTS (returns '') anything that still contains CJK characters, so a
+    Chinese chain-of-thought can never reach the UI."""
     if not text:
-        return text
-    text = re.sub(r"(?is)<think>.*?</think>", "", text)          # closed blocks
-    text = re.sub(r"(?is)^.*?</think>", "", text)                # dangling open block
-    text = text.replace("<think>", "").replace("</think>", "")
-    return text.strip()
+        return ""
+    # Remove reasoning wrapped in tags (closed blocks and a dangling open block).
+    text = re.sub(r"(?is)<(think|thinking|reasoning|analysis)>.*?</\1>", "", text)
+    text = re.sub(r"(?is)^.*?</(?:think|thinking|reasoning|analysis)>", "", text)
+    text = re.sub(r"(?i)</?(?:think|thinking|reasoning|analysis)>", "", text)
+    # If the model marked its final answer, keep only that (drops leading reasoning).
+    marks = list(re.finditer(r"(?i)final answer\s*[:：]?", text))
+    if marks:
+        text = text[marks[-1].end():]
+    text = text.strip()
+    # Hard guarantee: any residual CJK means leaked/non-English output — reject it.
+    if _has_cjk(text):
+        return ""
+    return text
 
 
 def _llm_complete(system: str, user: str) -> str:
-    """One-shot completion via the configured LLM (reuses the admin agent's client)."""
+    """One-shot completion via the configured LLM (reuses the admin agent's client).
+    Returns the cleaned, ENGLISH-ONLY final answer, or '' if the model leaked
+    non-English reasoning (callers fall back to their template / 'unavailable')."""
     import agent_admin as ag
     provider = (cfg.AGENT_PROVIDER or "").lower()
     client = ag._get_client()
+    system = (system or "") + _ENGLISH_GUARD
     if provider == "anthropic":
         resp = client.messages.create(
-            model=cfg.ANTHROPIC_MODEL or "claude-sonnet-4-6", max_tokens=700,
+            model=cfg.ANTHROPIC_MODEL or "claude-sonnet-4-6", max_tokens=1500,
             system=system, messages=[{"role": "user", "content": user}])
         text = "".join(getattr(b, "text", "") for b in resp.content
                        if getattr(b, "type", "") == "text")
     else:
         resp = client.chat.completions.create(
-            model=cfg.OPENAI_MODEL or "gpt-4o", max_tokens=700,
+            model=cfg.OPENAI_MODEL or "gpt-4o", max_tokens=1500,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
         text = resp.choices[0].message.content or ""
     return _clean_llm(text)
@@ -356,7 +391,7 @@ def summarize(report: dict, details: dict) -> str:
             + (f" port {d.get('dest_port')}" if d.get('dest_port') else "") + "\n"
             f"Overall verdict: {report.get('verdict')}\n\nFindings:\n{findings}")
     try:
-        return _llm_complete(system, user)
+        return _llm_complete(system, user) or None   # '' => leaked/non-English, drop it
     except Exception as exc:
         log.error("netdiag.summarize failed: %s", exc)
         return None

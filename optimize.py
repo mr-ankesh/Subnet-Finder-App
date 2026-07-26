@@ -278,7 +278,7 @@ def summarize(scan: dict) -> str:
             f"{scan['totals']['monthly_estimate']}/month across {scan['subscriptions']} subscription(s).\n\n"
             f"By category:\n" + "\n".join(lines))
     try:
-        return netdiag._llm_complete(system, user)
+        return netdiag._llm_complete(system, user) or None   # '' => leaked/non-English
     except Exception as exc:
         log.error("optimize.summarize failed: %s", exc)
         return None

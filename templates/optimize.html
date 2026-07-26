@@ -40,7 +40,7 @@
   <!-- AI intelligence brief -->
   <div id="ozAi" style="border:1px solid rgba(57,135,229,.35);background:rgba(57,135,229,.07);border-radius:14px;padding:16px 18px;margin-bottom:20px;">
     <div style="font-size:12px;font-weight:700;color:#3987e5;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">
-      <i class="bi bi-stars me-1"></i>AI optimization brief</div>
+      <i class="bi bi-stars me-1"></i>Optimization brief <span id="ozAiTag" style="font-size:9px;opacity:.6;font-weight:600;"></span></div>
     <div id="ozAiBody" style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap;">Analysing findings…</div>
   </div>
 
@@ -101,15 +101,33 @@ async function runScan(btn, force) {
   finally { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Rescan'; } }
 }
 
+// Deterministic English brief from the scan — always shown when the AI model
+// isn't available or doesn't return clean English (never a blank or non-English panel).
+function fallbackBrief() {
+  const cats = Object.values(SCAN.by_category);
+  const paid = cats.filter(c => c.estimate > 0).sort((a, b) => b.estimate - a.estimate);
+  const hygiene = cats.filter(c => c.estimate === 0);
+  const t = SCAN.totals;
+  let s = `Estimated reclaimable spend is about ${money(t.monthly_estimate)}/month across ${t.count} findings.`;
+  if (paid.length) s += ' Priorities: ' + paid.slice(0, 3).map(c =>
+    `${c.label.toLowerCase()} (${c.count}, ~${money(c.estimate)}/mo)`).join('; ') + '.';
+  if (hygiene.length) s += ' Quick hygiene wins with no direct cost: ' + hygiene.map(c =>
+    `${c.count} ${c.label.toLowerCase()}`).join(', ') + '.';
+  s += ' Verify each resource is genuinely unused before deleting — snapshots and disks may be deliberate backups.';
+  return s;
+}
+
 async function loadSummary(force) {
   const body = document.getElementById('ozAiBody');
+  const badge = document.getElementById('ozAiTag');
   body.textContent = 'Analysing findings…';
   if (!SCAN || SCAN.totals.count === 0) { document.getElementById('ozAi').style.display = 'none'; return; }
   document.getElementById('ozAi').style.display = '';
   try {
     const d = await (await fetch('/api/optimize/summary')).json();
-    body.textContent = d.summary || 'AI brief unavailable (configure an AI provider under Settings → AI Agent to enable prioritised recommendations).';
-  } catch (e) { body.textContent = 'AI brief unavailable right now.'; }
+    if (d.summary) { body.textContent = d.summary; if (badge) badge.textContent = 'AI'; }
+    else { body.textContent = fallbackBrief(); if (badge) badge.textContent = 'auto'; }
+  } catch (e) { body.textContent = fallbackBrief(); if (badge) badge.textContent = 'auto'; }
 }
 
 function renderTiles() {
