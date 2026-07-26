@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Presight R&D | AlMadar 360{% endblock %}
+{% block title %}Home | Presight AlMadar 360{% endblock %}
 
 {% block content %}
 
@@ -26,64 +26,85 @@
       spanning networking, AKS, subscription inventory, cost &amp; budget governance
       across the Presight Azure estate.
     </p>
-    <a href="#pools" class="btn-hero anim-fade-up" style="animation-delay:.55s;">
-      EXPLORE POOLS
+    <a href="#modules" class="btn-hero anim-fade-up" style="animation-delay:.55s;">
+      OPEN A MODULE
       <span class="btn-hero-dot"><i class="bi bi-arrow-down"></i></span>
     </a>
   </div>
-  <button class="p-scroll-cue" type="button" data-target="#pools" aria-label="Scroll down">
+  <button class="p-scroll-cue" type="button" data-target="#modules" aria-label="Scroll down">
     <i class="bi bi-arrow-down"></i>
   </button>
 </section>
 
-<!-- Pool Cards -->
-<div id="pools" class="pool-section">
-  {% if inventory_empty %}
-  <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-    <i class="bi bi-exclamation-triangle-fill" style="color:#f59e0b;font-size:20px;"></i>
-    <div style="flex:1;min-width:280px;">
-      <div style="font-size:14px;font-weight:700;color:#f59e0b;">Fresh deployment — subnet inventory is empty</div>
-      <div style="font-size:12.5px;color:var(--text-dim);margin-top:2px;">
-        This instance starts with a clean database. {% if is_admin %}Import your environment's current subnet
-        allocations before assigning anything new, or the allocator may hand out ranges already in use.{% else %}Ask an admin to import the current subnet allocations before assigning anything new.{% endif %}
-      </div>
-    </div>
+<div id="modules" style="max-width:1160px;margin:0 auto;padding:30px 24px 64px;">
+
+  <!-- Quick stats -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:26px;">
     {% if is_admin %}
-    <a href="{{ url_for('admin_inventory') }}" class="btn btn-glow" style="white-space:nowrap;">
-      <i class="bi bi-box-arrow-in-down me-2"></i>Import Inventory
-    </a>
+    <div class="dash-stat"><div class="dash-stat-label">Open requests</div><div class="dash-stat-value">{{ open_requests }}</div></div>
+    <div class="dash-stat"><div class="dash-stat-label">Total requests</div><div class="dash-stat-value">{{ total_requests }}</div></div>
     {% endif %}
+    <div class="dash-stat"><div class="dash-stat-label">Network pools</div><div class="dash-stat-value">{{ pools_count }}</div></div>
+    <div class="dash-stat"><div class="dash-stat-label">Allocated subnets</div><div class="dash-stat-value">{{ allocations }}</div></div>
   </div>
-  {% endif %}
-  <div class="pool-section-header">
-    <span class="pool-section-title">Available network pools</span>
-    <span style="font-size:13px;">
-      {% if is_admin %}
-      <a href="{{ url_for('admin_inventory') }}" style="color:#60a5fa;text-decoration:none;margin-right:14px;">
-        <i class="bi bi-box-arrow-in-down"></i> Import inventory
-      </a>
-      {% endif %}
-      <span style="color:var(--text-muted);">{{ pools|length }} pool{{ 's' if pools|length != 1 }}</span>
-    </span>
+
+  <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:12px;">
+    <i class="bi bi-grid-3x3-gap-fill me-1"></i>Modules
   </div>
-  <div class="pool-grid">
-    {% for p in pools %}
-    <a href="/allocator/{{ p.key }}" class="pool-card">
-      <div class="pool-card-top">
-        <div class="pool-card-icon">
-          <i class="bi bi-hdd-network-fill"></i>
-        </div>
-        <i class="bi bi-arrow-right pool-card-arrow"></i>
-      </div>
-      <div class="pool-card-cidr">{{ p.cidr }}</div>
-      <div class="pool-card-meta">Key: {{ p.key }}</div>
-      <div class="pool-card-footer">
-        <i class="bi bi-layers"></i>
-        Manage Subnets
-      </div>
+
+  <div class="dash-grid">
+    {% macro module(href, icon, title, desc, accent='#3987e5') %}
+    <a href="{{ href }}" class="dash-card">
+      <div class="dash-card-icon" style="color:{{ accent }};background:{{ accent }}22;"><i class="bi {{ icon }}"></i></div>
+      <div class="dash-card-title">{{ title }} <i class="bi bi-arrow-right dash-card-arrow"></i></div>
+      <div class="dash-card-desc">{{ desc }}</div>
     </a>
-    {% endfor %}
+    {% endmacro %}
+
+    {% if is_admin %}
+      {{ module(url_for('requests_list'), 'bi-list-task', 'Requests', 'Review and action VNET, firewall, ZPA, DNS, AKS and network-issue requests.') }}
+      {{ module(url_for('subnet_allocator'), 'bi-hdd-network', 'Subnet Allocator', 'Browse IP pools and allocate, view or release subnets across the estate.', '#199e70') }}
+      {% if is_superadmin or is_itadmin %}
+      {{ module(url_for('it_reachability'), 'bi-hdd-network', 'ZPA Analyzer', 'Connector health dashboard and source→destination reachability analysis.', '#8b5cf6') }}
+      {% endif %}
+      {{ module(url_for('agent_page'), 'bi-robot', 'Admin Agent', 'Ask the AI agent to run diagnostics and help action requests.', '#f59e0b') }}
+      {% if is_superadmin %}
+      {{ module(url_for('subscription_inventory_page'), 'bi-card-checklist', 'Subscriptions', 'Ownership, budgets and intelligent over-budget alerting for every subscription.', '#199e70') }}
+      {{ module(url_for('cost_dashboard'), 'bi-cash-coin', 'Cost', 'Month-to-date spend, service and resource-group breakdowns, trends.', '#199e70') }}
+      {{ module(url_for('admin_audit'), 'bi-journal-text', 'Audit', 'Full audit trail of who did what across the platform.') }}
+      {% endif %}
+      {{ module(url_for('admin_changes'), 'bi-arrow-counterclockwise', 'Changes', 'The change ledger — review and revert applied Azure operations.', '#f87171') }}
+      {% if is_superadmin %}
+      {{ module(url_for('admin_settings'), 'bi-gear', 'Settings', 'Azure credentials, cost SP, notifications, naming, AKS and agent config.') }}
+      {% endif %}
+      {{ module(url_for('requester_page'), 'bi-person', 'Requester Portal', 'Submit a new network or platform request as a requester.') }}
+      {{ module(url_for('help_admin'), 'bi-book', 'Guide', 'How the platform works and how each module is used.') }}
+    {% else %}
+      {% if is_allocator %}
+      {{ module(url_for('subnet_allocator'), 'bi-hdd-network', 'Subnet Allocator', 'Browse IP pools and allocate, view or release subnets across the estate.', '#199e70') }}
+      {% endif %}
+      {% if is_itadmin %}
+      {{ module(url_for('it_reachability'), 'bi-hdd-network', 'ZPA Analyzer', 'Connector health dashboard and source→destination reachability analysis.', '#8b5cf6') }}
+      {% endif %}
+      {% if is_requester or not sso %}
+      {{ module(url_for('requester_page'), 'bi-person', 'Requester Portal', 'Submit and track your network and platform requests.') }}
+      {{ module(url_for('help_requester'), 'bi-book', 'Guide', 'How to submit requests and what each type does.') }}
+      {% endif %}
+    {% endif %}
   </div>
 </div>
 
+<style>
+  .dash-stat { border:1px solid var(--border); border-radius:14px; padding:14px 16px; background:rgba(255,255,255,.03); }
+  .dash-stat-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); }
+  .dash-stat-value { font-size:26px; font-weight:700; color:#fff; margin-top:5px; }
+  .dash-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; }
+  .dash-card { display:block; border:1px solid var(--border); border-radius:14px; padding:18px; background:rgba(255,255,255,.03); text-decoration:none; transition:transform .12s ease, border-color .12s ease, background .12s ease; }
+  .dash-card:hover { transform:translateY(-3px); border-color:rgba(255,255,255,.22); background:rgba(255,255,255,.05); }
+  .dash-card-icon { width:42px; height:42px; border-radius:11px; display:flex; align-items:center; justify-content:center; font-size:20px; margin-bottom:12px; }
+  .dash-card-title { font-size:15px; font-weight:700; color:#fff; display:flex; align-items:center; gap:6px; }
+  .dash-card-arrow { font-size:13px; opacity:0; transition:opacity .12s ease, transform .12s ease; color:var(--text-muted); }
+  .dash-card:hover .dash-card-arrow { opacity:1; transform:translateX(3px); }
+  .dash-card-desc { font-size:12.5px; color:var(--text-dim); margin-top:6px; line-height:1.5; }
+</style>
 {% endblock %}

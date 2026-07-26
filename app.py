@@ -849,9 +849,25 @@ def deallocate_subnet(selected_cidr, base_net):
 @app.route("/")
 @require_subnet_access
 def segment_select():
+    """Home dashboard — platform overview with quick stats and module launcher."""
+    allocations = SubnetRecord.query.count()
+    _terminal = (RequestStatus.COMPLETED, RequestStatus.CANCELLED,
+                 RequestStatus.REJECTED, RequestStatus.HUB_INTEGRATED)
+    total_requests = SpokeRequest.query.count()
+    open_requests = SpokeRequest.query.filter(
+        ~SpokeRequest.status.in_(_terminal)).count()
+    return render_template("index.html", pools_count=len(POOLS),
+                           allocations=allocations, total_requests=total_requests,
+                           open_requests=open_requests)
+
+
+@app.route("/subnets")
+@require_subnet_access
+def subnet_allocator():
+    """Subnet Allocator — IP pool browsing and subnet allocation (moved off Home)."""
     pools = [{"key": k, "cidr": v} for k, v in POOLS.items()]
     inventory_empty = SubnetRecord.query.count() == 0
-    return render_template("index.html", pools=pools, inventory_empty=inventory_empty)
+    return render_template("subnets.html", pools=pools, inventory_empty=inventory_empty)
 
 
 # ── Subnet inventory import (fresh deployments start with an empty DB) ──────

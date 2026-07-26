@@ -51,6 +51,9 @@
           <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint == 'segment_select' %}active{% endif %}">
             <i class="bi bi-house"></i> Home
           </a>
+          <a href="{{ url_for('subnet_allocator') }}" class="nav-link {% if request.endpoint in ('subnet_allocator', 'allocator') %}active{% endif %}">
+            <i class="bi bi-hdd-network"></i> Subnet Allocator
+          </a>
           <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
             <i class="bi bi-person"></i> Portal
           </a>
@@ -99,7 +102,10 @@
           {# Non-admin: additive links per capability, so a user with several
              roles (e.g. requester + allocator) can reach every area they own. #}
           {% if is_allocator %}
-          <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint in ('segment_select', 'allocator') %}active{% endif %}">
+          <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint == 'segment_select' %}active{% endif %}">
+            <i class="bi bi-house"></i> Home
+          </a>
+          <a href="{{ url_for('subnet_allocator') }}" class="nav-link {% if request.endpoint in ('subnet_allocator', 'allocator') %}active{% endif %}">
             <i class="bi bi-hdd-network"></i> Subnet Allocator
           </a>
           {% endif %}
