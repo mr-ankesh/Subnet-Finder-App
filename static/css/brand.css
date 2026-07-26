@@ -102,7 +102,7 @@ h1, h2, h3, h4, h5 { font-family: var(--p-font-body); }
 .nav-link:hover::after, .nav-link.active::after { right: 10px; }
 /* Free up width progressively before collapsing to the hamburger. */
 @media (max-width: 1420px) { .nav-clock { display: none; } }
-@media (max-width: 1200px) { .brand-sub { display: none; } }
+@media (max-width: 1300px) { .brand-sub { display: none; } }
 @media (min-width: 769px) and (max-width: 1160px) {
   .nav-toggle { display: inline-flex; }
   .nav-links {

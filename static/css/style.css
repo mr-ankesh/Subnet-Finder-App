@@ -61,8 +61,9 @@ body {
 .brand {
   display: flex; align-items: center; gap: 14px;
   text-decoration: none;
+  flex-shrink: 0;              /* never let a crowded nav compress the brand */
 }
-.brand-logo { height: 36px; width: auto; display: block; }
+.brand-logo { height: 36px; width: auto; display: block; flex-shrink: 0; }
 .brand-divider {
   width: 1px; height: 28px;
   background: var(--border-bright);
@@ -70,17 +71,20 @@ body {
 .brand-app {
   display: flex; flex-direction: column; gap: 1px;
 }
+.brand-app { min-width: 0; }
 .brand-title {
   font-family: var(--font-heading);
   font-size: 13px; font-weight: 600;
   color: var(--text); letter-spacing: -0.2px;
+  white-space: nowrap;
 }
 .brand-sub {
   font-size: 10px; font-weight: 400;
   color: var(--text-muted);
-  text-transform: uppercase; letter-spacing: 0.7px;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  white-space: nowrap;
 }
-.nav-right { display: flex; align-items: center; gap: 16px; }
+.nav-right { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .nav-clock {
   display: flex; align-items: center; gap: 7px;
   font-size: 12px; font-weight: 500;
@@ -689,7 +693,15 @@ body {
   align-items: center;
   gap: 0.25rem;
   margin-right: 1rem;
+  /* On a crowded super-admin nav, let the link row scroll horizontally rather
+     than clip on the right or squeeze the brand. Scrollbar is hidden; on wide
+     screens where everything fits, nothing scrolls. */
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+.nav-links::-webkit-scrollbar { display: none; }
 .nav-links .nav-link {
   display: flex;
   align-items: center;
