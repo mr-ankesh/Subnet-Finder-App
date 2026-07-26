@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Resource Optimizer | AlMadar 360{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <div class="p-eyebrow" style="margin-bottom:10px;">FinOps · Optimization</div>
+    <h1 class="alloc-page-title">Resource Optimizer</h1>
+    <p class="alloc-page-sub">Read-only scan for idle &amp; orphaned Azure resources — unattached disks, unassociated public IPs, stopped VMs, stale snapshots and orphaned network objects — with AI-prioritised recommendations. Nothing is ever deleted automatically.</p>
+  </div>
+</div>
+
+<div style="max-width:1160px;margin:0 auto;padding:26px 24px 64px;">
+
+  {% if not opt_configured %}
+  <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:12px;padding:18px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+    <i class="bi bi-exclamation-triangle-fill" style="color:#f59e0b;font-size:22px;"></i>
+    <div style="flex:1;min-width:280px;">
+      <div style="font-size:14px;font-weight:700;color:#f59e0b;">Optimizer service principal not configured</div>
+      <div style="font-size:12.5px;color:var(--text-dim);margin-top:3px;">Add a separate, read-only (Reader) service principal under
+        <b>Settings → Resource Optimizer</b> to scan for idle resources.</div>
+    </div>
+    <a href="{{ url_for('admin_settings') }}#optimize" class="btn btn-glow" style="white-space:nowrap;"><i class="bi bi-gear me-2"></i>Configure</a>
+  </div>
+  {% else %}
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px;">
+    <div class="oz-tile"><div class="oz-label">Findings</div><div class="oz-value" id="tCount">—</div></div>
+    <div class="oz-tile"><div class="oz-label">Est. reclaimable / mo</div><div class="oz-value" id="tSave" style="color:#199e70;">—</div></div>
+    <div class="oz-tile"><div class="oz-label">Subscriptions scanned</div><div class="oz-value" id="tSubs">—</div></div>
+    <div class="oz-tile"><div class="oz-label">High severity</div><div class="oz-value" id="tHigh" style="color:#f87171;">—</div></div>
+  </div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+    <span id="ozAsOf" style="font-size:11px;color:var(--text-muted);"></span>
+    <button class="be-ghost" onclick="runScan(this, true)"><i class="bi bi-arrow-clockwise me-1"></i>Rescan</button>
+  </div>
+
+  <!-- AI intelligence brief -->
+  <div id="ozAi" style="border:1px solid rgba(57,135,229,.35);background:rgba(57,135,229,.07);border-radius:14px;padding:16px 18px;margin-bottom:20px;">
+    <div style="font-size:12px;font-weight:700;color:#3987e5;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">
+      <i class="bi bi-stars me-1"></i>AI optimization brief</div>
+    <div id="ozAiBody" style="font-size:13px;color:var(--text);line-height:1.6;white-space:pre-wrap;">Analysing findings…</div>
+  </div>
+
+  <!-- By category -->
+  <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;">By category</div>
+  <div id="ozCats" style="display:flex;flex-direction:column;gap:8px;margin-bottom:24px;"></div>
+
+  <!-- Findings -->
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);">Findings</div>
+    <input type="search" id="ozFilter" class="form-input-custom" style="max-width:260px;font-size:12.5px;" placeholder="Filter by name, RG, category…" oninput="renderFindings()">
+  </div>
+  <div style="overflow-x:auto;">
+    <table id="ozTable" style="width:100%;border-collapse:collapse;font-size:12.5px;">
+      <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">
+        <th style="padding:7px 10px 7px 0;">Sev</th><th style="padding:7px 10px 7px 0;">Type</th>
+        <th style="padding:7px 10px 7px 0;">Resource</th><th style="padding:7px 10px 7px 0;">Resource group</th>
+        <th style="padding:7px 10px 7px 0;">Detail</th><th style="padding:7px 10px 7px 0;text-align:right;">~ / mo</th>
+        <th style="padding:7px 0;"></th>
+      </tr></thead>
+      <tbody id="ozRows"><tr><td colspan="7" style="padding:14px 0;color:var(--text-muted);">Scanning subscriptions…</td></tr></tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .oz-tile { border:1px solid var(--border); border-radius:14px; padding:14px 16px; background:rgba(255,255,255,.03); }
+  .oz-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--text-muted); }
+  .oz-value { font-size:24px; font-weight:700; color:#fff; margin-top:5px; }
+  .be-ghost { font-size:12.5px; background:rgba(255,255,255,.06); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:7px 13px; cursor:pointer; }
+  .sev-pill { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:2px 7px; border-radius:9px; white-space:nowrap; }
+  .sev-high { color:#f87171; background:rgba(248,113,113,.13); border:1px solid rgba(248,113,113,.4); }
+  .sev-medium { color:#f59e0b; background:rgba(245,158,11,.13); border:1px solid rgba(245,158,11,.4); }
+  .sev-low { color:var(--text-dim); background:rgba(255,255,255,.05); border:1px solid var(--border); }
+  #ozTable tbody tr { border-bottom:1px solid rgba(255,255,255,.05); }
+  .oz-bar-track { height:8px; background:rgba(255,255,255,.07); border-radius:5px; overflow:hidden; flex:1; }
+</style>
+<script>
+const CUR = {{ currency|tojson }};
+let SCAN = null;
+
+function money(v){ if (v==null) return '—'; return CUR + Number(v).toLocaleString(undefined,{maximumFractionDigits:0}); }
+
+async function runScan(btn, force) {
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Scanning…'; }
+  document.getElementById('ozRows').innerHTML = '<tr><td colspan="7" style="padding:14px 0;color:var(--text-muted);">Scanning subscriptions…</td></tr>';
+  try {
+    const d = await (await fetch('/api/optimize/scan' + (force ? '?force=1' : ''))).json();
+    if (!d.success) { showToast(d.error || 'Scan failed', 'danger'); return; }
+    SCAN = d;
+    renderTiles(); renderCategories(); renderFindings();
+    document.getElementById('ozAsOf').textContent = 'Scanned ' + (d.generated_at || '') + ' · cached ~10 min';
+    loadSummary(force);
+  } catch (e) { showToast('Network error during scan', 'danger'); }
+  finally { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Rescan'; } }
+}
+
+async function loadSummary(force) {
+  const body = document.getElementById('ozAiBody');
+  body.textContent = 'Analysing findings…';
+  if (!SCAN || SCAN.totals.count === 0) { document.getElementById('ozAi').style.display = 'none'; return; }
+  document.getElementById('ozAi').style.display = '';
+  try {
+    const d = await (await fetch('/api/optimize/summary')).json();
+    body.textContent = d.summary || 'AI brief unavailable (configure an AI provider under Settings → AI Agent to enable prioritised recommendations).';
+  } catch (e) { body.textContent = 'AI brief unavailable right now.'; }
+}
+
+function renderTiles() {
+  const t = SCAN.totals, sev = SCAN.findings.filter(f => f.severity === 'high').length;
+  document.getElementById('tCount').textContent = t.count;
+  document.getElementById('tSave').textContent = money(t.monthly_estimate);
+  document.getElementById('tSubs').textContent = SCAN.subscriptions;
+  document.getElementById('tHigh').textContent = sev;
+}
+
+function renderCategories() {
+  const cats = Object.entries(SCAN.by_category).map(([k, v]) => ({ k, ...v }))
+    .sort((a, b) => (b.estimate - a.estimate) || (b.count - a.count));
+  const max = Math.max(1, ...cats.map(c => c.estimate));
+  const el = document.getElementById('ozCats');
+  if (!cats.length) { el.innerHTML = '<div style="font-size:13px;color:#199e70;"><i class="bi bi-check-circle me-1"></i>No idle or orphaned resources found. Clean estate.</div>'; return; }
+  el.innerHTML = cats.map(c => `
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:170px;font-size:12.5px;color:var(--text);">${c.label}</div>
+      <div style="width:44px;font-size:12px;color:var(--text-muted);text-align:right;">${c.count}</div>
+      <div class="oz-bar-track"><div style="height:100%;width:${Math.round(c.estimate / max * 100)}%;background:#199e70;"></div></div>
+      <div style="width:90px;text-align:right;font-size:12.5px;color:${c.estimate ? '#199e70' : 'var(--text-muted)'};">${c.estimate ? money(c.estimate) + '/mo' : '—'}</div>
+    </div>`).join('');
+}
+
+function renderFindings() {
+  if (!SCAN) return;
+  const q = (document.getElementById('ozFilter').value || '').toLowerCase();
+  const rows = SCAN.findings.filter(f => !q ||
+    (f.name + ' ' + f.resource_group + ' ' + f.category_label + ' ' + f.detail).toLowerCase().includes(q));
+  const tb = document.getElementById('ozRows');
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="7" style="padding:14px 0;color:var(--text-muted);">No matching findings.</td></tr>'; return; }
+  tb.innerHTML = rows.map(f => `
+    <tr>
+      <td style="padding:7px 10px 7px 0;"><span class="sev-pill sev-${f.severity}">${f.severity}</span></td>
+      <td style="padding:7px 10px 7px 0;white-space:nowrap;">${f.category_label}</td>
+      <td style="padding:7px 10px 7px 0;font-family:var(--mono);color:#fff;">${f.name || '—'}</td>
+      <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${f.resource_group || '—'}</td>
+      <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${f.detail || ''}</td>
+      <td style="padding:7px 10px 7px 0;text-align:right;color:${f.monthly_estimate ? '#199e70' : 'var(--text-muted)'};">${f.monthly_estimate ? money(f.monthly_estimate) : '—'}</td>
+      <td style="padding:7px 0;">${f.resource_id ? `<a href="https://portal.azure.com/#@/resource${f.resource_id}/overview" target="_blank" rel="noopener" title="Open in Azure Portal" style="color:#60a5fa;"><i class="bi bi-box-arrow-up-right"></i></a>` : ''}</td>
+    </tr>`).join('');
+}
+
+{% if opt_configured %}runScan(null, false);{% endif %}
+</script>
+{% endblock %}

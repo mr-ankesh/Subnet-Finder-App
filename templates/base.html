@@ -75,6 +75,9 @@
           <a href="{{ url_for('cost_dashboard') }}" class="nav-link {% if request.endpoint == 'cost_dashboard' %}active{% endif %}">
             <i class="bi bi-cash-coin"></i> Cost
           </a>
+          <a href="{{ url_for('optimize_dashboard') }}" class="nav-link {% if request.endpoint == 'optimize_dashboard' %}active{% endif %}">
+            <i class="bi bi-recycle"></i> Optimizer
+          </a>
           <a href="{{ url_for('admin_audit') }}" class="nav-link {% if request.endpoint == 'admin_audit' %}active{% endif %}">
             <i class="bi bi-journal-text"></i> Audit
           </a>

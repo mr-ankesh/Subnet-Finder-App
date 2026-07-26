@@ -1,14 +1,15 @@
-# Azure access required by Network Copilot
+# Azure access required by AlMadar 360
 
-The portal uses **two independent identities**. Grant each only what it needs.
+The portal uses **three independent identities**. Grant each only what it needs.
 
 | Identity | Settings | Used for |
 |---|---|---|
 | **Automation SP** | Azure Credentials (`AZURE_*`) or Managed Identity | All network/DNS/AKS operations + the read-only diagnostics and lookups |
 | **Cost SP** | Cost / Billing (`COST_*`) | The cost dashboard only — deliberately isolated from automation |
+| **Optimizer SP** | Resource Optimizer (`OPT_*`) | The idle/orphaned resource scan only — read-only, isolated from the others |
 
-All write operations honour `AZURE_DRY_RUN`; the diagnostics, lookups and cost
-dashboard are strictly read-only.
+All write operations honour `AZURE_DRY_RUN`; the diagnostics, lookups, cost
+dashboard and optimizer scan are strictly read-only.
 
 ---
 
@@ -100,9 +101,35 @@ A **second app registration**, isolated from automation. On every subscription
 
 ---
 
+## 3. Optimizer service principal (separate)
+
+A **third app registration**, isolated from automation and cost, used only by the
+**Resource Optimizer** to scan for idle / orphaned resources (unattached disks,
+unassociated public IPs, stopped/deallocated VMs, stale snapshots, orphaned
+NSGs/route tables, empty resource groups).
+
+| Role | Why |
+|---|---|
+| **Reader** | Read resources and query **Azure Resource Graph** (`Microsoft.ResourceGraph/*/read`, included in Reader) across the scanned scopes |
+
+- Grant **Reader** at a **management group** to cover many subscriptions with one
+  assignment, or per-subscription. Set **Resource Optimizer → Subscriptions to
+  scan** (`OPT_SUBSCRIPTIONS`) to limit the scope, or leave blank to scan every
+  subscription the SP can see.
+- It needs **no** write, cost, or network-specific access — Reader is enough, and
+  the scan is **strictly read-only**: the platform reports findings and links to
+  the Azure Portal, but **never deletes anything**.
+- Snapshots older than `OPT_SNAPSHOT_AGE_DAYS` (default 90) are flagged as stale.
+- Verify from **Settings → Resource Optimizer → Test Optimizer SP**. Results are
+  cached ~10 minutes.
+
+---
+
 ## Setup checklist
 1. Create the **automation** app registration → grant the roles in §1 at your
    hub/spoke scopes → fill Settings → Azure Credentials → **Test Connection**.
 2. Create a **separate cost** app registration → grant **Cost Management Reader**
    + **Reader** (§2) → fill Settings → Cost / Billing → **Test Cost SP**.
-3. Keep both client secrets in the portal (encrypted at rest) or supply via env.
+3. Create a **separate optimizer** app registration → grant **Reader** (§3) →
+   fill Settings → Resource Optimizer → **Test Optimizer SP**.
+4. Keep all client secrets in the portal (encrypted at rest) or supply via env.

@@ -32,6 +32,7 @@ AKS_STANDARD_REGION = "uaenorth"
 CATEGORIES = {
     "credentials":   {"title": "Azure Credentials",  "desc": "Identity used for all Azure operations. Needs Network Contributor on hub & spoke scopes."},
     "cost":          {"title": "Cost / Billing",      "desc": "A SEPARATE service principal used only for the subscription cost dashboard — isolated from the network-automation credentials. It needs Cost Management Reader (and Reader to list subscriptions) on the scopes you want reported."},
+    "optimize":      {"title": "Resource Optimizer",  "desc": "A SEPARATE, read-only service principal used only to scan for idle / orphaned Azure resources (unattached disks, unassociated public IPs, stopped VMs, old snapshots, orphaned NSGs/route tables, empty resource groups). It needs just Reader on the scopes you want scanned — isolated from automation and cost. Findings are advisory; the platform never deletes anything."},
     "hub":           {"title": "Hub & Subscriptions", "desc": "Hub VNET topology and default subscriptions/region for new spokes."},
     "firewall":      {"title": "Firewall",            "desc": "Azure Firewall policy that receives spoke egress rules."},
     "routing":       {"title": "Routing / UDRs",      "desc": "Hub route tables updated when a spoke is onboarded."},
@@ -85,6 +86,19 @@ SETTINGS_SPEC = {
                                     "falls back to slower per-subscription queries."),
     "COST_CURRENCY":        _f("cost", "Currency symbol", "$",
                                help="Symbol shown in the dashboard (e.g. $, €, AED). Actual currency comes from Azure."),
+
+    # ── Resource Optimizer (separate read-only SP) ──
+    "OPT_TENANT_ID":        _f("optimize", "Optimizer SP tenant ID",
+                               help="Entra tenant of the read-only optimizer service principal (may equal the main tenant)."),
+    "OPT_CLIENT_ID":        _f("optimize", "Optimizer SP client ID",
+                               help="App registration (client) GUID of the SEPARATE, read-only optimizer service principal."),
+    "OPT_CLIENT_SECRET":    _f("optimize", "Optimizer SP client secret", secret=True,
+                               help="Stored encrypted. Leave blank on save to keep the current value."),
+    "OPT_SUBSCRIPTIONS":    _f("optimize", "Subscriptions to scan",
+                               help="Comma-separated subscription IDs to scan. Blank = every subscription the "
+                                    "optimizer SP can see (Reader)."),
+    "OPT_SNAPSHOT_AGE_DAYS": _f("optimize", "Flag snapshots older than (days)", "90", type="int",
+                               help="Managed-disk snapshots older than this are reported as stale."),
 
     # ── Hub & Subscriptions ──
     "HUB_SUBSCRIPTION_ID":   _f("hub", "Hub subscription ID"),

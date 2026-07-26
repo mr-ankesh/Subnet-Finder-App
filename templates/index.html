@@ -71,6 +71,7 @@
       {% if is_superadmin %}
       {{ module(url_for('subscription_inventory_page'), 'bi-card-checklist', 'Subscriptions', 'Ownership, budgets and intelligent over-budget alerting for every subscription.', '#199e70') }}
       {{ module(url_for('cost_dashboard'), 'bi-cash-coin', 'Cost', 'Month-to-date spend, service and resource-group breakdowns, trends.', '#199e70') }}
+      {{ module(url_for('optimize_dashboard'), 'bi-recycle', 'Resource Optimizer', 'Scan for idle / orphaned resources with AI-prioritised savings.', '#199e70') }}
       {{ module(url_for('admin_audit'), 'bi-journal-text', 'Audit', 'Full audit trail of who did what across the platform.') }}
       {% endif %}
       {{ module(url_for('admin_changes'), 'bi-arrow-counterclockwise', 'Changes', 'The change ledger — review and revert applied Azure operations.', '#f87171') }}

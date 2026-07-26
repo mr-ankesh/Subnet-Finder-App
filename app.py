@@ -1522,6 +1522,54 @@ def admin_settings_test_cost():
     return jsonify(costmgmt.test_connection())
 
 
+# ── Resource Optimizer (idle / orphaned resource scan + AI intelligence) ───
+
+@app.route("/optimize")
+@require_superadmin
+def optimize_dashboard():
+    import optimize
+    return render_template("optimize.html", opt_configured=optimize.configured(),
+                           currency=cfg.COST_CURRENCY or "$")
+
+
+@app.route("/api/optimize/scan")
+@require_superadmin
+def api_optimize_scan():
+    """Scan scoped subscriptions for idle/orphaned resources (cached ~10 min)."""
+    import optimize
+    if not optimize.configured():
+        return jsonify({"success": True, "configured": False, "findings": [],
+                        "by_category": {}, "totals": {"count": 0, "monthly_estimate": 0}})
+    try:
+        force = request.args.get("force") in ("1", "true", "yes")
+        return jsonify({"success": True, "configured": True, **optimize.scan_all(force=force)})
+    except Exception as exc:
+        log.exception("optimize scan failed")
+        return jsonify({"success": False, "error": str(exc)[:200]}), 500
+
+
+@app.route("/api/optimize/summary")
+@require_superadmin
+def api_optimize_summary():
+    """AI intelligence brief over the latest scan (loaded lazily by the page)."""
+    import optimize
+    if not optimize.configured():
+        return jsonify({"success": True, "summary": None})
+    try:
+        summary = optimize.summarize(optimize.scan_all())
+        return jsonify({"success": True, "summary": summary})
+    except Exception as exc:
+        log.exception("optimize summary failed")
+        return jsonify({"success": False, "error": str(exc)[:200]}), 500
+
+
+@app.route("/api/admin/settings/test-optimize", methods=["POST"])
+@require_superadmin
+def admin_settings_test_optimize():
+    import optimize
+    return jsonify(optimize.test_connection())
+
+
 # ── Subscription inventory (Azure facts + owner/budget metadata) ───────────
 
 def _inventory_data():

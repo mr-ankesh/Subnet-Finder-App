@@ -113,6 +113,10 @@
           <button class="btn-glass" onclick="testCost(this)"><i class="bi bi-plug"></i> Test Cost SP</button>
           <span id="costTestResult" style="font-size:.85rem;"></span>
           {% endif %}
+          {% if cat.key == 'optimize' %}
+          <button class="btn-glass" onclick="testOptimize(this)"><i class="bi bi-plug"></i> Test Optimizer SP</button>
+          <span id="optTestResult" style="font-size:.85rem;"></span>
+          {% endif %}
           {% if cat.key == 'connectors' %}
           <button class="btn-glass" onclick="testConnector('rnd', this)"><i class="bi bi-plug"></i> Test R&amp;D SSH</button>
           <button class="btn-glass" onclick="testConnector('nmo', this)"><i class="bi bi-plug"></i> Test NMO SSH</button>
@@ -262,6 +266,21 @@
     out.textContent = 'Authenticating the cost SP (using saved settings)…';
     try {
       const r = await fetch('/api/admin/settings/test-cost', {method: 'POST'});
+      const data = await r.json();
+      out.style.color = data.success ? '#4ade80' : 'var(--danger)';
+      out.textContent = data.message || '';
+    } catch (e) {
+      out.style.color = 'var(--danger)'; out.textContent = 'Request failed: ' + e;
+    } finally { btn.disabled = false; }
+  }
+
+  async function testOptimize(btn) {
+    const out = document.getElementById('optTestResult');
+    btn.disabled = true;
+    out.style.color = 'var(--text-muted)';
+    out.textContent = 'Authenticating the optimizer SP (using saved settings)…';
+    try {
+      const r = await fetch('/api/admin/settings/test-optimize', {method: 'POST'});
       const data = await r.json();
       out.style.color = data.success ? '#4ade80' : 'var(--danger)';
       out.textContent = data.message || '';
