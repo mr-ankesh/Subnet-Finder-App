@@ -225,6 +225,11 @@ with app.app_context():
     import subinventory
     subinventory.ensure_table()
 
+    # Automatic over-budget alerts (state table + background scheduler)
+    import budgetalerts
+    budgetalerts.ensure_table()
+    budgetalerts.start_scheduler(app)
+
 # Keycloak OIDC — registers the app; the client is built lazily from live
 # settings, so enabling/configuring SSO in the portal needs no restart.
 oidc.init_oidc(app)
@@ -1526,8 +1531,10 @@ def _inventory_data():
     for sub in subs:
         inv = stored.get(sub["id"], {})
         sub["inventory"] = {k: (inv.get(k) or "") for k in subinventory.FIELDS}
+        sub["auto_alerts"] = inv.get("auto_budget_alerts") == "on"
         sub["updated_by"], sub["updated_ts"] = inv.get("updated_by"), inv.get("updated_ts")
-    return {"subscriptions": subs, "currency": cfg.COST_CURRENCY or "", "cost_available": cost_available}
+    return {"subscriptions": subs, "currency": cfg.COST_CURRENCY or "", "cost_available": cost_available,
+            "budget_alerts_enabled": bool(cfg.BUDGET_ALERTS_ENABLED)}
 
 
 @app.route("/subscriptions")
@@ -1632,6 +1639,40 @@ def api_budget_email_send():
                  summary=f"Sent over-budget alert for {sid} to {res.get('to')}",
                  data={"subscription_id": sid, "to": res.get("to")})
     return jsonify({"success": True, **res})
+
+
+@app.route("/api/subscriptions/auto-alerts", methods=["POST"])
+@require_superadmin
+def api_subscription_auto_alerts():
+    """Turn scheduled over-budget alerts on/off for one subscription."""
+    import subinventory
+    data = request.get_json(force=True) or {}
+    sid = str(data.get("subscription_id", "")).strip()
+    if not sid:
+        return jsonify({"error": "subscription_id is required."}), 400
+    on = bool(data.get("on"))
+    subinventory.set_auto_alerts(sid, on, actor=current_actor())
+    audit.record("subscription_auto_alerts", actor=current_actor(), actor_role="admin",
+                 summary=f"{'Enabled' if on else 'Disabled'} auto budget alerts for {sid}",
+                 data={"subscription_id": sid, "on": on})
+    return jsonify({"success": True, "on": on,
+                    "master_enabled": bool(cfg.BUDGET_ALERTS_ENABLED)})
+
+
+@app.route("/api/subscriptions/budget-alerts/run", methods=["POST"])
+@require_superadmin
+def api_budget_alerts_run():
+    """Run the budget checker now. dry_run (default true) assesses + reports what
+    would be sent without emailing; set dry_run=false to actually send."""
+    import budgetalerts
+    data = request.get_json(silent=True) or {}
+    dry = data.get("dry_run", True)
+    try:
+        report = budgetalerts.evaluate_and_send(dry_run=bool(dry), force=bool(data.get("force")))
+        return jsonify({"success": True, "dry_run": bool(dry), **report})
+    except Exception as exc:
+        log.exception("budget alerts run failed")
+        return jsonify({"error": str(exc)[:200]}), 500
 
 
 @app.route("/api/admin/requests/<int:req_id>/diagnose", methods=["POST"])

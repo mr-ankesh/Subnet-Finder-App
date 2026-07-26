@@ -18,6 +18,11 @@ FIELDS = ("technical_owner", "technical_owner_email",
           "financial_owner", "financial_owner_email",
           "budget", "cost_center", "environment", "criticality", "notes")
 
+# Columns managed outside the form-driven upsert (so a card Save never clears
+# them). auto_budget_alerts: "on" => this subscription opts into scheduled
+# over-budget alert emails to its financial owner.
+EXTRA_COLUMNS = ("auto_budget_alerts",)
+
 
 def _conn():
     return db_backend.connect()
@@ -37,14 +42,15 @@ def ensure_table():
                 environment           TEXT,
                 criticality           TEXT,
                 notes                 TEXT,
+                auto_budget_alerts    TEXT,
                 updated_by            TEXT,
                 updated_ts            TEXT
             )
         """)
         # Add any columns missing from a pre-existing table (e.g. the owner emails
-        # introduced later), so upgrades don't need a manual migration.
+        # or auto_budget_alerts introduced later), so upgrades need no manual migration.
         have = {r["name"] for r in conn.execute("PRAGMA table_info(subscription_inventory)").fetchall()}
-        for col in FIELDS:
+        for col in (*FIELDS, *EXTRA_COLUMNS):
             if col not in have:
                 conn.execute(f"ALTER TABLE subscription_inventory ADD COLUMN {col} TEXT")
 
@@ -80,3 +86,25 @@ def upsert(subscription_id: str, fields: dict, actor: str = "admin") -> None:
             conn.execute(
                 f"INSERT INTO subscription_inventory ({cols}) VALUES ({ph})",
                 (sid, *vals, actor[:120], ts))
+
+
+def set_auto_alerts(subscription_id: str, on: bool, actor: str = "admin") -> None:
+    """Toggle scheduled over-budget alerts for one subscription (updates only that
+    column, so it never disturbs the owner/budget fields a card Save writes)."""
+    ensure_table()
+    sid = str(subscription_id or "").strip()
+    if not sid:
+        return
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    val = "on" if on else ""
+    with _conn() as conn:
+        exists = conn.execute("SELECT 1 FROM subscription_inventory WHERE subscription_id = ?",
+                              (sid,)).fetchone()
+        if exists:
+            conn.execute("UPDATE subscription_inventory SET auto_budget_alerts = ?, "
+                         "updated_by = ?, updated_ts = ? WHERE subscription_id = ?",
+                         (val, actor[:120], ts, sid))
+        else:
+            conn.execute("INSERT INTO subscription_inventory "
+                         "(subscription_id, auto_budget_alerts, updated_by, updated_ts) "
+                         "VALUES (?, ?, ?, ?)", (sid, val, actor[:120], ts))

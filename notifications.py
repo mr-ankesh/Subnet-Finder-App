@@ -437,6 +437,33 @@ def _money(v, currency):
         return f"{currency}{v}"
 
 
+def _compose_email(system: str, user: str, fb_subject: str, fb_body: str) -> tuple:
+    """Run the LLM draft with the strict parser + safe fallback. Returns
+    (subject, body, is_ai). Never raises — falls back to the template on any
+    failure, malformed output, or when drafting is disabled/unavailable."""
+    if not cfg.NOTIFY_AI_DRAFT:
+        return fb_subject, fb_body, False
+    try:
+        import netdiag
+        if not netdiag._llm_available():
+            return fb_subject, fb_body, False
+        parsed = _parse_draft(netdiag._llm_complete(system, user))
+        if parsed:
+            return parsed[0], parsed[1], True
+        log.info("email draft malformed — using template")
+    except Exception as exc:
+        log.error("email draft failed, using template: %s", exc)
+    return fb_subject, fb_body, False
+
+
+# Severity metadata for budget threshold alerts (shared with budgetalerts.py).
+BUDGET_SEVERITY = {
+    "notify":   {"label": "Notice",   "at": 70},
+    "warning":  {"label": "Warning",  "at": 80},
+    "critical": {"label": "Critical", "at": 90},
+}
+
+
 def draft_budget_alert(sub: dict, currency: str = "$") -> dict:
     """Draft (do NOT send) an over-budget notification email to a subscription's
     financial owner. `sub` = {id, name, spend, inventory:{budget, financial_owner,
@@ -483,37 +510,107 @@ def draft_budget_alert(sub: dict, currency: str = "$") -> dict:
         f"({inv.get('technical_owner') or 'n/a'}) to investigate the drivers.\n\n"
         f"Thank you,\nNetwork Copilot — Presight R&D")
 
-    subject, body, is_ai = fb_subject, fb_body, False
-    if cfg.NOTIFY_AI_DRAFT:
-        try:
-            import netdiag
-            if netdiag._llm_available():
-                factlines = "\n".join(f"- {f['title']}: {f['value']}" for f in facts)
-                system = (
-                    "You are Network Copilot, the FinOps notification assistant for Presight R&D. "
-                    "Write a SHORT, professional email to the FINANCIAL OWNER of an Azure subscription "
-                    "whose month-to-date spend has exceeded its set monthly budget. "
-                    "Respond in ENGLISH ONLY. Do NOT think out loud, explain your reasoning, or emit "
-                    "any chain-of-thought / analysis / <think> tags in ANY language — output ONLY the "
-                    "finished email. Your FIRST characters must be the literal text 'Subject:'. "
-                    "Format EXACTLY: a first line 'Subject: <concise subject>', then a blank line, then "
-                    "the body — plain text, a brief greeting to the financial owner by name, 3-5 short "
-                    "sentences, and a short sign-off 'Network Copilot — Presight R&D'. No markdown. "
-                    "State the subscription, the budget, the month-to-date spend, and the overage amount "
-                    "and percentage; ask them to review and decide whether to adjust the budget or reduce "
-                    "costs. Use ONLY the facts provided — do not invent numbers or names.")
-                user = (f"Financial owner: {inv.get('financial_owner') or '(unknown)'}\n"
-                        f"Currency symbol: {cur}\n\nFacts:\n{factlines}\n")
-                parsed = _parse_draft(netdiag._llm_complete(system, user))
-                if parsed:
-                    subject, body, is_ai = parsed[0], parsed[1], True
-                else:
-                    log.info("budget alert draft malformed for %s — using template", sub.get("id"))
-        except Exception as exc:
-            log.error("budget alert draft failed, using template: %s", exc)
+    factlines = "\n".join(f"- {f['title']}: {f['value']}" for f in facts)
+    system = (
+        "You are Network Copilot, the FinOps notification assistant for Presight R&D. "
+        "Write a SHORT, professional email to the FINANCIAL OWNER of an Azure subscription "
+        "whose month-to-date spend has exceeded its set monthly budget. "
+        "Respond in ENGLISH ONLY. Do NOT think out loud, explain your reasoning, or emit "
+        "any chain-of-thought / analysis / <think> tags in ANY language — output ONLY the "
+        "finished email. Your FIRST characters must be the literal text 'Subject:'. "
+        "Format EXACTLY: a first line 'Subject: <concise subject>', then a blank line, then "
+        "the body — plain text, a brief greeting to the financial owner by name, 3-5 short "
+        "sentences, and a short sign-off 'Network Copilot — Presight R&D'. No markdown. "
+        "State the subscription, the budget, the month-to-date spend, and the overage amount "
+        "and percentage; ask them to review and decide whether to adjust the budget or reduce "
+        "costs. Use ONLY the facts provided — do not invent numbers or names.")
+    user = (f"Financial owner: {inv.get('financial_owner') or '(unknown)'}\n"
+            f"Currency symbol: {cur}\n\nFacts:\n{factlines}\n")
+    subject, body, is_ai = _compose_email(system, user, fb_subject, fb_body)
 
     return {"ok": True, "to": to, "financial_owner": inv.get("financial_owner") or "",
             "subject": subject, "body": body, "overage": overage, "pct": pct, "is_ai": is_ai}
+
+
+def draft_threshold_alert(sub: dict, assessment: dict, currency: str = "$") -> dict:
+    """Draft a budget *threshold* alert (70/80/90%) to the financial owner, using
+    the run-rate assessment from budgetalerts.assess(). The forecast context is
+    included so the email is honest about pacing, not just the raw percentage.
+
+    Returns {to, subject, body, is_ai}. Assumes the assessment already decided an
+    email is warranted (severity set, not suppressed)."""
+    inv = sub.get("inventory", {}) or {}
+    cur = currency or "$"
+    sev = assessment["severity"]
+    label = BUDGET_SEVERITY.get(sev, {}).get("label", sev.title())
+    owner = inv.get("financial_owner") or "there"
+    to = (inv.get("financial_owner_email") or "").strip()
+    budget = assessment["budget"]
+    spend = assessment["spend"]
+    raw_pct = assessment["raw_pct"]
+    proj_pct = assessment["projected_pct"]
+    days_left = assessment["days_left"]
+
+    facts = [
+        {"title": "Severity",           "value": f"{label} — {raw_pct}% of budget"},
+        {"title": "Subscription",       "value": f"{sub.get('name')} ({sub.get('id')})"},
+        {"title": "Financial owner",    "value": inv.get("financial_owner") or "—"},
+        {"title": "Monthly budget",     "value": _money(budget, cur)},
+        {"title": "Spend (month-to-date)", "value": f"{_money(spend, cur)} ({raw_pct}%)"},
+        {"title": "Projected month-end", "value": f"{_money(assessment['projected_spend'], cur)} "
+                                                  f"({proj_pct}% of budget)"},
+        {"title": "Days left in month", "value": str(days_left)},
+        {"title": "Cost centre",        "value": inv.get("cost_center") or "—"},
+        {"title": "Technical owner",    "value": inv.get("technical_owner") or "—"},
+    ]
+
+    over_now = raw_pct >= 100
+    headline = (f"has EXCEEDED its monthly budget" if over_now
+                else f"has reached {raw_pct}% of its monthly budget")
+    fb_subject = f"[Budget {label}] {sub.get('name')} at {raw_pct}% of budget"
+    fb_body = (
+        f"Hi {owner},\n\n"
+        f"The Azure subscription \"{sub.get('name')}\" ({sub.get('id')}) {headline}. "
+        f"Month-to-date spend is {_money(spend, cur)} against a budget of {_money(budget, cur)}. "
+        f"At the current run-rate it is projected to reach {_money(assessment['projected_spend'], cur)} "
+        f"({proj_pct}%) by month-end, with {days_left} day(s) remaining.\n\n"
+        f"Please review the spend and decide whether to adjust the budget or reduce costs. "
+        f"The technical owner ({inv.get('technical_owner') or 'n/a'}) can help investigate the drivers.\n\n"
+        f"Network Copilot — Presight R&D")
+
+    system = (
+        "You are Network Copilot, the FinOps notification assistant for Presight R&D. "
+        f"Write a SHORT, professional '{label}'-level budget alert email to the FINANCIAL OWNER of an "
+        "Azure subscription. Respond in ENGLISH ONLY. Do NOT think out loud, explain your reasoning, or "
+        "emit any chain-of-thought / analysis / <think> tags in ANY language — output ONLY the finished "
+        "email. Your FIRST characters must be the literal text 'Subject:'. Format EXACTLY: a first line "
+        "'Subject: <concise subject>', then a blank line, then the body — plain text, a brief greeting to "
+        "the owner by name, 3-5 short sentences, and a short sign-off 'Network Copilot — Presight R&D'. No "
+        "markdown. Convey the severity proportionately (a 70% notice is informational; a 90%/over case is "
+        "urgent). IMPORTANTLY, mention the projected month-end figure and days remaining so the tone matches "
+        "the run-rate, not just the raw percentage. Ask them to review and decide on budget or cost action. "
+        "Use ONLY the facts provided — do not invent numbers or names.")
+    factlines = "\n".join(f"- {f['title']}: {f['value']}" for f in facts)
+    user = (f"Alert severity: {label}\nFinancial owner: {inv.get('financial_owner') or '(unknown)'}\n"
+            f"Currency symbol: {cur}\n\nFacts:\n{factlines}\n")
+    subject, body, is_ai = _compose_email(system, user, fb_subject, fb_body)
+    return {"to": to, "subject": subject, "body": body, "is_ai": is_ai, "facts": facts}
+
+
+def send_threshold_alert(sub: dict, assessment: dict, currency: str = "$",
+                         cc_corporate: bool = True) -> dict:
+    """Draft + send an automatic budget threshold alert to the financial owner.
+    Returns {ok, to, subject, is_ai} or {ok:False, message}."""
+    draft = draft_threshold_alert(sub, assessment, currency)
+    to = draft["to"]
+    if not to:
+        return {"ok": False, "message": "no financial-owner email set"}
+    if not cfg.SMTP_HOST:
+        return {"ok": False, "message": "SMTP not configured"}
+    recipients = [to] + (_notify_emails() if cc_corporate else [])
+    ok = _send_email(recipients, draft["subject"], draft["body"])
+    return {"ok": ok, "to": to, "subject": draft["subject"], "is_ai": draft["is_ai"],
+            **({} if ok else {"message": "send failed"})}
 
 
 def send_budget_alert(sub: dict, currency: str = "$", subject: str = None,

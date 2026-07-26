@@ -18,6 +18,11 @@
     <div class="si-tile"><div class="si-label">Total spend (MTD)</div><div class="si-value" id="tSpend">—</div></div>
     <div class="si-tile"><div class="si-label">Over budget</div><div class="si-value" id="tOver">—</div></div>
   </div>
+  <div id="siMasterWrap" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--border);border-radius:12px;padding:11px 14px;margin-bottom:14px;background:rgba(255,255,255,.02);">
+    <div id="siMaster" style="flex:1;min-width:240px;font-size:12px;color:var(--text-dim);">Automatic budget alerts…</div>
+    <button class="be-ghost" onclick="runBudgetCheck(this)"><i class="bi bi-play-circle me-1"></i>Run check now (preview)</button>
+  </div>
+  <div id="siRunResult" style="display:none;font-size:12px;border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:14px;background:rgba(255,255,255,.02);"></div>
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
     <input type="search" id="siFilter" class="form-input-custom" style="max-width:280px;font-size:12.5px;" placeholder="Filter by name, owner, ID…" oninput="renderCards()">
     <span id="siNote" style="font-size:11px;color:var(--text-muted);"></span>
@@ -76,6 +81,9 @@
   .state-pill { font-size:10px; text-transform:uppercase; letter-spacing:.4px; padding:1px 8px; border-radius:10px; border:1px solid var(--border); color:var(--text-dim); }
   .si-alert-btn { font-size:12px; background:rgba(248,113,113,.12); color:#f87171; border:1px solid rgba(248,113,113,.4); border-radius:8px; padding:6px 12px; cursor:pointer; }
   .si-alert-btn:hover { background:rgba(248,113,113,.2); }
+  .auto-toggle { font-size:12px; background:rgba(255,255,255,.05); color:var(--text-muted); border:1px solid var(--border); border-radius:8px; padding:6px 12px; cursor:pointer; }
+  .auto-toggle.on { background:rgba(25,158,112,.14); color:#199e70; border-color:rgba(25,158,112,.45); }
+  .auto-toggle:hover { filter:brightness(1.15); }
   .be-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:10000; align-items:flex-start; justify-content:center; padding:6vh 16px; }
   .be-overlay.open { display:flex; }
   .be-modal { width:100%; max-width:640px; background:var(--surface,#141922); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow:0 24px 60px rgba(0,0,0,.5); max-height:88vh; display:flex; flex-direction:column; }
@@ -89,20 +97,44 @@
 </style>
 <script>
 const CUR = {{ currency|tojson }};
-let SUBS = [], CCY = '', COST_OK = false, SPEND_LOADED = false;
+let SUBS = [], CCY = '', COST_OK = false, SPEND_LOADED = false, MASTER_ON = false;
 
 function money(v){ if (v==null||v==='') return '—'; return CUR + Number(v).toLocaleString(undefined,{maximumFractionDigits:0}) + (CCY?(' '+CCY):''); }
 function num(v){ const n = parseFloat(String(v).replace(/[^0-9.]/g,'')); return isNaN(n)?null:n; }
+
+// Run-rate month-end forecast — mirrors budgetalerts.assess() on the server.
+function projection(s) {
+  const b = num(s.inventory.budget);
+  if (b == null || b === 0 || s.spend == null) return null;
+  const now = new Date();
+  const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const day = now.getDate();
+  const elapsed = Math.max(day / dim, 1 / dim);
+  const rawPct = Math.round(s.spend / b * 1000) / 10;
+  const projSpend = s.spend / elapsed;
+  const projPct = Math.round(projSpend / b * 1000) / 10;
+  return { rawPct, projPct, projSpend, daysLeft: dim - day, onPace: projPct < 100 && rawPct < 100 };
+}
 
 async function load() {
   try {
     const d = await (await fetch('/api/subscriptions/inventory')).json();
     if (d.error) { document.getElementById('siCards').innerHTML = `<div style="color:#f87171;font-size:13px;">${d.error}</div>`; return; }
     SUBS = d.subscriptions || []; CCY = d.currency || ''; COST_OK = d.cost_available;
+    MASTER_ON = !!d.budget_alerts_enabled;
+    renderMaster();
     document.getElementById('siNote').textContent = COST_OK ? 'Loading month-to-date spend…' : 'Configure the cost SP (Settings → Cost / Billing) to see spend & budget utilisation.';
     renderTiles(); renderCards();
     if (COST_OK) loadSpend();   // spend is slow — fetch it after the page is already up
   } catch (e) { document.getElementById('siCards').innerHTML = '<div style="color:#f87171;font-size:13px;">Could not load subscriptions.</div>'; }
+}
+
+function renderMaster() {
+  const el = document.getElementById('siMaster');
+  if (!el) return;
+  el.innerHTML = MASTER_ON
+    ? '<i class="bi bi-check-circle-fill" style="color:#199e70;"></i> Automatic budget alerts are <b>ON</b>. Subscriptions toggled below are checked periodically; owners are emailed at 70/80/90% unless the month-end forecast is under budget.'
+    : '<i class="bi bi-pause-circle" style="color:#f59e0b;"></i> Automatic budget alerts are <b>OFF</b> globally. Enable them in <b>Settings → Notifications → Automatic budget alerts</b>. Per-subscription toggles below are saved and take effect once enabled.';
 }
 
 async function loadSpend() {
@@ -152,6 +184,20 @@ function overage(s) {
   return s.spend - b;
 }
 
+// Forecast strip: shows the run-rate month-end projection and whether an alert
+// would fire or be suppressed by pacing — the intelligent bit, made visible.
+function forecastRow(s) {
+  const p = projection(s);
+  if (!p) return '';
+  let msg, col;
+  if (p.rawPct >= 100) { col = '#f87171'; msg = `Over budget now (${p.rawPct}%). Projected ${p.projPct}% at month-end.`; }
+  else if (p.onPace && p.rawPct >= 70) { col = '#199e70'; msg = `${p.rawPct}% used but on pace to finish ~${p.projPct}% — under budget (${p.daysLeft}d left). No alert.`; }
+  else if (p.projPct >= 100 && p.rawPct >= 70) { col = '#f59e0b'; msg = `Trending over: projected ${p.projPct}% by month-end (${p.daysLeft}d left). Would alert.`; }
+  else { col = 'var(--text-muted)'; msg = `Projected month-end: ${p.projPct}% of budget (${p.daysLeft}d left).`; }
+  return `<div style="grid-column:1/-1;font-size:11.5px;color:${col};display:flex;align-items:center;gap:6px;margin:-2px 0 4px;">
+    <i class="bi bi-graph-up-arrow"></i><span>${msg}</span></div>`;
+}
+
 function renderCards() {
   const q = (document.getElementById('siFilter').value || '').toLowerCase();
   const list = SUBS.filter(s => !q || (s.name + ' ' + s.id + ' ' + (s.inventory.technical_owner||'') + ' ' + (s.inventory.financial_owner||'')).toLowerCase().includes(q));
@@ -184,6 +230,7 @@ function renderCards() {
         </div>
       </div>
       <div class="si-body">
+        ${forecastRow(s)}
         <div class="si-f"><label>Technical owner</label><input class="si-in" data-k="technical_owner" value="${(inv.technical_owner||'').replace(/"/g,'&quot;')}" placeholder="name / team"></div>
         <div class="si-f"><label>Technical owner email</label><input class="si-in" type="email" data-k="technical_owner_email" value="${(inv.technical_owner_email||'').replace(/"/g,'&quot;')}" placeholder="name@presight.ai"></div>
         <div class="si-f"><label>Financial owner</label><input class="si-in" data-k="financial_owner" value="${(inv.financial_owner||'').replace(/"/g,'&quot;')}" placeholder="name / team"></div>
@@ -201,6 +248,8 @@ function renderCards() {
         <div class="si-f" style="grid-column:1/-1;"><label>Notes</label><input class="si-in" data-k="notes" value="${(inv.notes||'').replace(/"/g,'&quot;')}" placeholder="free text"></div>
         <div style="grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
           <button class="si-save" onclick="saveCard(${idx}, this)"><i class="bi bi-save me-1"></i>Save</button>
+          <button class="auto-toggle ${s.auto_alerts ? 'on' : ''}" onclick="toggleAuto(${idx}, this)" title="Email the financial owner automatically at 70/80/90% of budget (forecast-gated)">
+            <i class="bi ${s.auto_alerts ? 'bi-bell-fill' : 'bi-bell-slash'} me-1"></i>Auto-alerts: ${s.auto_alerts ? 'On' : 'Off'}</button>
           ${over != null ? `<button class="si-alert-btn" onclick="draftBudgetEmail(${idx})"><i class="bi bi-envelope-exclamation me-1"></i>Draft finance email</button>` : ''}
           <span style="font-size:10.5px;color:var(--text-muted);">${s.updated_by ? ('last updated by ' + s.updated_by + ' · ' + (s.updated_ts||'')) : 'not yet set'}</span>
         </div>
@@ -282,6 +331,54 @@ function copyBudgetEmail() {
     document.getElementById('beSubject').value + '\n\n' + document.getElementById('beBody').value;
   navigator.clipboard.writeText(txt).then(() => showToast('Draft copied to clipboard', 'success'),
     () => showToast('Copy failed', 'danger'));
+}
+
+// ── Per-subscription auto-alert toggle ─────────────────────────────────
+async function toggleAuto(idx, btn) {
+  const s = SUBS[idx];
+  const next = !s.auto_alerts;
+  if (next && !(s.inventory.financial_owner_email || '').trim())
+    showToast('Tip: set a financial-owner email so alerts have a recipient', 'warning');
+  btn.disabled = true;
+  try {
+    const d = await (await fetch('/api/subscriptions/auto-alerts', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ subscription_id: s.id, on: next }) })).json();
+    if (d.success) {
+      s.auto_alerts = d.on;
+      renderCards();
+      showToast('Auto-alerts ' + (d.on ? 'enabled' : 'disabled') + ' for ' + s.name +
+        (d.on && !d.master_enabled ? ' — enable the global switch in Settings to activate' : ''), 'success');
+    } else { btn.disabled = false; showToast(d.error || 'Failed', 'danger'); }
+  } catch (e) { btn.disabled = false; showToast('Network error', 'danger'); }
+}
+
+// ── Run the budget checker on demand (preview / dry-run) ───────────────
+async function runBudgetCheck(btn) {
+  const o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Checking…';
+  const box = document.getElementById('siRunResult');
+  try {
+    const d = await (await fetch('/api/subscriptions/budget-alerts/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ dry_run: true }) })).json();
+    if (!d.success) { showToast(d.error || 'Run failed', 'danger'); return; }
+    const rows = (d.actions || []).map(a => {
+      const res = a.result || '';
+      const col = res.startsWith('would-send') ? '#f59e0b' : (res.startsWith('suppressed') ? '#199e70' : 'var(--text-muted)');
+      return `<tr>
+        <td style="padding:3px 10px 3px 0;">${a.name}</td>
+        <td style="padding:3px 10px 3px 0;text-align:right;">${a.raw_pct ?? '—'}%</td>
+        <td style="padding:3px 10px 3px 0;text-align:right;">${a.projected_pct ?? '—'}%</td>
+        <td style="padding:3px 10px 3px 0;color:${col};">${res}</td></tr>`;
+    }).join('');
+    box.style.display = '';
+    box.innerHTML = `<div style="font-weight:600;margin-bottom:6px;">Budget check (preview) — period ${d.period}</div>
+      <div style="color:var(--text-muted);margin-bottom:8px;">Checked ${d.checked} opted-in · would email ${d.sent} · suppressed by pacing ${d.suppressed} · other ${d.skipped}. Nothing was sent (preview).</div>
+      ${rows ? `<div style="overflow-x:auto;"><table style="font-size:11.5px;border-collapse:collapse;">
+        <tr style="color:var(--text-muted);text-align:left;"><th style="padding-right:10px;">Subscription</th><th style="text-align:right;padding-right:10px;">Raw</th><th style="text-align:right;padding-right:10px;">Projected</th><th>Outcome</th></tr>
+        ${rows}</table></div>` : '<div style="color:var(--text-muted);">No subscriptions have auto-alerts enabled yet.</div>'}`;
+  } catch (e) { showToast('Network error', 'danger'); }
+  finally { btn.disabled = false; btn.innerHTML = o; }
 }
 
 load();

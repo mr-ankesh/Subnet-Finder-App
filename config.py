@@ -194,6 +194,14 @@ SETTINGS_SPEC = {
                                  help="When on, notification emails are written by the configured LLM based "
                                       "on the specific case (falls back to templates if the LLM is "
                                       "unavailable). Requires an agent provider under AI Agent settings."),
+    "BUDGET_ALERTS_ENABLED":  _f("notifications", "Automatic budget alerts", "false", type="bool",
+                                 help="Master switch for the scheduled over-budget checker. When on, "
+                                      "subscriptions with auto-alerts enabled (toggle on the Subscriptions "
+                                      "page) are checked periodically and their financial owner is emailed "
+                                      "at 70% (notify), 80% (warning) and 90%/over (critical) of budget — "
+                                      "unless the month-end run-rate forecast lands under budget."),
+    "BUDGET_ALERT_INTERVAL_HOURS": _f("notifications", "Budget check interval (hours)", "24", type="int",
+                                 help="How often the automatic budget checker runs. Default daily."),
     "SUBNET_FINDER_BASE_URL": _f("notifications", "App base URL", "http://localhost:8080",
                                  help="Used for deep-links in Teams/email notifications."),
 
