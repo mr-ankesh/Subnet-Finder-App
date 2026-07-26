@@ -48,7 +48,7 @@ CASES = [
      [{"title": "Source", "value": "10.20.4.0/24"},
       {"title": "Destination", "value": "api.internal.presight.ai:443"},
       {"title": "Action", "value": "Allow"}],
-     "[Network Copilot] Firewall Policy request received — #101",
+     "[AlMadar 360] Firewall Policy request received — #101",
      "Your Firewall Policy request #101 has been submitted and is awaiting admin review."),
 
     ("Hub integration requested",
@@ -57,7 +57,7 @@ CASES = [
      [{"title": "Subnet", "value": "10.20.4.0/24"},
       {"title": "VNET Name", "value": "vnet-g100-dev-prs-aen-001"},
       {"title": "VPN/ZPA Access", "value": "Yes"}],
-     "[Network Copilot] Hub integration requested — Request #102",
+     "[AlMadar 360] Hub integration requested — Request #102",
      "Request #102 has provided its VNET details and is requesting hub integration. Admin action is required."),
 
     ("Hub integration complete",
@@ -65,7 +65,7 @@ CASES = [
      "Hub integration completed — the spoke VNET is fully onboarded",
      [{"title": "Subnet", "value": "10.20.4.0/24"},
       {"title": "Actions taken", "value": "Peered spoke↔hub; added UDR; linked private DNS"}],
-     "[Network Copilot] Request #102 complete — hub integrated",
+     "[AlMadar 360] Request #102 complete — hub integrated",
      "The spoke VNET (request #102) is fully integrated with the hub. Onboarding is complete."),
 ]
 

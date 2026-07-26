@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Copy all Network Copilot data from the bundled SQLite file to PostgreSQL.
+Copy all AlMadar 360 data from the bundled SQLite file to PostgreSQL.
 
 Run ONCE, offline (app stopped, target Postgres empty):
 

@@ -147,7 +147,7 @@ def _draft_email(event: str, req, facts: list, fallback_subject: str, fallback_b
                               if f.get("value") not in (None, "", False))
         link = _url(f"/requests/{req.id}") or ""
         system = (
-            "You are Network Copilot, the notification assistant for Presight R&D's Azure "
+            "You are AlMadar 360, the notification assistant for Presight R&D's Azure "
             "hub-and-spoke network operations portal. Write a SHORT, professional internal "
             "notification email about a change to a network request, for the network operations "
             "team (and the requester, who is copied). "
@@ -216,12 +216,12 @@ def notify_request_submitted(req) -> bool:
         if v not in (None, "", False):
             facts.append({"title": k.replace("_", " ").title(), "value": str(v)})
     _email_case(req, f"A new {type_label} request was submitted and awaits admin review",
-                f"[Network Copilot] {type_label} request received — #{req.id}",
+                f"[AlMadar 360] {type_label} request received — #{req.id}",
                 f"Your {type_label} request #{req.id} has been submitted and is awaiting admin "
                 f"review.\n\nSummary: {req.purpose}", facts=facts)
     return _post(_adaptive_card(
         title=f"New {type_label} Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text=f"**{req.requester_name}** has submitted a **{type_label}** request.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -239,11 +239,11 @@ def notify_status_changed(req) -> bool:
         {"title": "Requester",  "value": req.requester_name},
     ]
     _email_case(req, f"Request status changed to '{status_label}'",
-                f"[Network Copilot] Request #{req.id} → {status_label}",
+                f"[AlMadar 360] Request #{req.id} → {status_label}",
                 f"{type_label} request #{req.id} is now: {status_label}.", facts=facts)
     return _post(_adaptive_card(
         title=f"Request #{req.id} ({type_label}) → {status_label}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text=f"Status updated to **{status_label}**.",
         facts=facts,
         color="success" if req.status in ("COMPLETED", "HUB_INTEGRATED") else "info",
@@ -262,13 +262,13 @@ def notify_cidr_requested(req) -> bool:
         {"title": "Hub Integration", "value": "Yes" if req.hub_integration else "No"},
     ]
     _email_case(req, "A new spoke CIDR request was submitted; admin needs to assign a subnet",
-                f"[Network Copilot] New CIDR request — #{req.id}",
+                f"[AlMadar 360] New CIDR request — #{req.id}",
                 f"A new spoke CIDR request #{req.id} from {req.requester_name} is awaiting subnet "
                 f"assignment.\n\nCIDR needed: /{req.cidr_needed}\nPool: {req.ip_range}\n"
                 f"Purpose: {req.purpose}", facts=facts)
     return _post(_adaptive_card(
         title=f"New CIDR Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text=f"**{req.requester_name}** has submitted a new spoke CIDR request and is awaiting admin assignment.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -285,12 +285,12 @@ def notify_cidr_assigned(req, subnet: str) -> bool:
     ]
     body = f"Subnet **{subnet}** has been assigned to request #{req.id}. Requester can now deploy the spoke VNET."
     _email_case(req, f"Subnet {subnet} was assigned; the requester can now deploy the spoke VNET",
-                f"[Network Copilot] CIDR {subnet} assigned — Request #{req.id}",
+                f"[AlMadar 360] CIDR {subnet} assigned — Request #{req.id}",
                 f"Spoke CIDR request #{req.id} has been assigned the subnet {subnet}. "
                 f"The requester can now deploy the spoke VNET.", facts=facts)
     return _post(_adaptive_card(
         title=f"CIDR Assigned — Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text=body, facts=facts, color="success",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
     ))
@@ -305,12 +305,12 @@ def notify_vnet_created(req) -> bool:
         {"title": "Hub Required",  "value": "Yes" if req.hub_integration else "No"},
     ]
     _email_case(req, "The requester confirmed their spoke VNET is created",
-                f"[Network Copilot] VNET created — Request #{req.id}",
+                f"[AlMadar 360] VNET created — Request #{req.id}",
                 f"The spoke VNET for request #{req.id} (subnet {req.allocated_subnet or '—'}) "
                 f"has been created.", facts=facts)
     return _post(_adaptive_card(
         title=f"VNET Created — Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text="The requester has confirmed their spoke VNET is created.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -333,12 +333,12 @@ def notify_hub_integration_needed(req) -> bool:
             {"title": "VPN/ZPA Access", "value": "Yes" if vi.vpn_zpa_access else "No"},
         ]
     _email_case(req, "The requester provided VNET details and is requesting hub integration; admin action required",
-                f"[Network Copilot] Hub integration requested — Request #{req.id}",
+                f"[AlMadar 360] Hub integration requested — Request #{req.id}",
                 f"Request #{req.id} from {req.requester_name} has provided its VNET details and is "
                 f"requesting hub integration. Admin action is required to proceed.", facts=facts)
     return _post(_adaptive_card(
         title=f"Hub Integration Needed — Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text="The requester has provided VNET details and is requesting hub integration. Admin action required.",
         facts=facts, color="warning",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -353,11 +353,11 @@ def notify_hub_in_progress(req) -> bool:
         {"title": "Subnet",     "value": req.allocated_subnet or "—"},
     ]
     _email_case(req, "Admin started hub integration for the spoke VNET",
-                f"[Network Copilot] Hub integration started — Request #{req.id}",
+                f"[AlMadar 360] Hub integration started — Request #{req.id}",
                 f"Hub integration for the spoke VNET (request #{req.id}) has started.", facts=facts)
     return _post(_adaptive_card(
         title=f"Hub Integration In Progress — Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text="Admin has started hub integration for this spoke VNET.",
         facts=facts, color="info",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -376,13 +376,13 @@ def notify_hub_integrated(req, actions_taken: list = None) -> bool:
         action_text = "\n\n" + "  \n".join(f"• {a}" for a in actions_taken)
         facts.append({"title": "Actions taken", "value": "; ".join(actions_taken)})
     _email_case(req, "Hub integration completed — the spoke VNET is fully onboarded",
-                f"[Network Copilot] Request #{req.id} complete — hub integrated",
+                f"[AlMadar 360] Request #{req.id} complete — hub integrated",
                 f"The spoke VNET (request #{req.id}, subnet "
                 f"{getattr(req, 'allocated_subnet', None) or '—'}) is fully integrated with the hub. "
                 f"Onboarding is complete.", facts=facts)
     return _post(_adaptive_card(
         title=f"Hub Integration Complete — Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text=f"All hub integration tasks have been completed successfully.{action_text}",
         facts=facts, color="success",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -393,10 +393,10 @@ def notify_hub_integrated(req, actions_taken: list = None) -> bool:
 def notify_custom(title: str, message: str, level: str = "info") -> bool:
     # A custom message is already written, so send it verbatim (no LLM redraft)
     # to the corporate recipients in addition to Teams.
-    _send_email(_notify_emails(), f"[Network Copilot] {title}", message)
+    _send_email(_notify_emails(), f"[AlMadar 360] {title}", message)
     return _post(_adaptive_card(
         title=title,
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text=message, facts=[], color=level,
     ))
 
@@ -409,13 +409,13 @@ def notify_reminder(req, message: str) -> bool:
         {"title": "Message",    "value": message},
     ]
     _email_case(req, "The requester is following up on a pending request",
-                f"[Network Copilot] Reminder — Request #{req.id}",
+                f"[AlMadar 360] Reminder — Request #{req.id}",
                 f"{req.requester_name} is following up on request #{req.id} "
                 f"(status: {req.status_label()}).\n\nMessage: {message}",
                 facts=facts, to_requester=False)
     return _post(_adaptive_card(
         title=f"Reminder — Request #{req.id}",
-        subtitle="Presight R&D · Network Copilot",
+        subtitle="Presight R&D · AlMadar 360",
         body_text=f"**{req.requester_name}** is following up on their request.",
         facts=facts, color="warning",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
@@ -508,11 +508,11 @@ def draft_budget_alert(sub: dict, currency: str = "$") -> dict:
         f"Please review the recent spend and confirm whether the budget should be adjusted or "
         f"costs reduced. You can reach the technical owner "
         f"({inv.get('technical_owner') or 'n/a'}) to investigate the drivers.\n\n"
-        f"Thank you,\nNetwork Copilot — Presight R&D")
+        f"Thank you,\nAlMadar 360 — Presight R&D")
 
     factlines = "\n".join(f"- {f['title']}: {f['value']}" for f in facts)
     system = (
-        "You are Network Copilot, the FinOps notification assistant for Presight R&D. "
+        "You are AlMadar 360, the FinOps notification assistant for Presight R&D. "
         "Write a SHORT, professional email to the FINANCIAL OWNER of an Azure subscription "
         "whose month-to-date spend has exceeded its set monthly budget. "
         "Respond in ENGLISH ONLY. Do NOT think out loud, explain your reasoning, or emit "
@@ -520,7 +520,7 @@ def draft_budget_alert(sub: dict, currency: str = "$") -> dict:
         "finished email. Your FIRST characters must be the literal text 'Subject:'. "
         "Format EXACTLY: a first line 'Subject: <concise subject>', then a blank line, then "
         "the body — plain text, a brief greeting to the financial owner by name, 3-5 short "
-        "sentences, and a short sign-off 'Network Copilot — Presight R&D'. No markdown. "
+        "sentences, and a short sign-off 'AlMadar 360 — Presight R&D'. No markdown. "
         "State the subscription, the budget, the month-to-date spend, and the overage amount "
         "and percentage; ask them to review and decide whether to adjust the budget or reduce "
         "costs. Use ONLY the facts provided — do not invent numbers or names.")
@@ -576,16 +576,16 @@ def draft_threshold_alert(sub: dict, assessment: dict, currency: str = "$") -> d
         f"({proj_pct}%) by month-end, with {days_left} day(s) remaining.\n\n"
         f"Please review the spend and decide whether to adjust the budget or reduce costs. "
         f"The technical owner ({inv.get('technical_owner') or 'n/a'}) can help investigate the drivers.\n\n"
-        f"Network Copilot — Presight R&D")
+        f"AlMadar 360 — Presight R&D")
 
     system = (
-        "You are Network Copilot, the FinOps notification assistant for Presight R&D. "
+        "You are AlMadar 360, the FinOps notification assistant for Presight R&D. "
         f"Write a SHORT, professional '{label}'-level budget alert email to the FINANCIAL OWNER of an "
         "Azure subscription. Respond in ENGLISH ONLY. Do NOT think out loud, explain your reasoning, or "
         "emit any chain-of-thought / analysis / <think> tags in ANY language — output ONLY the finished "
         "email. Your FIRST characters must be the literal text 'Subject:'. Format EXACTLY: a first line "
         "'Subject: <concise subject>', then a blank line, then the body — plain text, a brief greeting to "
-        "the owner by name, 3-5 short sentences, and a short sign-off 'Network Copilot — Presight R&D'. No "
+        "the owner by name, 3-5 short sentences, and a short sign-off 'AlMadar 360 — Presight R&D'. No "
         "markdown. Convey the severity proportionately (a 70% notice is informational; a 90%/over case is "
         "urgent). IMPORTANTLY, mention the projected month-end figure and days remaining so the tone matches "
         "the run-rate, not just the raw percentage. Ask them to review and decide on budget or cost action. "

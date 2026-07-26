@@ -23,7 +23,7 @@ def _actor() -> str:
     except Exception:
         return "Admin"
 
-_SYSTEM_PROMPT_TEMPLATE = """You are Network Copilot — Presight R&D's AI network admin agent.
+_SYSTEM_PROMPT_TEMPLATE = """You are AlMadar 360 — Presight R&D's AI network admin agent.
 
 You help the network admin team manage network requests end-to-end: spoke VNETs,
 hub integration, firewall policy, ZPA/NMO routing, subnets, decommissions.
