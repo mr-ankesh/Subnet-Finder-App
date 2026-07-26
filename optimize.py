@@ -63,6 +63,19 @@ def list_subscriptions() -> list:
     return [s.get("subscriptionId") for s in resp.json().get("value", []) if s.get("subscriptionId")]
 
 
+def _sub_names() -> dict:
+    """Map of subscription id → display name (best-effort; falls back to id)."""
+    try:
+        resp = requests.get(f"{_ARM}/subscriptions?api-version=2022-12-01",
+                            headers=_headers(), timeout=20)
+        resp.raise_for_status()
+        return {s["subscriptionId"]: (s.get("displayName") or s["subscriptionId"])
+                for s in resp.json().get("value", []) if s.get("subscriptionId")}
+    except Exception as exc:
+        log.warning("optimize: subscription name lookup failed: %s", exc)
+        return {}
+
+
 def test_connection() -> dict:
     if not configured():
         return {"success": False, "message": "Set the optimizer SP tenant, client ID and secret first."}
@@ -224,6 +237,13 @@ def scan_all(force: bool = False) -> dict:
     snap_days = cfg.OPT_SNAPSHOT_AGE_DAYS or 90
     findings = _scan(subs, snap_days) if subs else []
 
+    # attach a friendly subscription name to each finding (for the table + filter)
+    names = _sub_names()
+    subs_seen = {}
+    for f in findings:
+        f["subscription_name"] = names.get(f["subscription_id"], f["subscription_id"])
+        subs_seen[f["subscription_id"]] = f["subscription_name"]
+
     # roll-ups
     by_cat = {}
     est_total = 0.0
@@ -242,6 +262,7 @@ def scan_all(force: bool = False) -> dict:
     result = {
         "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         "subscriptions": len(subs),
+        "subscription_names": [{"id": k, "name": v} for k, v in sorted(subs_seen.items(), key=lambda x: x[1].lower())],
         "findings": findings,
         "by_category": by_cat,
         "totals": {"count": len(findings), "monthly_estimate": round(est_total, 2)},

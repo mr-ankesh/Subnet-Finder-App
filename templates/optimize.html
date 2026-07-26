@@ -26,10 +26,10 @@
   {% else %}
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px;">
-    <div class="oz-tile"><div class="oz-label">Findings</div><div class="oz-value" id="tCount">—</div></div>
-    <div class="oz-tile"><div class="oz-label">Est. reclaimable / mo</div><div class="oz-value" id="tSave" style="color:#199e70;">—</div></div>
+    <div class="oz-tile oz-clickable" onclick="clearFilters()" title="Show all findings"><div class="oz-label">Findings</div><div class="oz-value" id="tCount">—</div></div>
+    <div class="oz-tile oz-clickable" onclick="document.getElementById('fSort').value='cost_desc';onFilterChange();document.getElementById('ozTable').scrollIntoView({behavior:'smooth'});" title="Sort by cost, high → low"><div class="oz-label">Est. reclaimable / mo</div><div class="oz-value" id="tSave" style="color:#199e70;">—</div></div>
     <div class="oz-tile"><div class="oz-label">Subscriptions scanned</div><div class="oz-value" id="tSubs">—</div></div>
-    <div class="oz-tile"><div class="oz-label">High severity</div><div class="oz-value" id="tHigh" style="color:#f87171;">—</div></div>
+    <div class="oz-tile oz-clickable" onclick="filterBySeverity('high')" title="Show only high-severity findings"><div class="oz-label">High severity</div><div class="oz-value" id="tHigh" style="color:#f87171;">—</div></div>
   </div>
 
   <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
@@ -49,20 +49,39 @@
   <div id="ozCats" style="display:flex;flex-direction:column;gap:8px;margin-bottom:24px;"></div>
 
   <!-- Findings -->
-  <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
-    <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);">Findings</div>
-    <input type="search" id="ozFilter" class="form-input-custom" style="max-width:260px;font-size:12.5px;" placeholder="Filter by name, RG, category…" oninput="renderFindings()">
+  <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;">Findings</div>
+  <div class="oz-filters">
+    <input type="search" id="fQ" class="oz-in" style="flex:1;min-width:160px;" placeholder="Search name, RG, detail…" oninput="onFilterChange()">
+    <select id="fCat" class="oz-in" onchange="onFilterChange()"><option value="">All types</option></select>
+    <select id="fSev" class="oz-in" onchange="onFilterChange()">
+      <option value="">All severities</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+    <select id="fSub" class="oz-in" onchange="onFilterChange()"><option value="">All subscriptions</option></select>
+    <select id="fSort" class="oz-in" onchange="onFilterChange()">
+      <option value="cost_desc">Cost: high → low</option><option value="cost_asc">Cost: low → high</option>
+      <option value="sev">Severity</option><option value="name">Name (A→Z)</option><option value="type">Type</option><option value="sub">Subscription</option></select>
+    <button id="fClear" class="oz-in" style="cursor:pointer;" onclick="clearFilters()"><i class="bi bi-x-circle me-1"></i>Clear</button>
   </div>
   <div style="overflow-x:auto;">
     <table id="ozTable" style="width:100%;border-collapse:collapse;font-size:12.5px;">
       <thead><tr style="text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">
         <th style="padding:7px 10px 7px 0;">Sev</th><th style="padding:7px 10px 7px 0;">Type</th>
         <th style="padding:7px 10px 7px 0;">Resource</th><th style="padding:7px 10px 7px 0;">Resource group</th>
+        <th style="padding:7px 10px 7px 0;">Subscription</th>
         <th style="padding:7px 10px 7px 0;">Detail</th><th style="padding:7px 10px 7px 0;text-align:right;">~ / mo</th>
         <th style="padding:7px 0;"></th>
       </tr></thead>
-      <tbody id="ozRows"><tr><td colspan="7" style="padding:14px 0;color:var(--text-muted);">Scanning subscriptions…</td></tr></tbody>
+      <tbody id="ozRows"><tr><td colspan="8" style="padding:14px 0;color:var(--text-muted);">Scanning subscriptions…</td></tr></tbody>
     </table>
+  </div>
+  <div class="oz-pager">
+    <div id="ozCount" style="font-size:11.5px;color:var(--text-muted);"></div>
+    <div style="flex:1;"></div>
+    <label style="font-size:11.5px;color:var(--text-muted);">Per page
+      <select id="fPageSize" class="oz-in" style="margin-left:4px;" onchange="setPageSize(this.value)">
+        <option>10</option><option selected>20</option><option>30</option><option>50</option><option>100</option></select></label>
+    <button class="oz-in" style="cursor:pointer;" onclick="gotoPage(PAGE-1)">‹ Prev</button>
+    <span id="ozPageInfo" style="font-size:11.5px;color:var(--text);min-width:80px;text-align:center;"></span>
+    <button class="oz-in" style="cursor:pointer;" onclick="gotoPage(PAGE+1)">Next ›</button>
   </div>
   {% endif %}
 </div>
@@ -80,25 +99,45 @@
   .sev-low { color:var(--text-dim); background:rgba(255,255,255,.05); border:1px solid var(--border); }
   #ozTable tbody tr { border-bottom:1px solid rgba(255,255,255,.05); }
   .oz-bar-track { height:8px; background:rgba(255,255,255,.07); border-radius:5px; overflow:hidden; flex:1; }
+  .oz-filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .oz-in { font-size:12px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:7px 10px; }
+  .oz-in:focus { outline:none; border-color:rgba(57,135,229,.5); }
+  .oz-pager { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .oz-clickable { cursor:pointer; }
+  .oz-clickable:hover { text-decoration:underline; }
+  #ozCats > div { cursor:pointer; border-radius:8px; padding:3px 4px; margin:0 -4px; transition:background .12s; }
+  #ozCats > div:hover { background:rgba(255,255,255,.04); }
 </style>
 <script>
 const CUR = {{ currency|tojson }};
-let SCAN = null;
+let SCAN = null, PAGE = 1, PAGE_SIZE = 20;
 
 function money(v){ if (v==null) return '—'; return CUR + Number(v).toLocaleString(undefined,{maximumFractionDigits:0}); }
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 async function runScan(btn, force) {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Scanning…'; }
-  document.getElementById('ozRows').innerHTML = '<tr><td colspan="7" style="padding:14px 0;color:var(--text-muted);">Scanning subscriptions…</td></tr>';
+  document.getElementById('ozRows').innerHTML = '<tr><td colspan="8" style="padding:14px 0;color:var(--text-muted);">Scanning subscriptions…</td></tr>';
   try {
     const d = await (await fetch('/api/optimize/scan' + (force ? '?force=1' : ''))).json();
     if (!d.success) { showToast(d.error || 'Scan failed', 'danger'); return; }
     SCAN = d;
+    populateFilters();
     renderTiles(); renderCategories(); renderFindings();
     document.getElementById('ozAsOf').textContent = 'Scanned ' + (d.generated_at || '') + ' · cached ~10 min';
     loadSummary(force);
   } catch (e) { showToast('Network error during scan', 'danger'); }
   finally { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Rescan'; } }
+}
+
+function populateFilters() {
+  const cat = document.getElementById('fCat');
+  const cats = Object.entries(SCAN.by_category).sort((a, b) => a[1].label.localeCompare(b[1].label));
+  cat.innerHTML = '<option value="">All types</option>' +
+    cats.map(([k, v]) => `<option value="${k}">${esc(v.label)} (${v.count})</option>`).join('');
+  const sub = document.getElementById('fSub');
+  sub.innerHTML = '<option value="">All subscriptions</option>' +
+    (SCAN.subscription_names || []).map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
 }
 
 // Deterministic English brief from the scan — always shown when the AI model
@@ -144,32 +183,87 @@ function renderCategories() {
   const max = Math.max(1, ...cats.map(c => c.estimate));
   const el = document.getElementById('ozCats');
   if (!cats.length) { el.innerHTML = '<div style="font-size:13px;color:#199e70;"><i class="bi bi-check-circle me-1"></i>No idle or orphaned resources found. Clean estate.</div>'; return; }
+  // Each row is clickable → filters the findings table to that category.
   el.innerHTML = cats.map(c => `
-    <div style="display:flex;align-items:center;gap:12px;">
-      <div style="width:170px;font-size:12.5px;color:var(--text);">${c.label}</div>
-      <div style="width:44px;font-size:12px;color:var(--text-muted);text-align:right;">${c.count}</div>
-      <div class="oz-bar-track"><div style="height:100%;width:${Math.round(c.estimate / max * 100)}%;background:#199e70;"></div></div>
-      <div style="width:90px;text-align:right;font-size:12.5px;color:${c.estimate ? '#199e70' : 'var(--text-muted)'};">${c.estimate ? money(c.estimate) + '/mo' : '—'}</div>
+    <div onclick="filterByCategory('${c.k}')" title="Show only ${esc(c.label)}">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div style="width:180px;font-size:12.5px;color:var(--text);">${esc(c.label)}</div>
+        <div style="width:44px;font-size:12px;color:#3987e5;text-align:right;font-weight:600;">${c.count}</div>
+        <div class="oz-bar-track"><div style="height:100%;width:${Math.round(c.estimate / max * 100)}%;background:#199e70;"></div></div>
+        <div style="width:96px;text-align:right;font-size:12.5px;color:${c.estimate ? '#199e70' : 'var(--text-muted)'};">${c.estimate ? money(c.estimate) + '/mo' : '—'}</div>
+      </div>
     </div>`).join('');
+}
+
+// ── Filter / sort / pagination ─────────────────────────────────────────
+function filtered() {
+  const q = (document.getElementById('fQ').value || '').toLowerCase().trim();
+  const cat = document.getElementById('fCat').value;
+  const sev = document.getElementById('fSev').value;
+  const sub = document.getElementById('fSub').value;
+  let rows = SCAN.findings.filter(f =>
+    (!cat || f.category === cat) && (!sev || f.severity === sev) && (!sub || f.subscription_id === sub) &&
+    (!q || (f.name + ' ' + f.resource_group + ' ' + f.category_label + ' ' + f.detail + ' ' + (f.subscription_name || '')).toLowerCase().includes(q)));
+  const sort = document.getElementById('fSort').value;
+  const sevRank = { high: 3, medium: 2, low: 1 };
+  const cmp = {
+    cost_desc: (a, b) => (b.monthly_estimate || 0) - (a.monthly_estimate || 0),
+    cost_asc:  (a, b) => (a.monthly_estimate || 0) - (b.monthly_estimate || 0),
+    sev:  (a, b) => (sevRank[b.severity] - sevRank[a.severity]) || ((b.monthly_estimate || 0) - (a.monthly_estimate || 0)),
+    name: (a, b) => (a.name || '').localeCompare(b.name || ''),
+    type: (a, b) => (a.category_label || '').localeCompare(b.category_label || ''),
+    sub:  (a, b) => (a.subscription_name || '').localeCompare(b.subscription_name || ''),
+  }[sort] || (() => 0);
+  return rows.slice().sort(cmp);
+}
+
+function onFilterChange() { PAGE = 1; renderFindings(); }
+function setPageSize(v) { PAGE_SIZE = parseInt(v, 10) || 20; PAGE = 1; renderFindings(); }
+function gotoPage(p) { const n = pageCount(); PAGE = Math.min(Math.max(1, p), n); renderFindings(); }
+function pageCount() { return Math.max(1, Math.ceil(filtered().length / PAGE_SIZE)); }
+
+function filterByCategory(cat) {
+  document.getElementById('fCat').value = cat;
+  onFilterChange();
+  document.getElementById('ozTable').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function filterBySeverity(sev) {
+  document.getElementById('fSev').value = sev;
+  onFilterChange();
+  document.getElementById('ozTable').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function clearFilters() {
+  ['fQ', 'fCat', 'fSev', 'fSub'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('fSort').value = 'cost_desc';
+  onFilterChange();
 }
 
 function renderFindings() {
   if (!SCAN) return;
-  const q = (document.getElementById('ozFilter').value || '').toLowerCase();
-  const rows = SCAN.findings.filter(f => !q ||
-    (f.name + ' ' + f.resource_group + ' ' + f.category_label + ' ' + f.detail).toLowerCase().includes(q));
+  const all = filtered();
+  const total = all.length, pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (PAGE > pages) PAGE = pages;
+  const start = (PAGE - 1) * PAGE_SIZE;
+  const rows = all.slice(start, start + PAGE_SIZE);
   const tb = document.getElementById('ozRows');
-  if (!rows.length) { tb.innerHTML = '<tr><td colspan="7" style="padding:14px 0;color:var(--text-muted);">No matching findings.</td></tr>'; return; }
-  tb.innerHTML = rows.map(f => `
-    <tr>
-      <td style="padding:7px 10px 7px 0;"><span class="sev-pill sev-${f.severity}">${f.severity}</span></td>
-      <td style="padding:7px 10px 7px 0;white-space:nowrap;">${f.category_label}</td>
-      <td style="padding:7px 10px 7px 0;font-family:var(--mono);color:#fff;">${f.name || '—'}</td>
-      <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${f.resource_group || '—'}</td>
-      <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${f.detail || ''}</td>
-      <td style="padding:7px 10px 7px 0;text-align:right;color:${f.monthly_estimate ? '#199e70' : 'var(--text-muted)'};">${f.monthly_estimate ? money(f.monthly_estimate) : '—'}</td>
-      <td style="padding:7px 0;">${f.resource_id ? `<a href="https://portal.azure.com/#@/resource${f.resource_id}/overview" target="_blank" rel="noopener" title="Open in Azure Portal" style="color:#60a5fa;"><i class="bi bi-box-arrow-up-right"></i></a>` : ''}</td>
-    </tr>`).join('');
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="8" style="padding:14px 0;color:var(--text-muted);">No matching findings.</td></tr>';
+  } else {
+    tb.innerHTML = rows.map(f => `
+      <tr>
+        <td style="padding:7px 10px 7px 0;"><span class="sev-pill sev-${f.severity}">${f.severity}</span></td>
+        <td style="padding:7px 10px 7px 0;white-space:nowrap;">${esc(f.category_label)}</td>
+        <td style="padding:7px 10px 7px 0;font-family:var(--mono);color:#fff;">${esc(f.name) || '—'}</td>
+        <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${esc(f.resource_group) || '—'}</td>
+        <td style="padding:7px 10px 7px 0;color:var(--text-dim);white-space:nowrap;">${esc(f.subscription_name) || '—'}</td>
+        <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${esc(f.detail)}</td>
+        <td style="padding:7px 10px 7px 0;text-align:right;color:${f.monthly_estimate ? '#199e70' : 'var(--text-muted)'};">${f.monthly_estimate ? money(f.monthly_estimate) : '—'}</td>
+        <td style="padding:7px 0;">${f.resource_id ? `<a href="https://portal.azure.com/#@/resource${f.resource_id}/overview" target="_blank" rel="noopener" title="Open in Azure Portal" style="color:#60a5fa;"><i class="bi bi-box-arrow-up-right"></i></a>` : ''}</td>
+      </tr>`).join('');
+  }
+  const shown = total ? `${start + 1}–${Math.min(start + PAGE_SIZE, total)} of ${total}` : '0';
+  document.getElementById('ozCount').textContent = shown + ' finding' + (total === 1 ? '' : 's');
+  document.getElementById('ozPageInfo').textContent = `Page ${PAGE} / ${pages}`;
 }
 
 {% if opt_configured %}runScan(null, false);{% endif %}
