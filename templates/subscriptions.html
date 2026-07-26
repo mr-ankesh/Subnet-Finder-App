@@ -26,6 +26,36 @@
     <div style="font-size:13px;color:var(--text-muted);">Loading subscriptions from Azure…</div>
   </div>
 </div>
+
+<!-- Over-budget → finance-owner email review modal -->
+<div id="beOverlay" class="be-overlay" onclick="if(event.target===this)closeBudgetEmail()">
+  <div class="be-modal">
+    <div class="be-head">
+      <div><div style="font-size:14px;font-weight:700;color:#fff;"><i class="bi bi-envelope-exclamation me-1" style="color:#f87171;"></i>Budget alert email</div>
+        <div id="beCtx" style="font-size:11px;color:var(--text-muted);margin-top:2px;"></div></div>
+      <button class="be-x" onclick="closeBudgetEmail()"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="be-body">
+      <div id="beLoading" style="font-size:13px;color:var(--text-muted);padding:12px 0;">Drafting email…</div>
+      <div id="beForm" style="display:none;">
+        <div id="beBadge" style="font-size:10.5px;margin-bottom:10px;"></div>
+        <label class="be-label">To (financial owner)</label>
+        <input id="beTo" class="be-in" placeholder="No financial-owner email set — add one on the card first">
+        <label class="be-label">Subject</label>
+        <input id="beSubject" class="be-in">
+        <label class="be-label">Message</label>
+        <textarea id="beBody" class="be-in" rows="10" style="resize:vertical;font-family:inherit;"></textarea>
+        <div id="beNote" style="font-size:11px;color:var(--text-muted);margin-top:8px;"></div>
+      </div>
+    </div>
+    <div class="be-foot">
+      <button class="be-ghost" onclick="copyBudgetEmail()"><i class="bi bi-clipboard me-1"></i>Copy</button>
+      <div style="flex:1;"></div>
+      <button class="be-ghost" onclick="closeBudgetEmail()">Cancel</button>
+      <button id="beSend" class="si-save" onclick="sendBudgetEmail(this)"><i class="bi bi-send me-1"></i>Send to owner</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -44,6 +74,18 @@
   .si-save { font-size:12px; background:var(--p-grad-h,linear-gradient(90deg,#0700c4,#10b5b0,#7edb56)); color:#fff; border:none; border-radius:8px; padding:6px 14px; cursor:pointer; }
   .si-save:disabled { opacity:.5; }
   .state-pill { font-size:10px; text-transform:uppercase; letter-spacing:.4px; padding:1px 8px; border-radius:10px; border:1px solid var(--border); color:var(--text-dim); }
+  .si-alert-btn { font-size:12px; background:rgba(248,113,113,.12); color:#f87171; border:1px solid rgba(248,113,113,.4); border-radius:8px; padding:6px 12px; cursor:pointer; }
+  .si-alert-btn:hover { background:rgba(248,113,113,.2); }
+  .be-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:10000; align-items:flex-start; justify-content:center; padding:6vh 16px; }
+  .be-overlay.open { display:flex; }
+  .be-modal { width:100%; max-width:640px; background:var(--surface,#141922); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow:0 24px 60px rgba(0,0,0,.5); max-height:88vh; display:flex; flex-direction:column; }
+  .be-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid var(--border); }
+  .be-x { background:none; border:none; color:var(--text-muted); font-size:16px; cursor:pointer; }
+  .be-body { padding:14px 16px; overflow-y:auto; }
+  .be-foot { display:flex; align-items:center; gap:10px; padding:12px 16px; border-top:1px solid var(--border); }
+  .be-label { display:block; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted); margin:12px 0 4px; }
+  .be-in { width:100%; font-size:13px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:8px 10px; }
+  .be-ghost { font-size:12.5px; background:rgba(255,255,255,.06); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:7px 13px; cursor:pointer; }
 </style>
 <script>
 const CUR = {{ currency|tojson }};
@@ -143,7 +185,9 @@ function renderCards() {
       </div>
       <div class="si-body">
         <div class="si-f"><label>Technical owner</label><input class="si-in" data-k="technical_owner" value="${(inv.technical_owner||'').replace(/"/g,'&quot;')}" placeholder="name / team"></div>
+        <div class="si-f"><label>Technical owner email</label><input class="si-in" type="email" data-k="technical_owner_email" value="${(inv.technical_owner_email||'').replace(/"/g,'&quot;')}" placeholder="name@presight.ai"></div>
         <div class="si-f"><label>Financial owner</label><input class="si-in" data-k="financial_owner" value="${(inv.financial_owner||'').replace(/"/g,'&quot;')}" placeholder="name / team"></div>
+        <div class="si-f"><label>Financial owner email</label><input class="si-in" type="email" data-k="financial_owner_email" value="${(inv.financial_owner_email||'').replace(/"/g,'&quot;')}" placeholder="name@presight.ai"></div>
         <div class="si-f"><label>Monthly budget (${CUR})</label><input class="si-in" data-k="budget" value="${(inv.budget||'').replace(/"/g,'&quot;')}" placeholder="e.g. 5000" inputmode="decimal"></div>
         <div class="si-f"><label>Cost centre</label><input class="si-in" data-k="cost_center" value="${(inv.cost_center||'').replace(/"/g,'&quot;')}" placeholder="e.g. CC-1042"></div>
         <div class="si-f"><label>Environment</label>
@@ -155,8 +199,9 @@ function renderCards() {
             ${['','Low','Medium','High','Critical'].map(o => `<option value="${o}" ${(inv.criticality||'')===o?'selected':''}>${o||'—'}</option>`).join('')}
           </select></div>
         <div class="si-f" style="grid-column:1/-1;"><label>Notes</label><input class="si-in" data-k="notes" value="${(inv.notes||'').replace(/"/g,'&quot;')}" placeholder="free text"></div>
-        <div style="grid-column:1/-1;display:flex;align-items:center;gap:12px;">
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
           <button class="si-save" onclick="saveCard(${idx}, this)"><i class="bi bi-save me-1"></i>Save</button>
+          ${over != null ? `<button class="si-alert-btn" onclick="draftBudgetEmail(${idx})"><i class="bi bi-envelope-exclamation me-1"></i>Draft finance email</button>` : ''}
           <span style="font-size:10.5px;color:var(--text-muted);">${s.updated_by ? ('last updated by ' + s.updated_by + ' · ' + (s.updated_ts||'')) : 'not yet set'}</span>
         </div>
       </div>
@@ -172,13 +217,71 @@ async function saveCard(idx, btn) {
   try {
     const d = await (await fetch('/api/subscriptions/inventory', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })).json();
     if (d.success) {
-      SUBS[idx].inventory = { technical_owner:payload.technical_owner, financial_owner:payload.financial_owner, budget:payload.budget, cost_center:payload.cost_center, environment:payload.environment, criticality:payload.criticality, notes:payload.notes };
-      renderTiles();
+      const inv = {}; Object.keys(payload).forEach(k => { if (k !== 'subscription_id') inv[k] = payload[k]; });
+      SUBS[idx].inventory = inv;
+      renderTiles(); renderCards();
       btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Saved';
       showToast('Subscription inventory saved', 'success');
       setTimeout(() => { btn.disabled = false; btn.innerHTML = o; }, 1400);
     } else { btn.disabled = false; btn.innerHTML = o; showToast(d.error || 'Save failed', 'danger'); }
   } catch (e) { btn.disabled = false; btn.innerHTML = o; showToast('Network error', 'danger'); }
+}
+
+// ── Over-budget → finance owner email ──────────────────────────────────
+let BE_SID = null;
+function closeBudgetEmail() { document.getElementById('beOverlay').classList.remove('open'); BE_SID = null; }
+
+async function draftBudgetEmail(idx) {
+  const s = SUBS[idx];
+  BE_SID = s.id;
+  const ov = document.getElementById('beOverlay');
+  document.getElementById('beCtx').textContent = `${s.name} · over by ${money(overage(s))}`;
+  document.getElementById('beLoading').style.display = '';
+  document.getElementById('beForm').style.display = 'none';
+  document.getElementById('beSend').disabled = false;
+  ov.classList.add('open');
+  try {
+    const d = await (await fetch('/api/subscriptions/budget-email/preview', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ subscription_id: s.id }) })).json();
+    if (!d.success) { closeBudgetEmail(); showToast(d.error || 'Could not draft email', 'danger'); return; }
+    document.getElementById('beTo').value = d.to || '';
+    document.getElementById('beSubject').value = d.subject || '';
+    document.getElementById('beBody').value = d.body || '';
+    document.getElementById('beBadge').innerHTML = d.is_ai
+      ? '<span style="color:#199e70;">✦ AI-drafted for this case — review before sending</span>'
+      : '<span style="color:var(--text-muted);">Template draft (AI drafting off or unavailable)</span>';
+    const notes = [];
+    if (!d.to) notes.push('⚠ No financial-owner email set — add one on the card and Save, then re-draft.');
+    if (!d.smtp_ready) notes.push('⚠ SMTP is not configured (Settings → Notifications) — you can still Copy the draft.');
+    document.getElementById('beNote').innerHTML = notes.join('<br>');
+    document.getElementById('beSend').disabled = !d.to || !d.smtp_ready;
+    document.getElementById('beLoading').style.display = 'none';
+    document.getElementById('beForm').style.display = '';
+  } catch (e) { closeBudgetEmail(); showToast('Network error drafting email', 'danger'); }
+}
+
+async function sendBudgetEmail(btn) {
+  if (!BE_SID) return;
+  const to = document.getElementById('beTo').value.trim();
+  if (!to) { showToast('Add a financial-owner email first', 'warning'); return; }
+  const o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Sending…';
+  try {
+    const d = await (await fetch('/api/subscriptions/budget-email/send', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ subscription_id: BE_SID,
+        subject: document.getElementById('beSubject').value,
+        body: document.getElementById('beBody').value }) })).json();
+    if (d.success) { showToast('Budget alert sent to ' + (d.to || 'owner'), 'success'); closeBudgetEmail(); }
+    else { btn.disabled = false; btn.innerHTML = o; showToast(d.error || 'Send failed', 'danger'); }
+  } catch (e) { btn.disabled = false; btn.innerHTML = o; showToast('Network error', 'danger'); }
+}
+
+function copyBudgetEmail() {
+  const txt = 'To: ' + document.getElementById('beTo').value + '\nSubject: ' +
+    document.getElementById('beSubject').value + '\n\n' + document.getElementById('beBody').value;
+  navigator.clipboard.writeText(txt).then(() => showToast('Draft copied to clipboard', 'success'),
+    () => showToast('Copy failed', 'danger'));
 }
 
 load();

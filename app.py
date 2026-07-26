@@ -1579,6 +1579,61 @@ def api_subscription_inventory_save():
     return jsonify({"success": True})
 
 
+def _sub_for_budget(sid: str) -> dict:
+    """Assemble {id, name, spend, inventory} for one subscription — the stored
+    owner/budget metadata plus its live month-to-date spend — for a budget alert."""
+    import subinventory, costmgmt
+    inv = subinventory.all_records().get(sid, {})
+    name, spend = sid, None
+    if costmgmt.configured():
+        try:
+            for x in costmgmt.summary("MonthToDate").get("subscriptions", []):
+                if x["id"] == sid:
+                    name, spend = x.get("name", sid), x.get("cost")
+                    break
+        except Exception:
+            log.exception("budget alert: spend lookup failed for %s", sid)
+    return {"id": sid, "name": name, "spend": spend,
+            "inventory": {k: (inv.get(k) or "") for k in subinventory.FIELDS}}
+
+
+@app.route("/api/subscriptions/budget-email/preview", methods=["POST"])
+@require_superadmin
+def api_budget_email_preview():
+    """Draft (do NOT send) the over-budget email to the financial owner, so the
+    admin can review/edit it before sending."""
+    import notifications
+    sid = str((request.get_json(force=True) or {}).get("subscription_id", "")).strip()
+    if not sid:
+        return jsonify({"error": "subscription_id is required."}), 400
+    draft = notifications.draft_budget_alert(_sub_for_budget(sid), cfg.COST_CURRENCY or "$")
+    if not draft.get("ok"):
+        return jsonify({"error": draft.get("message", "Cannot draft an alert.")}), 400
+    draft.pop("ok", None)
+    return jsonify({"success": True, "smtp_ready": bool(cfg.SMTP_HOST), **draft})
+
+
+@app.route("/api/subscriptions/budget-email/send", methods=["POST"])
+@require_superadmin
+def api_budget_email_send():
+    """Send the over-budget alert to the financial owner (admin may pass an edited
+    subject/body from the preview)."""
+    import notifications
+    data = request.get_json(force=True) or {}
+    sid = str(data.get("subscription_id", "")).strip()
+    if not sid:
+        return jsonify({"error": "subscription_id is required."}), 400
+    res = notifications.send_budget_alert(
+        _sub_for_budget(sid), cfg.COST_CURRENCY or "$",
+        subject=data.get("subject"), body=data.get("body"))
+    if not res.get("ok"):
+        return jsonify({"error": res.get("message", "Send failed.")}), 400
+    audit.record("subscription_budget_alert", actor=current_actor(), actor_role="admin",
+                 summary=f"Sent over-budget alert for {sid} to {res.get('to')}",
+                 data={"subscription_id": sid, "to": res.get("to")})
+    return jsonify({"success": True, **res})
+
+
 @app.route("/api/admin/requests/<int:req_id>/diagnose", methods=["POST"])
 @require_admin
 def request_diagnose(req_id):

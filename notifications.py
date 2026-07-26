@@ -420,3 +420,118 @@ def notify_reminder(req, message: str) -> bool:
         facts=facts, color="warning",
         action_url=_url(f"/requests/{req.id}"), action_label="View Request",
     ))
+
+
+# ── Subscription budget alert — email the financial owner ─────────────────
+def _to_float(v):
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _money(v, currency):
+    try:
+        return f"{currency}{float(v):,.0f}"
+    except (TypeError, ValueError):
+        return f"{currency}{v}"
+
+
+def draft_budget_alert(sub: dict, currency: str = "$") -> dict:
+    """Draft (do NOT send) an over-budget notification email to a subscription's
+    financial owner. `sub` = {id, name, spend, inventory:{budget, financial_owner,
+    financial_owner_email, cost_center, environment, ...}}.
+
+    Returns {ok, to, subject, body, overage, pct, is_ai} — or {ok:False, message}
+    when it isn't actually over budget or lacks the figures. The body is written by
+    the LLM for this case when drafting is enabled, else a clear template.
+    """
+    inv = sub.get("inventory", {}) or {}
+    budget = _to_float(inv.get("budget"))
+    spend = sub.get("spend")
+    cur = currency or "$"
+    if budget is None or budget == 0:
+        return {"ok": False, "message": "No monthly budget is set for this subscription."}
+    if spend is None:
+        return {"ok": False, "message": "Spend is unavailable for this subscription."}
+    overage = round(spend - budget, 2)
+    if overage <= 0:
+        return {"ok": False, "message": "This subscription is within budget."}
+    pct = round(spend / budget * 100)
+    owner = inv.get("financial_owner") or "there"
+    to = (inv.get("financial_owner_email") or "").strip()
+
+    facts = [
+        {"title": "Subscription",       "value": f"{sub.get('name')} ({sub.get('id')})"},
+        {"title": "Financial owner",    "value": inv.get("financial_owner") or "—"},
+        {"title": "Monthly budget",     "value": _money(budget, cur)},
+        {"title": "Spend (month-to-date)", "value": _money(spend, cur)},
+        {"title": "Over budget by",     "value": f"{_money(overage, cur)} ({pct}% of budget)"},
+        {"title": "Cost centre",        "value": inv.get("cost_center") or "—"},
+        {"title": "Environment",        "value": inv.get("environment") or "—"},
+        {"title": "Technical owner",    "value": inv.get("technical_owner") or "—"},
+    ]
+
+    fb_subject = f"[Budget Alert] {sub.get('name')} is over budget by {_money(overage, cur)}"
+    fb_body = (
+        f"Hi {owner},\n\n"
+        f"The Azure subscription \"{sub.get('name')}\" ({sub.get('id')}) has exceeded its monthly "
+        f"budget. Month-to-date spend is {_money(spend, cur)} against a budget of "
+        f"{_money(budget, cur)} — over by {_money(overage, cur)} ({pct}%).\n\n"
+        f"Please review the recent spend and confirm whether the budget should be adjusted or "
+        f"costs reduced. You can reach the technical owner "
+        f"({inv.get('technical_owner') or 'n/a'}) to investigate the drivers.\n\n"
+        f"Thank you,\nNetwork Copilot — Presight R&D")
+
+    subject, body, is_ai = fb_subject, fb_body, False
+    if cfg.NOTIFY_AI_DRAFT:
+        try:
+            import netdiag
+            if netdiag._llm_available():
+                factlines = "\n".join(f"- {f['title']}: {f['value']}" for f in facts)
+                system = (
+                    "You are Network Copilot, the FinOps notification assistant for Presight R&D. "
+                    "Write a SHORT, professional email to the FINANCIAL OWNER of an Azure subscription "
+                    "whose month-to-date spend has exceeded its set monthly budget. "
+                    "Respond in ENGLISH ONLY. Do NOT think out loud, explain your reasoning, or emit "
+                    "any chain-of-thought / analysis / <think> tags in ANY language — output ONLY the "
+                    "finished email. Your FIRST characters must be the literal text 'Subject:'. "
+                    "Format EXACTLY: a first line 'Subject: <concise subject>', then a blank line, then "
+                    "the body — plain text, a brief greeting to the financial owner by name, 3-5 short "
+                    "sentences, and a short sign-off 'Network Copilot — Presight R&D'. No markdown. "
+                    "State the subscription, the budget, the month-to-date spend, and the overage amount "
+                    "and percentage; ask them to review and decide whether to adjust the budget or reduce "
+                    "costs. Use ONLY the facts provided — do not invent numbers or names.")
+                user = (f"Financial owner: {inv.get('financial_owner') or '(unknown)'}\n"
+                        f"Currency symbol: {cur}\n\nFacts:\n{factlines}\n")
+                parsed = _parse_draft(netdiag._llm_complete(system, user))
+                if parsed:
+                    subject, body, is_ai = parsed[0], parsed[1], True
+                else:
+                    log.info("budget alert draft malformed for %s — using template", sub.get("id"))
+        except Exception as exc:
+            log.error("budget alert draft failed, using template: %s", exc)
+
+    return {"ok": True, "to": to, "financial_owner": inv.get("financial_owner") or "",
+            "subject": subject, "body": body, "overage": overage, "pct": pct, "is_ai": is_ai}
+
+
+def send_budget_alert(sub: dict, currency: str = "$", subject: str = None,
+                      body: str = None, cc_corporate: bool = True) -> dict:
+    """Send the over-budget alert to the financial owner (optionally CC the
+    corporate recipients). `subject`/`body` override the draft when the admin has
+    edited them in the preview. Returns {ok, to, ...} or {ok:False, message}."""
+    draft = draft_budget_alert(sub, currency)
+    if not draft.get("ok"):
+        return draft
+    to = draft["to"]
+    if not to:
+        return {"ok": False, "message": "No financial-owner email is set for this subscription."}
+    if not cfg.SMTP_HOST:
+        return {"ok": False, "message": "SMTP is not configured (Settings → Notifications)."}
+    recipients = [to] + (_notify_emails() if cc_corporate else [])
+    subj = (subject or draft["subject"]).strip()
+    text = (body or draft["body"]).strip()
+    ok = _send_email(recipients, subj, text)
+    return {"ok": ok, "to": to, "subject": subj,
+            **({} if ok else {"message": "Send failed — check SMTP settings / logs."})}

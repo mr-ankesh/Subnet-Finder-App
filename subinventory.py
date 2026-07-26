@@ -14,8 +14,9 @@ import db_backend
 log = logging.getLogger(__name__)
 
 # The human-owned fields (everything else is fetched from Azure).
-FIELDS = ("technical_owner", "financial_owner", "budget", "cost_center",
-          "environment", "criticality", "notes")
+FIELDS = ("technical_owner", "technical_owner_email",
+          "financial_owner", "financial_owner_email",
+          "budget", "cost_center", "environment", "criticality", "notes")
 
 
 def _conn():
@@ -26,18 +27,26 @@ def ensure_table():
     with _conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS subscription_inventory (
-                subscription_id TEXT PRIMARY KEY,
-                technical_owner TEXT,
-                financial_owner TEXT,
-                budget          TEXT,
-                cost_center     TEXT,
-                environment     TEXT,
-                criticality     TEXT,
-                notes           TEXT,
-                updated_by      TEXT,
-                updated_ts      TEXT
+                subscription_id       TEXT PRIMARY KEY,
+                technical_owner       TEXT,
+                technical_owner_email TEXT,
+                financial_owner       TEXT,
+                financial_owner_email TEXT,
+                budget                TEXT,
+                cost_center           TEXT,
+                environment           TEXT,
+                criticality           TEXT,
+                notes                 TEXT,
+                updated_by            TEXT,
+                updated_ts            TEXT
             )
         """)
+        # Add any columns missing from a pre-existing table (e.g. the owner emails
+        # introduced later), so upgrades don't need a manual migration.
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(subscription_inventory)").fetchall()}
+        for col in FIELDS:
+            if col not in have:
+                conn.execute(f"ALTER TABLE subscription_inventory ADD COLUMN {col} TEXT")
 
 
 def all_records() -> dict:
