@@ -67,7 +67,7 @@
         <th style="padding:7px 10px 7px 0;">Sev</th><th style="padding:7px 10px 7px 0;">Type</th>
         <th style="padding:7px 10px 7px 0;">Resource</th><th style="padding:7px 10px 7px 0;">Resource group</th>
         <th style="padding:7px 10px 7px 0;">Subscription</th>
-        <th style="padding:7px 10px 7px 0;">Detail</th><th style="padding:7px 10px 7px 0;text-align:right;">~ / mo</th>
+        <th style="padding:7px 10px 7px 0;">Detail</th><th id="thCost" style="padding:7px 10px 7px 0;text-align:right;">Cost / mo</th>
         <th style="padding:7px 0;"></th>
       </tr></thead>
       <tbody id="ozRows"><tr><td colspan="8" style="padding:14px 0;color:var(--text-muted);">Scanning subscriptions…</td></tr></tbody>
@@ -124,7 +124,14 @@ async function runScan(btn, force) {
     SCAN = d;
     populateFilters();
     renderTiles(); renderCategories(); renderFindings();
-    document.getElementById('ozAsOf').textContent = 'Scanned ' + (d.generated_at || '') + ' · cached ~10 min';
+    const actual = d.cost_source === 'actual';
+    const src = actual
+      ? `Costs are actual — ${d.cost_timeframe || 'last full month'} from Cost Management${d.cost_currency_code ? ' (' + d.cost_currency_code + ')' : ''}`
+      : 'Costs are approximate retail estimates (configure the Cost SP for actual figures)';
+    document.getElementById('ozAsOf').innerHTML = 'Scanned ' + (d.generated_at || '') + ' · cached ~10 min · ' +
+      `<span style="color:${actual ? '#199e70' : '#f59e0b'};">${src}</span>`;
+    const th = document.getElementById('thCost'); if (th) th.textContent = actual ? 'Cost / mo' : '~ / mo';
+    const tl = document.querySelector('#tSave')?.previousElementSibling; if (tl) tl.textContent = actual ? 'Reclaimable / mo' : 'Est. reclaimable / mo';
     loadSummary(force);
   } catch (e) { showToast('Network error during scan', 'danger'); }
   finally { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Rescan'; } }
@@ -147,7 +154,9 @@ function fallbackBrief() {
   const paid = cats.filter(c => c.estimate > 0).sort((a, b) => b.estimate - a.estimate);
   const hygiene = cats.filter(c => c.estimate === 0);
   const t = SCAN.totals;
-  let s = `Estimated reclaimable spend is about ${money(t.monthly_estimate)}/month across ${t.count} findings.`;
+  const actual = SCAN.cost_source === 'actual';
+  let s = `${actual ? 'Reclaimable spend is' : 'Estimated reclaimable spend is about'} ${money(t.monthly_estimate)}/month across ${t.count} findings` +
+    (actual ? ` (actual — ${SCAN.cost_timeframe || 'last full month'}).` : '.');
   if (paid.length) s += ' Priorities: ' + paid.slice(0, 3).map(c =>
     `${c.label.toLowerCase()} (${c.count}, ~${money(c.estimate)}/mo)`).join('; ') + '.';
   if (hygiene.length) s += ' Quick hygiene wins with no direct cost: ' + hygiene.map(c =>

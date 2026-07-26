@@ -117,6 +117,76 @@ def _cols(props):
     return {c.get("name"): i for i, c in enumerate(props.get("columns", []))}
 
 
+def _query_paged(subscription_id: str, body: dict, _retries: int = 4) -> dict:
+    """Subscription-scope cost query that follows Cost Management's nextLink
+    pagination (a ResourceId grouping can return thousands of rows)."""
+    url = (f"{_ARM}/subscriptions/{subscription_id}"
+           f"/providers/Microsoft.CostManagement/query?api-version={_QUERY_API}")
+    rows, cols, next_url = [], None, url
+    while next_url:
+        for attempt in range(_retries + 1):
+            resp = requests.post(next_url, headers=_headers(), json=body, timeout=60)
+            if resp.status_code == 429 and attempt < _retries:
+                time.sleep(min(float(resp.headers.get("Retry-After") or (2 ** attempt)), 30))
+                continue
+            resp.raise_for_status()
+            break
+        props = resp.json().get("properties", {})
+        cols = cols or props.get("columns")
+        rows.extend(props.get("rows", []) or [])
+        next_url = props.get("nextLink")
+    return {"columns": cols or [], "rows": rows}
+
+
+# Per-resource cost cache (keyed by timeframe + the subscription set).
+_res_cost_lock = threading.Lock()
+_res_cost_cache = {}   # key -> (expires_at, {"costs":..., "currency":...})
+_RES_COST_TTL = 600
+
+
+def cost_by_resource(subscription_ids, timeframe: str = "TheLastMonth") -> dict:
+    """Actual cost per resource from Cost Management, grouped by ResourceId, for the
+    given subscriptions. Returns {"costs": {resource_id_lower: cost}, "currency": code}.
+
+    Used by the Resource Optimizer to show REAL costs (not retail estimates). The
+    cost SP needs Cost Management Reader on the scanned subscriptions."""
+    subs = [s for s in (subscription_ids or []) if s]
+    key = (timeframe, tuple(sorted(subs)))
+    now = time.time()
+    with _res_cost_lock:
+        hit = _res_cost_cache.get(key)
+        if hit and now < hit[0]:
+            return hit[1]
+
+    body = {"type": "ActualCost", "timeframe": timeframe,
+            "dataset": {"granularity": "None",
+                        "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
+                        "grouping": [{"type": "Dimension", "name": "ResourceId"}]}}
+    costs, currency = {}, ""
+    for sid in subs:
+        try:
+            props = _query_paged(sid, body)
+        except Exception as exc:
+            log.warning("cost_by_resource for %s failed: %s", sid, exc)
+            continue
+        col = _cols(props)
+        ci = col.get("Cost", col.get("PreTaxCost", 0))
+        ri = col.get("ResourceId")
+        cu = col.get("Currency")
+        if ri is None:
+            continue
+        for r in props.get("rows", []):
+            rid = str(r[ri]).lower() if ri < len(r) else ""
+            if rid:
+                costs[rid] = round(costs.get(rid, 0.0) + float(r[ci] or 0), 2)
+            if cu is not None and cu < len(r):
+                currency = r[cu]
+    result = {"costs": costs, "currency": currency}
+    with _res_cost_lock:
+        _res_cost_cache[key] = (now + _RES_COST_TTL, result)
+    return result
+
+
 def _mg_tree() -> dict:
     """All management groups the cost SP can see, as {name: {display, parent, depth}}.
 

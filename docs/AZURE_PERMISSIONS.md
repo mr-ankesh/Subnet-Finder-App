@@ -123,6 +123,14 @@ NSGs/route tables, empty resource groups).
 - Verify from **Settings → Resource Optimizer → Test Optimizer SP**. Results are
   cached ~10 minutes.
 
+> **Real costs come from the Cost SP, not the optimizer SP.** The optimizer SP
+> only *finds* idle resources (Resource Graph). Their **actual** monthly cost is
+> fetched by the **Cost SP** (§2) via a Cost Management query grouped by
+> `ResourceId` (last full month). So for real figures instead of retail estimates,
+> configure the Cost SP and give it **Cost Management Reader** on the scanned
+> subscriptions. Without the Cost SP, the optimizer falls back to approximate
+> retail-rate estimates and labels them as such.
+
 ---
 
 ## Setup checklist

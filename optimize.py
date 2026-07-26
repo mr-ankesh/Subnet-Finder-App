@@ -244,6 +244,21 @@ def scan_all(force: bool = False) -> dict:
         f["subscription_name"] = names.get(f["subscription_id"], f["subscription_id"])
         subs_seen[f["subscription_id"]] = f["subscription_name"]
 
+    # REAL cost per resource from Cost Management (via the cost SP), replacing the
+    # rough retail estimates. Falls back to the estimates only if the cost SP isn't
+    # configured or the lookup fails.
+    cost_source, cost_timeframe, cost_currency_code = "estimate", None, ""
+    import costmgmt
+    if findings and costmgmt.configured():
+        try:
+            cr = costmgmt.cost_by_resource(subs, timeframe="TheLastMonth")
+            cmap, cost_currency_code = cr["costs"], cr.get("currency", "")
+            for f in findings:
+                f["monthly_estimate"] = cmap.get((f.get("resource_id") or "").lower())  # None if no billed cost
+            cost_source, cost_timeframe = "actual", "last full month"
+        except Exception:
+            log.exception("optimize: actual-cost lookup failed, keeping estimates")
+
     # roll-ups
     by_cat = {}
     est_total = 0.0
@@ -267,6 +282,9 @@ def scan_all(force: bool = False) -> dict:
         "by_category": by_cat,
         "totals": {"count": len(findings), "monthly_estimate": round(est_total, 2)},
         "currency": cfg.COST_CURRENCY or "$",
+        "cost_source": cost_source,           # "actual" (Cost Management) | "estimate"
+        "cost_timeframe": cost_timeframe,      # e.g. "last full month"
+        "cost_currency_code": cost_currency_code,
     }
     with _scan_lock:
         _scan_cache.update(exp=now + _SCAN_TTL, result=result)
@@ -283,12 +301,15 @@ def summarize(scan: dict) -> str:
     if not by:
         return None
     cur = scan.get("currency", "$")
-    lines = [f"- {v['label']}: {v['count']} item(s), ~{cur}{v['estimate']}/mo, severity {v['severity']}"
+    actual = scan.get("cost_source") == "actual"
+    cost_word = ("actual monthly costs from Azure Cost Management" if actual
+                 else "rough retail monthly cost estimates")
+    lines = [f"- {v['label']}: {v['count']} item(s), {cur}{v['estimate']}/mo, severity {v['severity']}"
              for v in sorted(by.values(), key=lambda x: x["estimate"], reverse=True)]
     system = (
         "You are a senior Azure FinOps / cloud-optimisation advisor for Presight R&D. You are given a "
-        "read-only scan summary of idle and orphaned resources across Azure subscriptions, with rough "
-        "monthly cost estimates. Respond in ENGLISH ONLY. Do NOT think out loud or emit any "
+        "read-only scan summary of idle and orphaned resources across Azure subscriptions, with "
+        f"{cost_word}. Respond in ENGLISH ONLY. Do NOT think out loud or emit any "
         "chain-of-thought / <think> tags in any language — output only the final answer. Write a SHORT "
         "prioritised optimisation brief (max ~170 words, no preamble): (1) the top 2-3 actions that "
         "reclaim the most spend, with the approximate saving; (2) quick hygiene wins (orphaned NSGs / "
