@@ -102,13 +102,34 @@ def _notify_emails() -> list:
 
 
 # ── Intelligent drafting — LLM writes the email for the specific case ─────
-def _parse_draft(text: str, fallback_subject: str) -> tuple:
-    """Split an LLM draft of the form 'Subject: …\\n\\n<body>' into (subject, body)."""
+def _looks_unusable(s: str) -> bool:
+    """Reject leaked reasoning / non-English output: significant CJK content, or
+    obvious chain-of-thought markers. Guards against models that 'think' in plain
+    text (no <think> tags) or in another language before answering."""
+    if not s or not s.strip():
+        return True
+    if sum(1 for ch in s if "一" <= ch <= "鿿" or "぀" <= ch <= "ヿ") > 3:
+        return True   # Chinese/Japanese characters → reasoning leak
+    return False
+
+
+def _parse_draft(text: str) -> tuple | None:
+    """Parse a well-formed LLM draft ('Subject: …\\n\\n<body>') into (subject, body).
+
+    Returns None when the output doesn't strictly match — no leading Subject line,
+    empty parts, or leaked reasoning — so the caller falls back to the template
+    rather than ever emitting a malformed / chain-of-thought email.
+    """
     text = (text or "").strip()
-    m = re.match(r"(?is)^\s*subject:\s*(.+?)\r?\n+(.*)$", text)
-    if m:
-        return (m.group(1).strip() or fallback_subject), m.group(2).strip()
-    return fallback_subject, text or ""
+    m = re.match(r"(?is)^subject:\s*(.+?)\r?\n+(.*)$", text)   # anchored: must LEAD with Subject:
+    if not m:
+        return None
+    subject, body = m.group(1).strip(), m.group(2).strip()
+    if not subject or not body or len(body) > 1500:
+        return None
+    if _looks_unusable(subject) or _looks_unusable(body):
+        return None
+    return subject, body
 
 
 def _draft_email(event: str, req, facts: list, fallback_subject: str, fallback_body: str) -> tuple:
@@ -129,12 +150,14 @@ def _draft_email(event: str, req, facts: list, fallback_subject: str, fallback_b
             "You are Network Copilot, the notification assistant for Presight R&D's Azure "
             "hub-and-spoke network operations portal. Write a SHORT, professional internal "
             "notification email about a change to a network request, for the network operations "
-            "team (and the requester, who is copied). Respond in ENGLISH ONLY. Do NOT include any "
-            "reasoning, chain-of-thought or <think> tags. Output EXACTLY a first line "
-            "'Subject: <concise subject>', then a blank line, then the body: plain text, 2-5 short "
-            "sentences, no markdown, no greeting to a named person, no signature block. Clearly "
-            "state what happened, the most relevant details, and any action the team must take. "
-            "Use ONLY the facts provided — do not invent details.")
+            "team (and the requester, who is copied). "
+            "Respond in ENGLISH ONLY. Do NOT think out loud, explain your reasoning, or emit any "
+            "chain-of-thought / analysis / <think> tags in ANY language — output ONLY the finished "
+            "email. Your FIRST characters must be the literal text 'Subject:'. "
+            "Format EXACTLY: a first line 'Subject: <concise subject>', then a blank line, then the "
+            "body — plain text, 2-5 short sentences, no markdown, no greeting to a named person, no "
+            "signature block. Clearly state what happened, the most relevant details, and any action "
+            "the team must take. Use ONLY the facts provided — do not invent details.")
         user = (f"Event: {event}\n"
                 f"Request ID: #{req.id}\n"
                 f"Type: {type_label}\n"
@@ -142,10 +165,14 @@ def _draft_email(event: str, req, facts: list, fallback_subject: str, fallback_b
                 f"Requester: {getattr(req, 'requester_name', '') or '(unknown)'}\n"
                 f"Purpose: {getattr(req, 'purpose', '') or '(none)'}\n"
                 f"Key details:\n{factlines or '(none)'}\n")
-        subject, body = _parse_draft(netdiag._llm_complete(system, user), fallback_subject)
+        parsed = _parse_draft(netdiag._llm_complete(system, user))
+        if not parsed:
+            log.info("email draft malformed for #%s — using template", getattr(req, "id", "?"))
+            return fallback_subject, fallback_body
+        subject, body = parsed
         if link and link not in body:
             body += f"\n\nView the request: {link}"
-        return subject, (body or fallback_body)
+        return subject, body
     except Exception as exc:
         log.error("email draft failed, using template: %s", exc)
         return fallback_subject, fallback_body
