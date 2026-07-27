@@ -238,13 +238,16 @@ def _metric_stats(resource_id: str, metrics: list, days: int = 30) -> dict:
     resp = requests.get(f"{_ARM}{resource_id}/providers/microsoft.insights/metrics",
                         headers=_headers(), params=params, timeout=30)
     if resp.status_code != 200:
-        # Surface Azure's error code/message (e.g. AuthorizationFailed) instead of a bare status.
+        # Surface Azure's error code/message (AuthorizationFailed, BadRequest, …).
         try:
-            err = (resp.json() or {}).get("error", {}) or {}
-            raise RuntimeError(f"{resp.status_code} {err.get('code', '')}: "
-                               f"{str(err.get('message', ''))[:140]}".strip())
+            j = resp.json() or {}
+            err = j.get("error", j) or {}
+            code, msg = err.get("code", ""), str(err.get("message", "") or "")
+            if not (code or msg):
+                msg = str(j)[:160]
+            raise RuntimeError(f"{resp.status_code} {code}: {msg[:180]}".replace(" : ", " ").strip(": ").strip())
         except ValueError:
-            resp.raise_for_status()
+            raise RuntimeError(f"{resp.status_code}: {resp.text[:180]}")
     out = {}
     for m in resp.json().get("value", []):
         name = (m.get("name") or {}).get("value") or ""
@@ -273,24 +276,31 @@ def _scan_usage(vms: list, low_avg: float, low_max: float):
     from concurrent.futures import ThreadPoolExecutor
 
     def _check(r):
+        # CPU on its own: 'Percentage CPU' is a guaranteed VM platform metric.
+        # (Requesting it together with metrics that may not exist — e.g. memory —
+        # makes Azure 400 the whole batch, which was hiding CPU entirely.)
         try:
-            s = _metric_stats(r["id"], ["Percentage CPU", "Available Memory Bytes",
-                                        "Network In Total", "Network Out Total"], 30)
+            cpu = _metric_stats(r["id"], ["Percentage CPU"], 30).get("Percentage CPU", {})
         except Exception as exc:
             return ("error", None, str(exc)[:180])
-        cpu = s.get("Percentage CPU", {})
         avg, mx = cpu.get("avg"), cpu.get("max")
         if avg is None:
             return ("nodata", None, None)             # no data → didn't run in the window
         if avg < low_avg and (mx is None or mx < low_max):
             detail = (f"VM '{r.get('size','')}' averaged {avg:.1f}% CPU "
                       f"(peak {mx:.0f}%) over 30 days — downsize or deallocate")
-            mem = s.get("Available Memory Bytes", {}).get("avg")
-            if mem is not None:
-                detail += f"; avg free memory {mem / 1e9:.1f} GB"
-            net = s.get("Network In Total", {}).get("avg")
-            if net is not None and net < 1e7:         # < ~10 MB/day inbound → also quiet
-                detail += "; low network traffic"
+            # Memory/network are best-effort context (may not exist → ignore).
+            try:
+                extra = _metric_stats(r["id"], ["Available Memory Bytes",
+                                                 "Network In Total"], 30)
+                mem = extra.get("Available Memory Bytes", {}).get("avg")
+                if mem is not None:
+                    detail += f"; avg free memory {mem / 1e9:.1f} GB"
+                net = extra.get("Network In Total", {}).get("avg")
+                if net is not None and net < 1e7:
+                    detail += "; low network traffic"
+            except Exception:
+                pass
             return ("ran", _f("underutilized_vm", "Underutilized VM (low CPU)", "medium",
                               r["subscriptionId"], r, detail), None)
         return ("ran", None, None)                    # ran, but adequately utilised
