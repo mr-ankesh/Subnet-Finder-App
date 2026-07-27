@@ -1459,10 +1459,12 @@ async function submitServiceRequest() {
     purpose, details,
   });
   if (d.success) {
-    showResult('newReqResult', resultBox('success',
-      `✅ ${TYPE_LABELS[currentType]} request <strong>#${d.request_id}</strong> submitted! Save this ID to track your request.`));
+    addLocalReqId(d.request_id);
     document.getElementById('g_purpose').value = '';
     if (section) section.querySelectorAll('input[type=text],input[type=number],textarea').forEach(el => el.value = '');
+    showResult('newReqResult', '');
+    if (window.showToast) showToast(`${TYPE_LABELS[currentType]} request #${d.request_id} submitted`, 'success');
+    goToMyRequests();
   } else {
     showResult('newReqResult', resultBox('error', d.error || 'Submission failed.'));
   }
@@ -1740,10 +1742,13 @@ async function submitNewRequest() {
   showResult('newReqResult', resultBox('info', 'Submitting...'));
   const d = await apiPost('/api/requester/new-request', payload);
   if (d.success) {
-    showResult('newReqResult', resultBox('success', `✅ Request <strong>#${d.request_id}</strong> submitted! Save this ID to track your request.`));
+    addLocalReqId(d.request_id);
     ['f_name','f_email','f_purpose','f_sub','f_rg','f_vnet','f_inet_dest','f_inet_pp']
       .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
     document.querySelectorAll('#subnetBlocks input').forEach(el => el.value = '');
+    showResult('newReqResult', '');
+    if (window.showToast) showToast(`Request #${d.request_id} submitted`, 'success');
+    goToMyRequests();
   } else {
     showResult('newReqResult', resultBox('error', d.error || 'Submission failed.'));
   }
@@ -1759,33 +1764,71 @@ async function checkStatus() {
   showResult('statusResult', statusCard(d));
 }
 
-// ── My Requests (authenticated requester) ──────────────────────────────────
+// ── My Requests ─────────────────────────────────────────────────────────────
+// Requests submitted from this browser are remembered locally, so "My Requests"
+// works even in open (non-SSO) mode where the server can't tie them to a user.
+function getLocalReqIds() {
+  try { return JSON.parse(localStorage.getItem('myReqIds') || '[]'); } catch (e) { return []; }
+}
+function addLocalReqId(id) {
+  if (!id) return;
+  try {
+    const ids = getLocalReqIds().filter(x => x !== id);
+    ids.unshift(id);
+    localStorage.setItem('myReqIds', JSON.stringify(ids.slice(0, 100)));
+  } catch (e) {}
+}
+
+// Switch to the My Requests tab programmatically (event-free) and load it.
+function goToMyRequests() {
+  document.querySelectorAll('.action-panel').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.action-tab').forEach(t => t.classList.remove('active'));
+  const panel = document.getElementById('panel-my-requests');
+  if (panel) panel.style.display = '';
+  document.querySelectorAll('.action-tab').forEach(t => {
+    if ((t.getAttribute('onclick') || '').includes('my-requests')) t.classList.add('active');
+  });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  loadMyRequests();
+}
+
 async function loadMyRequests() {
   const box = document.getElementById('myRequestsList');
   if (!box) return;
   box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div>';
+  let reqs = [];
   try {
     const d = await (await fetch('/api/requester/my-requests')).json();
-    const reqs = d.requests || [];
-    if (!reqs.length) {
-      box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.55);padding:8px 0;">You haven\'t raised any requests yet.</div>';
-      return;
-    }
-    box.innerHTML =
-      '<div style="overflow-x:auto;"><table class="gls-table" style="width:100%;"><thead><tr>' +
-      '<th>#</th><th>Type</th><th>Purpose</th><th>Status</th><th>Raised</th><th></th></tr></thead><tbody>' +
-      reqs.map(r => `<tr>
-        <td style="color:rgba(255,255,255,.6);">#${r.id}</td>
-        <td style="font-size:12px;color:#00BCF2;white-space:nowrap;">${r.type_label || r.request_type}</td>
-        <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(r.purpose||'').replace(/</g,'&lt;')}</td>
-        <td><span class="status-badge status-${statusColor(r.status)}">${r.status_label || r.status}</span></td>
-        <td style="font-size:11.5px;color:rgba(255,255,255,.5);white-space:nowrap;">${r.created_at || ''}</td>
-        <td><button class="btn btn-glass btn-sm" style="font-size:11px;" onclick="viewMyStatus(${r.id})"><i class="bi bi-eye"></i> View</button></td>
-      </tr>`).join('') +
-      '</tbody></table></div>';
-  } catch (e) {
-    box.innerHTML = '<div style="font-size:13px;color:#f87171;">Could not load your requests.</div>';
+    reqs = d.requests || [];
+  } catch (e) {}
+  // Merge in requests tracked locally on this browser (covers open/non-SSO mode).
+  const have = new Set(reqs.map(r => r.id));
+  const localIds = getLocalReqIds().filter(id => !have.has(id));
+  const fetched = await Promise.all(localIds.map(async id => {
+    try {
+      const s = await (await fetch(`/api/requester/status/${id}`)).json();
+      return (s && !s.error) ? s : null;
+    } catch (e) { return null; }
+  }));
+  reqs = reqs.concat(fetched.filter(Boolean));
+  reqs.sort((a, b) => (b.id || 0) - (a.id || 0));
+
+  if (!reqs.length) {
+    box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.55);padding:8px 0;">You haven\'t raised any requests yet. Submit one and it will appear here.</div>';
+    return;
   }
+  box.innerHTML =
+    '<div style="overflow-x:auto;"><table class="gls-table" style="width:100%;"><thead><tr>' +
+    '<th>#</th><th>Type</th><th>Purpose</th><th>Status</th><th>Raised</th><th></th></tr></thead><tbody>' +
+    reqs.map(r => `<tr>
+      <td style="color:rgba(255,255,255,.6);">#${r.id}</td>
+      <td style="font-size:12px;color:#00BCF2;white-space:nowrap;">${r.type_label || r.request_type}</td>
+      <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(r.purpose||'').replace(/</g,'&lt;')}</td>
+      <td><span class="status-badge status-${statusColor(r.status)}">${r.status_label || r.status}</span></td>
+      <td style="font-size:11.5px;color:rgba(255,255,255,.5);white-space:nowrap;">${r.created_at || ''}</td>
+      <td><button class="btn btn-glass btn-sm" style="font-size:11px;" onclick="viewMyStatus(${r.id})"><i class="bi bi-eye"></i> View</button></td>
+    </tr>`).join('') +
+    '</tbody></table></div>';
 }
 
 function statusColor(s) {
