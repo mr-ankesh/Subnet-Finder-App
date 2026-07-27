@@ -795,11 +795,12 @@
                     </div>
                     <div class="col-md-4">
                       <label class="form-label-custom">Node Image (OS SKU)</label>
-                      <select class="form-input-custom" data-detail="os_sku">
+                      <select class="form-input-custom" data-detail="os_sku" id="aks_os_sku">
                         <option value="">Default (Ubuntu)</option>
                         <option value="Ubuntu">Ubuntu</option>
-                        <option value="AzureLinux">Azure Linux (CBL-Mariner)</option>
+                        <option value="AzureLinux">Azure Linux</option>
                       </select>
+                      <div class="field-help">Use “Fetch from Azure” to load the current image list.</div>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label-custom">Node OS Disk Size (GB)</label>
@@ -1372,6 +1373,11 @@ async function aksFetchOptions(btn) {
       fillSelect(document.getElementById('aks_node_size'), d.sizes.map(s => ({ value: s.name, label: `${s.name} — ${s.cores} vCPU, ${s.memory_gb} GB` })), o => o.label);
       parts.push(d.sizes.length + (d.sizes_total > d.sizes.length ? '/' + d.sizes_total : '') + ' sizes');
     } else if (d.sizes_error) { parts.push('sizes: ' + d.sizes_error); }
+    if (d.os_skus && d.os_skus.length) {
+      const items = [{ value: '', label: 'Default (Ubuntu)' }].concat(d.os_skus.map(s => ({ value: s, label: s })));
+      fillSelect(document.getElementById('aks_os_sku'), items, o => o.label);
+      parts.push(d.os_skus.length + ' images');
+    }
     msg.style.color = (d.versions_error || d.sizes_error) ? '#f59e0b' : '#7edb56';
     msg.innerHTML = '<i class="bi bi-check-circle me-1"></i>Loaded from Azure (' + (d.region || '') + '): ' + (parts.join(' · ') || 'nothing returned') + '.';
   } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }

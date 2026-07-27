@@ -1427,11 +1427,13 @@ def azure_aks_options():
         return jsonify({"error": "Enter a Subscription ID first."}), 400
     ver = azure_tools.list_aks_versions(sub, region)
     siz = azure_tools.list_vm_sizes(sub, region)
+    osk = azure_tools.list_aks_os_skus()
     return jsonify({
         "region": region, "tiers": azure_tools.aks_tiers(),
         "versions": ver.get("versions", []), "versions_error": None if ver.get("success") else ver.get("message"),
         "sizes": siz.get("sizes", []), "sizes_total": siz.get("total"),
         "sizes_error": None if siz.get("success") else siz.get("message"),
+        "os_skus": osk.get("os_skus", []),
     })
 
 

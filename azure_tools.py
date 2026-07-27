@@ -2600,6 +2600,20 @@ def _ver_key(v: str):
     return parts
 
 
+def list_aks_os_skus() -> dict:
+    """Node-pool OS images (OS SKUs) the installed SDK supports — Linux only, since
+    the node pool is Linux. Azure exposes no per-region list for these, so the
+    containerservice SDK's OSSKU enum is the live source (updates on SDK upgrade)."""
+    try:
+        from azure.mgmt.containerservice.models import OSSKU
+        skus = [v.value for v in OSSKU if not str(v.value).lower().startswith("windows")]
+        pref = ["Ubuntu", "AzureLinux"]     # common defaults first
+        skus.sort(key=lambda s: (pref.index(s) if s in pref else len(pref), s))
+        return {"success": True, "os_skus": skus}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)[:200], "os_skus": ["Ubuntu", "AzureLinux"]}
+
+
 def list_aks_versions(subscription_id: str, location: str) -> dict:
     """Kubernetes versions available for AKS in a region (newest first)."""
     if not subscription_id or not location:
