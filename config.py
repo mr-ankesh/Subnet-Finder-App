@@ -67,6 +67,10 @@ SETTINGS_SPEC = {
                                help="Stored encrypted. Leave blank on save to keep the current value."),
     "AZURE_MI_CLIENT_ID":   _f("credentials", "Managed Identity client ID",
                                help="Only for user-assigned Managed Identity; leave blank for system-assigned."),
+    "AZURE_SP_OBJECT_ID":   _f("credentials", "Automation SP object ID",
+                               help="Object (principal) ID of the automation SP/identity — GUID from Entra. "
+                                    "Used to grant the SP key permissions when creating a Key Vault for AKS "
+                                    "customer-managed-key disk encryption. Optional but recommended for CMK."),
 
     # ── Cost / Billing (separate service principal) ──
     "COST_TENANT_ID":       _f("cost", "Cost SP tenant ID",
@@ -265,6 +269,11 @@ SETTINGS_SPEC = {
     "AKS_ENABLE_AAD":           _f("aks", "Microsoft Entra ID auth", "true", type="bool"),
     "AKS_ENABLE_AZURE_RBAC":    _f("aks", "Azure RBAC for Kubernetes", "true", type="bool"),
     "AKS_DISABLE_LOCAL_ACCOUNTS": _f("aks", "Disable local accounts", "true", type="bool"),
+    "AKS_CMK_ENCRYPTION":       _f("aks", "Host disk encryption (CMK) by default", "false", type="bool",
+                                   help="When on, AKS deployments create a Key Vault + key + Disk Encryption "
+                                        "Set for customer-managed-key host disk encryption unless the deploy "
+                                        "opts out. Needs azure-mgmt-keyvault/azure-keyvault-keys installed and "
+                                        "the automation SP granted Key Vault Contributor (+ AZURE_SP_OBJECT_ID)."),
     "AKS_UPGRADE_CHANNEL":      _f("aks", "Cluster auto-upgrade channel", "patch",
                                    options=["patch", "stable", "rapid", "node-image", "none"]),
     "AKS_NODE_OS_UPGRADE_CHANNEL": _f("aks", "Node OS upgrade channel", "SecurityPatch",

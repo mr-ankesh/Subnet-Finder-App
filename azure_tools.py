@@ -130,6 +130,18 @@ def carve_subnets(address_space: str, entries: list) -> list:
     return out
 
 
+def _tags(extra: dict = None) -> dict:
+    """Standard resource tags (owner / env / criticality / creator, …) applied to
+    every taggable resource the portal creates. Trims values, drops empties, caps
+    Azure's length limits (key ≤512, value ≤256)."""
+    out = {}
+    for k, v in (extra or {}).items():
+        v = str(v if v is not None else "").strip()
+        if v and k:
+            out[str(k)[:512]] = v[:256]
+    return out
+
+
 @_guard
 def create_spoke_vnet(
     subscription_id: str,
@@ -141,6 +153,7 @@ def create_spoke_vnet(
     subnet_size=None,
     subnets: list = None,           # [{"name", "size"}, ...] — overrides the single-subnet args
     on_conflict: str = None,        # "replace" = overwrite an existing VNET after confirmation
+    tags: dict = None,              # owner/env/criticality/creator resource tags
 ) -> dict:
     """Ensure the RG exists, then create the spoke VNET with the requested subnet(s)."""
     try:
@@ -194,6 +207,7 @@ def create_spoke_vnet(
                 location=location,
                 address_space=AddressSpace(address_prefixes=[address_space]),
                 subnets=vnet_subnets,
+                tags=_tags(tags),
             ),
         ).result()
         snet_desc = ", ".join(f"{s['name']} ({s['address_prefix']})" for s in subnet_params)
@@ -471,6 +485,7 @@ def create_route_table(
     subscription_id: str = None,
     disable_bgp_route_propagation: bool = True,
     on_conflict: str = None,        # "keep" = reuse the existing table untouched
+    tags: dict = None,              # owner/env/criticality/creator resource tags
 ) -> dict:
     """Create a new route table (UDR) in the given subscription/RG."""
     try:
@@ -502,6 +517,7 @@ def create_route_table(
             route_table_name=name,
             parameters={
                 "location": loc,
+                "tags": _tags(tags),
                 "properties": {"disableBgpRoutePropagation": disable_bgp_route_propagation},
             },
         ).result()
@@ -2288,6 +2304,110 @@ def get_aks_cluster_status(subscription_id: str, resource_group: str,
 
 
 @_guard
+def _kv_name(base: str) -> str:
+    """A globally-unique-ish, valid Key Vault name (3-24, alnum + hyphen)."""
+    import hashlib
+    clean = re.sub(r"[^a-zA-Z0-9-]", "", base or "aks").strip("-") or "aks"
+    h = hashlib.md5((base or "").encode()).hexdigest()[:6]
+    return (clean[:17] + "-" + h)[:24].strip("-")
+
+
+@_guard
+def create_aks_disk_encryption(subscription_id: str, resource_group: str, location: str,
+                               base_name: str, tags: dict = None) -> dict:
+    """Full customer-managed-key setup for AKS host disk encryption: a Key Vault
+    (soft-delete + purge protection — required), an RSA key, and a Disk Encryption
+    Set with a system-assigned identity granted wrap/unwrap on the key. Returns
+    {success, des_id, key_vault, vault_uri, message}.
+
+    Requires azure-mgmt-keyvault + azure-keyvault-keys. The automation SP needs, on
+    the target RG/subscription: Key Vault Contributor (create the vault) and key
+    permissions — set AZURE_SP_OBJECT_ID so the vault grants the SP a create/wrap
+    access policy; otherwise create the key manually."""
+    try:
+        from azure.mgmt.keyvault import KeyVaultManagementClient
+        from azure.mgmt.keyvault.models import (
+            VaultCreateOrUpdateParameters, VaultProperties, Sku as KvSku, SkuName,
+            AccessPolicyEntry, Permissions, KeyPermissions)
+        from azure.keyvault.keys import KeyClient
+        from azure.mgmt.compute import ComputeManagementClient
+        from azure.mgmt.compute.models import (
+            DiskEncryptionSet, KeyForDiskEncryptionSet, SourceVault, EncryptionSetIdentity)
+    except ImportError as exc:
+        return {"success": False,
+                "message": f"Key Vault SDKs not installed ({exc}). Add azure-mgmt-keyvault "
+                           f"and azure-keyvault-keys to requirements and redeploy."}
+
+    tenant = cfg.AZURE_TENANT_ID
+    if not tenant:
+        return {"success": False, "message": "AZURE_TENANT_ID is required for CMK disk encryption."}
+    cred = _get_credential()
+    rg_res = ensure_resource_group(subscription_id, resource_group, location)
+    if not rg_res.get("success"):
+        return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
+
+    kv_name = _kv_name(base_name)
+    des_name = (re.sub(r"[^a-zA-Z0-9-]", "", base_name or "aks")[:76] + "-des")
+    kvm = KeyVaultManagementClient(cred, subscription_id)
+    compute = ComputeManagementClient(cred, subscription_id)
+
+    # Access policy for the automation SP so it can create/wrap the key.
+    base_policies = []
+    if cfg.AZURE_SP_OBJECT_ID:
+        base_policies.append(AccessPolicyEntry(
+            tenant_id=tenant, object_id=cfg.AZURE_SP_OBJECT_ID,
+            permissions=Permissions(keys=[KeyPermissions.GET, KeyPermissions.CREATE,
+                                          KeyPermissions.LIST, KeyPermissions.WRAP_KEY,
+                                          KeyPermissions.UNWRAP_KEY, KeyPermissions.IMPORT_ENUM])))
+
+    def _vault_props(policies):
+        return VaultProperties(
+            tenant_id=tenant, sku=KvSku(name=SkuName.STANDARD, family="A"),
+            access_policies=policies, enable_soft_delete=True,
+            soft_delete_retention_in_days=90, enable_purge_protection=True)
+
+    log.info("CMK: creating Key Vault '%s' in %s/%s", kv_name, resource_group, location)
+    vault = kvm.vaults.begin_create_or_update(
+        resource_group, kv_name,
+        VaultCreateOrUpdateParameters(location=location, properties=_vault_props(base_policies),
+                                      tags=_tags(tags))).result()
+    vault_uri = vault.properties.vault_uri
+
+    # Create the RSA key (data plane).
+    try:
+        kc = KeyClient(vault_url=vault_uri, credential=cred)
+        key = kc.create_rsa_key(f"{kv_name}-cmk", size=2048)
+        key_url = key.id
+    except Exception as exc:
+        return {"success": False, "message": f"Key Vault '{kv_name}' created, but creating the "
+                f"key failed ({str(exc)[:160]}). Grant the SP key-create permission "
+                f"(set AZURE_SP_OBJECT_ID) or create the key manually."}
+
+    # Disk Encryption Set with a system-assigned identity.
+    log.info("CMK: creating Disk Encryption Set '%s'", des_name)
+    des = compute.disk_encryption_sets.begin_create_or_update(
+        resource_group, des_name,
+        DiskEncryptionSet(location=location, identity=EncryptionSetIdentity(type="SystemAssigned"),
+                          active_key=KeyForDiskEncryptionSet(
+                              source_vault=SourceVault(id=vault.id), key_url=key_url),
+                          tags=_tags(tags))).result()
+    des_principal = des.identity.principal_id
+
+    # Grant the DES identity wrap/unwrap/get on the vault key.
+    grant = base_policies + [AccessPolicyEntry(
+        tenant_id=tenant, object_id=des_principal,
+        permissions=Permissions(keys=[KeyPermissions.GET, KeyPermissions.WRAP_KEY,
+                                       KeyPermissions.UNWRAP_KEY]))]
+    kvm.vaults.begin_create_or_update(
+        resource_group, kv_name,
+        VaultCreateOrUpdateParameters(location=location, properties=_vault_props(grant),
+                                      tags=_tags(tags))).result()
+
+    return {"success": True, "des_id": des.id, "key_vault": kv_name, "vault_uri": vault_uri,
+            "message": f"Key Vault '{kv_name}', CMK key and Disk Encryption Set '{des_name}' created "
+                       f"for host disk encryption."}
+
+
 def create_aks_cluster(
     subscription_id: str,
     resource_group: str,
@@ -2304,6 +2424,13 @@ def create_aks_cluster(
     tier: str = "Free",               # control-plane SKU tier: Free / Standard / Premium
     zones: str = "default",           # node-pool availability zones: "default" / "1" / "1,2,3"
     on_conflict: str = None,          # "replace" = update an existing cluster after confirmation
+    tags: dict = None,                # owner/env/criticality/creator resource tags
+    node_admin_username: str = None,  # node-pool Linux local admin username
+    node_ssh_key: str = None,         # SSH public key (required by Azure when a username is set)
+    os_sku: str = None,               # node image: "Ubuntu" / "AzureLinux"
+    os_disk_size_gb: int = None,      # node OS disk size (GB)
+    disk_encryption_set_id: str = None,  # CMK Disk Encryption Set (host encryption)
+    enable_encryption_at_host: bool = False,
 ) -> dict:
     """Kick off AKS cluster creation (does NOT wait for provisioning to finish).
     Network profile, security and upgrade settings come from config defaults."""
@@ -2349,6 +2476,13 @@ def create_aks_cluster(
             pool.count = int(node_count)
         if zones and str(zones).lower() != "default":
             pool.availability_zones = [z.strip() for z in str(zones).split(",") if z.strip()]
+        # Node-pool image / OS disk / host encryption
+        if os_sku:
+            pool.os_sku = os_sku                      # "Ubuntu" | "AzureLinux"
+        if os_disk_size_gb:
+            pool.os_disk_size_gb = int(os_disk_size_gb)
+        if enable_encryption_at_host:
+            pool.enable_encryption_at_host = True
 
         net = ContainerServiceNetworkProfile(
             network_plugin=cfg.AKS_NETWORK_PLUGIN or "azure",
@@ -2375,6 +2509,27 @@ def create_aks_cluster(
                 managed=True, enable_azure_rbac=bool(cfg.AKS_ENABLE_AZURE_RBAC))
         if tier in ("Free", "Standard", "Premium"):
             mc.sku = ManagedClusterSKU(name="Base", tier=tier)
+
+        # Resource tags (owner/env/criticality/creator)
+        mc.tags = _tags(tags)
+
+        # Node-pool Linux local admin (Azure requires an SSH public key with it)
+        if node_admin_username:
+            from azure.mgmt.containerservice.models import (
+                ContainerServiceLinuxProfile, ContainerServiceSshConfiguration,
+                ContainerServiceSshPublicKey)
+            if not (node_ssh_key or "").strip():
+                return {"success": False,
+                        "message": "A node-pool admin username needs an SSH public key "
+                                   "(Azure requires one for a custom Linux profile)."}
+            mc.linux_profile = ContainerServiceLinuxProfile(
+                admin_username=node_admin_username,
+                ssh=ContainerServiceSshConfiguration(
+                    public_keys=[ContainerServiceSshPublicKey(key_data=node_ssh_key.strip())]))
+
+        # Customer-managed key host disk encryption (Disk Encryption Set)
+        if disk_encryption_set_id:
+            mc.disk_encryption_set_id = disk_encryption_set_id
 
         log.info("Kicking off AKS '%s' (%s, %s) in %s/%s",
                  cluster_name, kubernetes_version, node_size, resource_group, location)

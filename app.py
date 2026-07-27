@@ -379,6 +379,20 @@ def current_actor() -> str:
     return session.get("admin_name") or "Admin"
 
 
+def _deploy_tags(req) -> dict:
+    """Mandatory resource tags applied to everything deployed for a request:
+    owner (the requester), env + criticality (from the request), and creator
+    (the admin / Keycloak user performing the deployment)."""
+    d = req.get_details() if hasattr(req, "get_details") else {}
+    return {
+        "owner": (getattr(req, "requester_email", None) or getattr(req, "requester_name", "")
+                  or "unspecified"),
+        "env": (d.get("env") or "unspecified"),
+        "criticality": (d.get("criticality") or "unspecified"),
+        "creator": current_actor(),
+    }
+
+
 def _chat_owner(kind: str) -> str:
     """Stable per-user key that owns persistent agent chats. Uses the Keycloak
     identity when signed in; otherwise the admin name, or a per-session id for an
@@ -2826,6 +2840,21 @@ def admin_azure_action(req_id):
                    "message": f"Existing AKS cluster '{name}' kept as-is — no Azure changes. "
                               f"Use 'Check Cluster State' to confirm it is ready."}
         else:
+            # Customer-managed-key host disk encryption (Key Vault + key + Disk
+            # Encryption Set) — created first so its DES can be referenced. Abort
+            # rather than deploy an unencrypted cluster if it was requested and failed.
+            _cmk_default = "yes" if cfg.AKS_CMK_ENCRYPTION else "no"
+            want_cmk = str(_ov("cmk_encryption", _cmk_default)).lower() in ("yes", "true", "on", "1")
+            des_id = None
+            if want_cmk:
+                cmk = azure_tools.create_aks_disk_encryption(
+                    subscription_id=sub, resource_group=rg, location=region,
+                    base_name=name, tags=_deploy_tags(req))
+                _audit_azure(cmk)
+                if not cmk.get("success"):
+                    return jsonify({"error": "Host disk encryption setup failed: "
+                                    + cmk.get("message", "")}), 207
+                des_id = cmk.get("des_id")
             res = azure_tools.create_aks_cluster(
                 subscription_id=sub, resource_group=rg, cluster_name=name, location=region,
                 subnet_id=subnet_id, kubernetes_version=k8s_version,
@@ -2836,7 +2865,16 @@ def admin_azure_action(req_id):
                 min_count=_int(_ov("min_count"), cfg.AKS_DEFAULT_MIN_COUNT),
                 max_count=_int(_ov("max_count"), cfg.AKS_DEFAULT_MAX_COUNT),
                 on_conflict=("replace" if on_conflict == "replace" else None),
+                tags=_deploy_tags(req),
+                node_admin_username=_ov("node_admin_username"),
+                node_ssh_key=_ov("node_ssh_key"),
+                os_sku=_ov("os_sku"),
+                os_disk_size_gb=_int(_ov("os_disk_size_gb"), None),
+                disk_encryption_set_id=des_id,
+                enable_encryption_at_host=bool(des_id),
             )
+            if des_id and res.get("success"):
+                res["message"] = str(res.get("message", "")) + " Host disk encryption (CMK) enabled."
         _audit_azure(res)
         _auto_advance(req)
         return jsonify(res), (200 if res.get("success") else 207)
@@ -2954,7 +2992,8 @@ def admin_azure_action(req_id):
                                                 subnet_name=vi.subnet_name or "default",
                                                 subnet_size=vi.subnet_size,
                                                 subnets=details.get("subnets") or None,
-                                                on_conflict=(on_conflict or None))
+                                                on_conflict=(on_conflict or None),
+                                                tags=_deploy_tags(req))
         if res.get("success") and req.status == RequestStatus.CIDR_ASSIGNED:
             req.status = RequestStatus.VNET_CREATED
             req.updated_at = datetime.utcnow()
@@ -3062,7 +3101,8 @@ def admin_azure_action(req_id):
         create_res = azure_tools.create_route_table(
             rt_name, vi.resource_group, location=vi.region,
             subscription_id=vi.subscription_id,
-            on_conflict=("keep" if on_conflict == "keep" else None))
+            on_conflict=("keep" if on_conflict == "keep" else None),
+            tags=_deploy_tags(req))
         if create_res.get("conflict"):
             # Existing table with routes — never overwrite silently; the UI
             # shows its current routes and offers reuse-as-is.
@@ -3535,7 +3575,8 @@ def _deploy_spoke_route_table(req):
                            revert_op=ch.get("revert_op"), revert_params=ch.get("revert_params"))
 
     create_res = azure_tools.create_route_table(rt_name, vi.resource_group, location=vi.region,
-                                                 subscription_id=vi.subscription_id)
+                                                 subscription_id=vi.subscription_id,
+                                                 tags=_deploy_tags(req))
     if create_res.get("conflict"):
         return {"success": False, "conflict": True, "dry_run": False,
                 "message": f"Route table '{rt_name}' already exists — reuse/resolve it via the "
@@ -3578,7 +3619,7 @@ def _deploy_one(req, key):
         return azure_tools.create_spoke_vnet(
             vi.subscription_id, vi.resource_group, vi.vnet_name, vi.region, addr,
             subnet_name=vi.subnet_name or "default", subnet_size=vi.subnet_size,
-            subnets=details.get("subnets") or None)
+            subnets=details.get("subnets") or None, tags=_deploy_tags(req))
     if key == "peer":
         pn = details.get("peering_names") or {}
         s2h = sanitize(pn.get("spoke_to_hub") or render_name("TPL_PEERING_SPOKE_TO_HUB", vnet=vi.vnet_name))
