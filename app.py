@@ -2096,6 +2096,11 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
                                  "(e.g. *.presight.ai) — these are IPs: " + ", ".join(bad)}, 400
 
     details_payload = {"justification": justification}
+    # env + criticality drive the mandatory resource tags (owner/env/criticality/creator)
+    if str(data.get("env", "")).strip():
+        details_payload["env"] = str(data.get("env")).strip()[:64]
+    if str(data.get("criticality", "")).strip():
+        details_payload["criticality"] = str(data.get("criticality")).strip()[:32]
     if subnets:
         details_payload["subnets"] = subnets
     if internet_access:

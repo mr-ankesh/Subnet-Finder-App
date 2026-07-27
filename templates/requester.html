@@ -237,6 +237,14 @@
                       <div class="col-md-4" style="display:flex;align-items:flex-end;">
                         <button type="button" class="btn-secondary-custom" style="width:100%;" onclick="vnetGenerateNames()"><i class="bi bi-arrow-repeat me-1"></i>Generate names</button></div>
                     </div>
+                    <div class="row g-2" style="margin-top:8px;">
+                      <div class="col-md-4"><label class="form-label-custom">Criticality *</label>
+                        <select class="form-input-custom" id="f_criticality">
+                          <option value="">— select —</option><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option>
+                        </select>
+                        <div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:3px;">Tagged on every resource created (owner/env/criticality/creator).</div>
+                      </div>
+                    </div>
                     <div id="f_nameMsg" style="font-size:11px;color:#7edb56;margin-top:6px;"></div>
                   </div>
                   <div class="row g-3">
@@ -645,8 +653,16 @@
                         </div>
                         <div class="row g-2">
                           <div class="col-md-4"><label class="form-label-custom">Project</label><input type="text" class="form-input-custom" id="aks_proj" placeholder="e.g. g100"></div>
-                          <div class="col-md-4"><label class="form-label-custom">Environment</label><input type="text" class="form-input-custom" id="aks_env" placeholder="e.g. dev"></div>
+                          <div class="col-md-4"><label class="form-label-custom">Environment *</label><input type="text" class="form-input-custom" data-detail="env" id="aks_env" placeholder="e.g. dev"></div>
                           <div class="col-md-4" style="display:flex;align-items:flex-end;"><button type="button" class="btn-secondary-custom" style="width:100%;" onclick="aksGenerateNames()"><i class="bi bi-arrow-repeat me-1"></i>Generate names</button></div>
+                        </div>
+                        <div class="row g-2" style="margin-top:6px;">
+                          <div class="col-md-4"><label class="form-label-custom">Criticality *</label>
+                            <select class="form-input-custom" data-detail="criticality" id="aks_criticality">
+                              <option value="">— select —</option><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option>
+                            </select>
+                            <div class="field-help">Tagged on every resource created (owner/env/criticality/creator).</div>
+                          </div>
                         </div>
                         <div id="aksNameMsg" style="font-size:11px;color:#7edb56;margin-top:6px;"></div>
                       </div>
@@ -772,6 +788,33 @@
                         <option value="{{ s }}">{{ s }}{% if loop.first %} (default){% endif %}</option>
                         {% endfor %}
                       </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Node Image (OS SKU)</label>
+                      <select class="form-input-custom" data-detail="os_sku">
+                        <option value="">Default (Ubuntu)</option>
+                        <option value="Ubuntu">Ubuntu</option>
+                        <option value="AzureLinux">Azure Linux (CBL-Mariner)</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Node OS Disk Size (GB)</label>
+                      <input type="number" class="form-input-custom" data-detail="os_disk_size_gb" min="30" max="2048" placeholder="default (managed)">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Node local admin username</label>
+                      <input type="text" class="form-input-custom" data-detail="node_admin_username" placeholder="optional, e.g. azureuser">
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label-custom">Node SSH public key <span class="field-help" style="display:inline;">— required if a local admin username is set</span></label>
+                      <input type="text" class="form-input-custom" data-detail="node_ssh_key" placeholder="ssh-rsa AAAA... (paste the public key)">
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label-custom" style="cursor:pointer;">
+                        <input type="checkbox" data-detail="cmk_encryption" checked style="margin-right:6px;">
+                        Encrypt node host disks with a customer-managed key
+                        <span class="field-help" style="display:inline;">— creates a Key Vault + key + Disk Encryption Set for this cluster</span>
+                      </label>
                     </div>
                     <div class="col-md-4">
                       <label class="form-label-custom">Availability Zones</label>
@@ -1437,8 +1480,13 @@ async function submitServiceRequest() {
     for (const [k, lbl] of [['cluster_name','Cluster Name'],['resource_group','Resource Group'],
                             ['subscription_id','Subscription ID'],
                             ['vnet_name','VNET Name'],['subnet_name','Subnet Name'],
-                            ['node_pool_name','Node Pool Name']]) {
+                            ['node_pool_name','Node Pool Name'],
+                            ['env','Environment'],['criticality','Criticality']]) {
       if (!details[k]) return showResult('newReqResult', resultBox('error', `${lbl} is required.`));
+    }
+    if ((details.node_admin_username || '').trim() && !(details.node_ssh_key || '').trim()) {
+      return showResult('newReqResult', resultBox('error',
+        'A node SSH public key is required when a node local admin username is set (Azure requirement).'));
     }
     if ((details.autoscaling || 'disabled') === 'enabled') {
       const mn = parseInt(details.min_count, 10), mx = parseInt(details.max_count, 10);
@@ -1699,8 +1747,11 @@ async function submitNewRequest() {
   if (!name || !purpose) return showResult('newReqResult', resultBox('error', 'Name and Purpose are required.'));
   if (!justification) return showResult('newReqResult', resultBox('error', 'Business justification is required.'));
 
+  const env = (document.getElementById('f_env').value || '').trim();
+  const criticality = document.getElementById('f_criticality').value;
+  if (!criticality) return showResult('newReqResult', resultBox('error', 'Criticality is required (used for resource tags).'));
   const payload = { cidr_needed: cidr, purpose, justification, requester_name: name, requester_email: email,
-                    ip_range: pool, hub_integration: hub, deployment_mode: mode };
+                    ip_range: pool, hub_integration: hub, deployment_mode: mode, env, criticality };
 
   if (mode === 'admin') {
     const sub = document.getElementById('f_sub').value.trim();
