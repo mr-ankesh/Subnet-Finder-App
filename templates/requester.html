@@ -230,7 +230,7 @@
                       Example — project <code>g100</code>, env <code>dev</code> → RG <code>rg-g100-dev-prs-aen-001</code>, VNET <code>vnet-g100-dev-prs-aen-001</code>. You can still edit any name after.
                     </div>
                     <div class="row g-2">
-                      <div class="col-md-4"><label class="form-label-custom">Project</label>
+                      <div class="col-md-4"><label class="form-label-custom">Project *</label>
                         <input type="text" class="form-input-custom" id="f_proj" placeholder="e.g. g100"></div>
                       <div class="col-md-4"><label class="form-label-custom">Environment</label>
                         <input type="text" class="form-input-custom" id="f_env" placeholder="e.g. dev"></div>
@@ -238,12 +238,14 @@
                         <button type="button" class="btn-secondary-custom" style="width:100%;" onclick="vnetGenerateNames()"><i class="bi bi-arrow-repeat me-1"></i>Generate names</button></div>
                     </div>
                     <div class="row g-2" style="margin-top:8px;">
+                      <div class="col-md-4"><label class="form-label-custom">Owner email *</label>
+                        <input type="email" class="form-input-custom" id="f_owner_email" placeholder="owner@presight.ai"></div>
                       <div class="col-md-4"><label class="form-label-custom">Criticality *</label>
                         <select class="form-input-custom" id="f_criticality">
                           <option value="">— select —</option><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option>
                         </select>
-                        <div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:3px;">Tagged on every resource created (owner/env/criticality/creator).</div>
                       </div>
+                      <div class="col-12" style="font-size:11px;color:rgba(255,255,255,.5);">Every deployed resource is tagged: <code>owner</code> (owner email), <code>requester</code> (your email), <code>project</code>, <code>env</code>, <code>criticality</code>, <code>creator</code> (the admin who deploys).</div>
                     </div>
                     <div id="f_nameMsg" style="font-size:11px;color:#7edb56;margin-top:6px;"></div>
                   </div>
@@ -652,17 +654,19 @@
                           cluster <code>aks-g100-dev-prs-aen-001</code>, RG <code>rg-g100-dev-prs-aen-001</code>. You can still edit them.
                         </div>
                         <div class="row g-2">
-                          <div class="col-md-4"><label class="form-label-custom">Project</label><input type="text" class="form-input-custom" id="aks_proj" placeholder="e.g. g100"></div>
+                          <div class="col-md-4"><label class="form-label-custom">Project *</label><input type="text" class="form-input-custom" data-detail="project" id="aks_proj" placeholder="e.g. g100"></div>
                           <div class="col-md-4"><label class="form-label-custom">Environment *</label><input type="text" class="form-input-custom" data-detail="env" id="aks_env" placeholder="e.g. dev"></div>
                           <div class="col-md-4" style="display:flex;align-items:flex-end;"><button type="button" class="btn-secondary-custom" style="width:100%;" onclick="aksGenerateNames()"><i class="bi bi-arrow-repeat me-1"></i>Generate names</button></div>
                         </div>
                         <div class="row g-2" style="margin-top:6px;">
+                          <div class="col-md-4"><label class="form-label-custom">Owner email *</label>
+                            <input type="email" class="form-input-custom" data-detail="owner_email" id="aks_owner_email" placeholder="owner@presight.ai"></div>
                           <div class="col-md-4"><label class="form-label-custom">Criticality *</label>
                             <select class="form-input-custom" data-detail="criticality" id="aks_criticality">
                               <option value="">— select —</option><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option>
                             </select>
-                            <div class="field-help">Tagged on every resource created (owner/env/criticality/creator).</div>
                           </div>
+                          <div class="col-12 field-help">Tagged on every resource created: owner (owner email), requester (your email), project, env, criticality, creator (the deploying admin).</div>
                         </div>
                         <div id="aksNameMsg" style="font-size:11px;color:#7edb56;margin-top:6px;"></div>
                       </div>
@@ -1481,6 +1485,7 @@ async function submitServiceRequest() {
                             ['subscription_id','Subscription ID'],
                             ['vnet_name','VNET Name'],['subnet_name','Subnet Name'],
                             ['node_pool_name','Node Pool Name'],
+                            ['project','Project'],['owner_email','Owner email'],
                             ['env','Environment'],['criticality','Criticality']]) {
       if (!details[k]) return showResult('newReqResult', resultBox('error', `${lbl} is required.`));
     }
@@ -1747,11 +1752,16 @@ async function submitNewRequest() {
   if (!name || !purpose) return showResult('newReqResult', resultBox('error', 'Name and Purpose are required.'));
   if (!justification) return showResult('newReqResult', resultBox('error', 'Business justification is required.'));
 
+  const project = (document.getElementById('f_proj').value || '').trim();
+  const ownerEmail = (document.getElementById('f_owner_email').value || '').trim();
   const env = (document.getElementById('f_env').value || '').trim();
   const criticality = document.getElementById('f_criticality').value;
+  if (!project) return showResult('newReqResult', resultBox('error', 'Project is required (used for resource tags).'));
+  if (!ownerEmail) return showResult('newReqResult', resultBox('error', 'Owner email is required (used for the owner tag).'));
   if (!criticality) return showResult('newReqResult', resultBox('error', 'Criticality is required (used for resource tags).'));
   const payload = { cidr_needed: cidr, purpose, justification, requester_name: name, requester_email: email,
-                    ip_range: pool, hub_integration: hub, deployment_mode: mode, env, criticality };
+                    ip_range: pool, hub_integration: hub, deployment_mode: mode,
+                    project, owner_email: ownerEmail, env, criticality };
 
   if (mode === 'admin') {
     const sub = document.getElementById('f_sub').value.trim();

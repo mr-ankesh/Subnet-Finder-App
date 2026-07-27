@@ -381,12 +381,18 @@ def current_actor() -> str:
 
 def _deploy_tags(req) -> dict:
     """Mandatory resource tags applied to everything deployed for a request:
-    owner (the requester), env + criticality (from the request), and creator
-    (the admin / Keycloak user performing the deployment)."""
+      owner       — the business owner's email (from the request)
+      requester   — who raised the request (their email)
+      project     — the project the resources belong to
+      env, criticality — from the request
+      creator     — the admin / Keycloak user performing the deployment
+    """
     d = req.get_details() if hasattr(req, "get_details") else {}
     return {
-        "owner": (getattr(req, "requester_email", None) or getattr(req, "requester_name", "")
-                  or "unspecified"),
+        "owner": (d.get("owner_email") or "unspecified"),
+        "requester": (getattr(req, "requester_email", None) or getattr(req, "requester_name", "")
+                      or "unspecified"),
+        "project": (d.get("project") or "unspecified"),
         "env": (d.get("env") or "unspecified"),
         "criticality": (d.get("criticality") or "unspecified"),
         "creator": current_actor(),
@@ -2096,11 +2102,12 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
                                  "(e.g. *.presight.ai) — these are IPs: " + ", ".join(bad)}, 400
 
     details_payload = {"justification": justification}
-    # env + criticality drive the mandatory resource tags (owner/env/criticality/creator)
-    if str(data.get("env", "")).strip():
-        details_payload["env"] = str(data.get("env")).strip()[:64]
-    if str(data.get("criticality", "")).strip():
-        details_payload["criticality"] = str(data.get("criticality")).strip()[:32]
+    # project/env/criticality/owner_email drive the mandatory resource tags
+    # (owner/requester/project/env/criticality/creator)
+    for _k, _cap in (("project", 64), ("env", 64), ("criticality", 32), ("owner_email", 200)):
+        _v = str(data.get(_k, "")).strip()
+        if _v:
+            details_payload[_k] = _v[:_cap]
     if subnets:
         details_payload["subnets"] = subnets
     if internet_access:
