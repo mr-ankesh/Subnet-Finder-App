@@ -125,11 +125,16 @@ async function runScan(btn, force) {
     populateFilters();
     renderTiles(); renderCategories(); renderFindings();
     const actual = d.cost_source === 'actual';
-    const src = actual
-      ? `Costs are actual — ${d.cost_timeframe || 'last full month'} from Cost Management${d.cost_currency_code ? ' (' + d.cost_currency_code + ')' : ''}`
-      : 'Costs are approximate retail estimates (configure the Cost SP for actual figures)';
-    document.getElementById('ozAsOf').innerHTML = 'Scanned ' + (d.generated_at || '') + ' · cached ~10 min · ' +
-      `<span style="color:${actual ? '#199e70' : '#f59e0b'};">${src}</span>`;
+    const total = d.totals.count || 0, matched = d.cost_matched || 0;
+    const costNote = actual
+      ? `<span style="color:#199e70;">Costs: actual for ${matched} of ${total} findings — last 30 days from Cost Management${d.cost_currency_code ? ' (' + d.cost_currency_code + ')' : ''}${matched < total ? '; the rest (~) are retail estimates' : ''}.</span>`
+      : `<span style="color:#f59e0b;">Costs: approximate retail estimates ${d.cost_sp_configured ? '(Cost SP returned no matching figures — check its Cost Management Reader access on the scanned subscriptions)' : '(configure the Cost SP for actual figures)'}.</span>`;
+    const u = d.usage || {};
+    const usageNote = !u.enabled
+      ? '<span style="color:var(--text-muted);">CPU/memory usage scan is off (enable in Settings → Resource Optimizer).</span>'
+      : `<span style="color:var(--text-muted);">Usage scan: <b style="color:${u.flagged ? '#f59e0b' : '#199e70'};">${u.flagged}</b> of ${u.checked} running VMs under-utilised over 30 days (avg CPU &lt; ${u.avg_threshold}%, peak &lt; ${u.peak_threshold}%).${u.flagged ? ` <a href="#" onclick="filterByCategory('underutilized_vm');return false;" style="color:#60a5fa;">View</a>` : ''}</span>`;
+    document.getElementById('ozAsOf').innerHTML =
+      'Scanned ' + (d.generated_at || '') + ' · cached ~10 min<br>' + costNote + '<br>' + usageNote;
     const th = document.getElementById('thCost'); if (th) th.textContent = actual ? 'Cost / mo' : '~ / mo';
     const tl = document.querySelector('#tSave')?.previousElementSibling; if (tl) tl.textContent = actual ? 'Reclaimable / mo' : 'Est. reclaimable / mo';
     loadSummary(force);
@@ -266,7 +271,7 @@ function renderFindings() {
         <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${esc(f.resource_group) || '—'}</td>
         <td style="padding:7px 10px 7px 0;color:var(--text-dim);white-space:nowrap;">${esc(f.subscription_name) || '—'}</td>
         <td style="padding:7px 10px 7px 0;color:var(--text-dim);">${esc(f.detail)}</td>
-        <td style="padding:7px 10px 7px 0;text-align:right;color:${f.monthly_estimate ? '#199e70' : 'var(--text-muted)'};">${f.monthly_estimate ? money(f.monthly_estimate) : '—'}</td>
+        <td style="padding:7px 10px 7px 0;text-align:right;color:${f.monthly_estimate ? '#199e70' : 'var(--text-muted)'};" title="${f.monthly_estimate ? (f.cost_is_actual ? 'Actual cost (Cost Management, last 30 days)' : 'Approximate retail estimate') : 'No cost data'}">${f.monthly_estimate ? (f.cost_is_actual ? '' : '~') + money(f.monthly_estimate) : '—'}</td>
         <td style="padding:7px 0;">${f.resource_id ? `<a href="https://portal.azure.com/#@/resource${f.resource_id}/overview" target="_blank" rel="noopener" title="Open in Azure Portal" style="color:#60a5fa;"><i class="bi bi-box-arrow-up-right"></i></a>` : ''}</td>
       </tr>`).join('');
   }

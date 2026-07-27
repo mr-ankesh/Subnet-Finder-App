@@ -310,6 +310,8 @@ def scan_all(force: bool = False) -> dict:
     findings = _scan(subs, snap_days) if subs else []
 
     # Usage-pattern pass: running VMs under-utilised over the last 30 days (CPU).
+    usage = {"enabled": bool(cfg.OPT_USAGE_SCAN), "checked": 0, "flagged": 0,
+             "avg_threshold": float(cfg.OPT_LOW_CPU_AVG or 5), "peak_threshold": float(cfg.OPT_LOW_CPU_MAX or 20)}
     if subs and cfg.OPT_USAGE_SCAN:
         try:
             running = _arg("Resources | where type =~ 'microsoft.compute/virtualmachines' "
@@ -317,8 +319,9 @@ def scan_all(force: bool = False) -> dict:
                            "| where power == 'PowerState/running' "
                            "| project id, name, resourceGroup, location, subscriptionId, "
                            "size=tostring(properties.hardwareProfile.vmSize)", subs)
-            findings += _scan_usage(running, float(cfg.OPT_LOW_CPU_AVG or 5),
-                                    float(cfg.OPT_LOW_CPU_MAX or 20))
+            uv = _scan_usage(running, usage["avg_threshold"], usage["peak_threshold"])
+            findings += uv
+            usage["checked"], usage["flagged"] = len(running), len(uv)
         except Exception:
             log.exception("optimize: usage-pattern scan failed")
 
@@ -329,20 +332,33 @@ def scan_all(force: bool = False) -> dict:
         f["subscription_name"] = names.get(f["subscription_id"], f["subscription_id"])
         subs_seen[f["subscription_id"]] = f["subscription_name"]
 
-    # REAL cost per resource from Cost Management (via the cost SP), replacing the
-    # rough retail estimates. Falls back to the estimates only if the cost SP isn't
-    # configured or the lookup fails.
+    # Cost per finding: REAL cost from Cost Management (cost SP) when available,
+    # otherwise the retail estimate — so a resource with no billed cost in the
+    # window (e.g. created this month, or an access/ID gap) still shows a figure.
     cost_source, cost_timeframe, cost_currency_code = "estimate", None, ""
+    cost_matched = 0
     import costmgmt
     if findings and costmgmt.configured():
         try:
-            cr = costmgmt.cost_by_resource(subs, timeframe="TheLastMonth")
+            cr = costmgmt.cost_by_resource(subs, days=30)
             cmap, cost_currency_code = cr["costs"], cr.get("currency", "")
             for f in findings:
-                f["monthly_estimate"] = cmap.get((f.get("resource_id") or "").lower())  # None if no billed cost
-            cost_source, cost_timeframe = "actual", "last full month"
+                retail = f.get("monthly_estimate")          # rough estimate from the detector
+                real = cmap.get((f.get("resource_id") or "").lower())
+                if real is not None:
+                    f["monthly_estimate"], f["cost_is_actual"] = real, True
+                    cost_matched += 1
+                else:
+                    f["monthly_estimate"], f["cost_is_actual"] = retail, False
+            cost_source = "actual" if cost_matched else "estimate"
+            cost_timeframe = "last 30 days"
         except Exception:
             log.exception("optimize: actual-cost lookup failed, keeping estimates")
+            for f in findings:
+                f["cost_is_actual"] = False
+    else:
+        for f in findings:
+            f["cost_is_actual"] = False
 
     # roll-ups
     by_cat = {}
@@ -368,8 +384,11 @@ def scan_all(force: bool = False) -> dict:
         "totals": {"count": len(findings), "monthly_estimate": round(est_total, 2)},
         "currency": cfg.COST_CURRENCY or "$",
         "cost_source": cost_source,           # "actual" (Cost Management) | "estimate"
-        "cost_timeframe": cost_timeframe,      # e.g. "last full month"
+        "cost_timeframe": cost_timeframe,      # e.g. "last 30 days"
         "cost_currency_code": cost_currency_code,
+        "cost_matched": cost_matched,          # findings with a real Cost Management figure
+        "cost_sp_configured": costmgmt.configured(),
+        "usage": usage,                        # {enabled, checked, flagged, thresholds}
     }
     with _scan_lock:
         _scan_cache.update(exp=now + _SCAN_TTL, result=result)
