@@ -3251,6 +3251,26 @@ def _auto_advance(req):
     required = _required_actions(req)
     wf = req.workflow()
     new = None
+
+    # No-hub VNET: nothing to integrate — complete once the VNET exists (admin-deploy).
+    # (Self-deploy + no hub completes even earlier, at CIDR assignment.) COMPLETED
+    # isn't in the VNET workflow list, so it's set directly here.
+    if t == RequestType.VNET_NEW and not req.hub_integration \
+            and req.status not in (RequestStatus.COMPLETED, RequestStatus.CANCELLED, RequestStatus.REJECTED) \
+            and (("vnet" in done) or req.status == RequestStatus.VNET_CREATED):
+        old = req.status
+        req.status = RequestStatus.COMPLETED
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+        audit.record("status_changed", actor="portal (auto)", actor_role="system", request_id=req.id,
+                     summary=f"Status: {RequestStatus.label(old)} → Completed (no hub integration needed)",
+                     data={"old": old, "new": RequestStatus.COMPLETED, "auto": True})
+        try:
+            notifications.notify_status_changed(req)
+        except Exception:
+            pass
+        return
+
     if t == RequestType.VNET_NEW and req.hub_integration:
         if required and required <= done:
             new = RequestStatus.HUB_INTEGRATED

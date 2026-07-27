@@ -89,7 +89,7 @@
             RequestStatus.COMPLETED: 'bi-check-all',
           } %}
           {% set ordered = req.workflow() %}
-          {% set current_idx = ordered.index(req.status) if req.status in ordered else 0 %}
+          {% set current_idx = ordered.index(req.status) if req.status in ordered else (ordered|length if req.status == RequestStatus.COMPLETED else 0) %}
           {% for status_key in ordered %}
           {% set step_idx = loop.index0 %}
           <div class="timeline-step {% if step_idx <= current_idx %}done{% endif %} {% if step_idx == current_idx %}current{% endif %}">
@@ -642,7 +642,7 @@
         </div>
         {% endif %}
 
-        {% if req.allocated_subnet and rtype in ('vnet_new', 'hub_integration') and req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.CANCELLED, RequestStatus.REJECTED] %}
+        {% if req.allocated_subnet and rtype in ('vnet_new', 'hub_integration') and req.status not in [RequestStatus.CIDR_REQUESTED, RequestStatus.CANCELLED, RequestStatus.REJECTED, RequestStatus.COMPLETED] %}
         <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
             <span><i class="bi bi-cloud-arrow-up"></i> Azure Deployment Actions</span>

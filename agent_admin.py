@@ -667,21 +667,34 @@ def _tool_assign_cidr(request_id: int, pool: str, subnet: str, allocated_by: str
         if not ok:
             return json.dumps({"error": msg})
 
-        update_spoke_request(request_id, allocated_subnet=subnet, status=RequestStatus.CIDR_ASSIGNED)
+        # No hub + self-deploy → the admin's only job was the CIDR; the requester
+        # deploys their own VNET and there is nothing else for the portal to track,
+        # so the request completes on assignment.
+        no_further = (not req.hub_integration) and (req.deployment_mode != "admin")
+        final = RequestStatus.COMPLETED if no_further else RequestStatus.CIDR_ASSIGNED
+        update_spoke_request(request_id, allocated_subnet=subnet, status=final)
         req = get_spoke_request(request_id)
-        log.info("[admin] Request #%s → CIDR_ASSIGNED (%s)", request_id, subnet)
+        log.info("[admin] Request #%s → %s (%s)", request_id, final, subnet)
         audit.record("cidr_assigned", actor=_actor(), actor_role="admin", request_id=request_id,
                      summary=f"Assigned {subnet} (pool {pool})",
                      data={"subnet": subnet, "pool": pool, "allocated_by": allocated_by})
+        if no_further:
+            audit.record("status_changed", actor="portal (auto)", actor_role="system", request_id=request_id,
+                         summary="Status: CIDR Assigned → Completed (self-deploy, no hub integration — nothing further)",
+                         data={"old": RequestStatus.CIDR_ASSIGNED, "new": RequestStatus.COMPLETED, "auto": True})
     except Exception as exc:
         log.exception("[admin] DB error assigning CIDR to request #%s", request_id)
         return json.dumps({"error": f"Database error: {exc}"})
     try:
         notifications.notify_cidr_assigned(req, subnet)
+        if no_further:
+            notifications.notify_status_changed(req)
     except Exception as exc:
         log.warning("[admin] Notification failed for request #%s: %s", request_id, exc)
-    return json.dumps({"success": True, "request_id": request_id, "subnet": subnet,
-                       "message": f"Subnet {subnet} assigned to request #{request_id}."})
+    msg = f"Subnet {subnet} assigned to request #{request_id}."
+    if no_further:
+        msg += " No hub integration needed — request completed (self-deploy)."
+    return json.dumps({"success": True, "request_id": request_id, "subnet": subnet, "message": msg})
 
 
 def _tool_deallocate_cidr(request_id: int, reason: str) -> str:
