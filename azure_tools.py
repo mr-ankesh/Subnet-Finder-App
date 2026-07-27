@@ -181,14 +181,20 @@ def create_spoke_vnet(
         client = _network_client(subscription_id)
         log.info("Creating VNET '%s' (%s) with %d subnet(s) in %s/%s",
                  vnet_name, address_space, len(subnet_params), resource_group, location)
+        # Build with SDK model objects (NOT a raw snake_case dict) — a plain dict is
+        # sent to ARM verbatim and rejected ('Could not find member address_space');
+        # models serialize to the camelCase ARM wire format.
+        from azure.mgmt.network.models import VirtualNetwork, AddressSpace, Subnet
+        vnet_subnets = [Subnet(name=s["name"], address_prefix=s["address_prefix"])
+                        for s in subnet_params]
         client.virtual_networks.begin_create_or_update(
             resource_group_name=resource_group,
             virtual_network_name=vnet_name,
-            parameters={
-                "location": location,
-                "address_space": {"address_prefixes": [address_space]},
-                "subnets": subnet_params,
-            },
+            parameters=VirtualNetwork(
+                location=location,
+                address_space=AddressSpace(address_prefixes=[address_space]),
+                subnets=vnet_subnets,
+            ),
         ).result()
         snet_desc = ", ".join(f"{s['name']} ({s['address_prefix']})" for s in subnet_params)
         msg = f"VNET '{vnet_name}' ({address_space}) created with subnet(s): {snet_desc}."
@@ -282,10 +288,12 @@ def restore_spoke_route_table(subscription_id: str, resource_group: str, vnet_na
         result = client.route_tables.begin_create_or_update(
             resource_group, route_table_name,
             {"location": loc, "properties": {"disableBgpRoutePropagation": True}}).result()
+        from azure.mgmt.network.models import Route
         for r in routes:
-            params = {"address_prefix": r["prefix"], "next_hop_type": r.get("next_hop_type") or "VirtualAppliance"}
+            params = Route(address_prefix=r["prefix"],
+                           next_hop_type=r.get("next_hop_type") or "VirtualAppliance")
             if r.get("next_hop_ip"):
-                params["next_hop_ip_address"] = r["next_hop_ip"]
+                params.next_hop_ip_address = r["next_hop_ip"]
             client.routes.begin_create_or_update(
                 resource_group, route_table_name, r["name"], params).result()
         reassigned, failed = [], []
@@ -392,19 +400,22 @@ def peer_hub_vnet(
                                    + "; ".join(f"{e['name']} ({e['side']}, {e['state']}, "
                                                f"remote {e['remote']})" for e in existing)}
 
+        # SDK model objects (raw snake_case dicts are sent to ARM verbatim and rejected).
+        from azure.mgmt.network.models import VirtualNetworkPeering, SubResource
+
         # Spoke → Hub
         log.info("Creating spoke→hub peering '%s' (%s → %s)", s2h, spoke_vnet_name, cfg.HUB_VNET_NAME)
         spoke_client.virtual_network_peerings.begin_create_or_update(
             resource_group_name=spoke_resource_group,
             virtual_network_name=spoke_vnet_name,
             virtual_network_peering_name=s2h,
-            virtual_network_peering_parameters={
-                "allow_virtual_network_access": allow_vnet_access,
-                "allow_forwarded_traffic":      allow_forwarded_traffic,
-                "allow_gateway_transit":        False,  # spoke never grants transit
-                "use_remote_gateways":          use_remote_gateways,
-                "remote_virtual_network":       {"id": hub_vnet_id},
-            },
+            virtual_network_peering_parameters=VirtualNetworkPeering(
+                allow_virtual_network_access=allow_vnet_access,
+                allow_forwarded_traffic=allow_forwarded_traffic,
+                allow_gateway_transit=False,        # spoke never grants transit
+                use_remote_gateways=use_remote_gateways,
+                remote_virtual_network=SubResource(id=hub_vnet_id),
+            ),
         ).result()
 
         # Hub → Spoke
@@ -413,13 +424,13 @@ def peer_hub_vnet(
             resource_group_name=cfg.HUB_RESOURCE_GROUP,
             virtual_network_name=cfg.HUB_VNET_NAME,
             virtual_network_peering_name=h2s,
-            virtual_network_peering_parameters={
-                "allow_virtual_network_access": allow_vnet_access,
-                "allow_forwarded_traffic":      allow_forwarded_traffic,
-                "allow_gateway_transit":        allow_gateway_transit,
-                "use_remote_gateways":          False,
-                "remote_virtual_network":       {"id": spoke_vnet_id},
-            },
+            virtual_network_peering_parameters=VirtualNetworkPeering(
+                allow_virtual_network_access=allow_vnet_access,
+                allow_forwarded_traffic=allow_forwarded_traffic,
+                allow_gateway_transit=allow_gateway_transit,
+                use_remote_gateways=False,
+                remote_virtual_network=SubResource(id=spoke_vnet_id),
+            ),
         ).result()
 
         return {"success": True,
@@ -571,9 +582,10 @@ def add_route_to_table(
                                    f"({existing.address_prefix}) — updating it would overwrite "
                                    f"the current route."}
 
-        params = {"address_prefix": address_prefix, "next_hop_type": next_hop_type}
+        from azure.mgmt.network.models import Route
+        params = Route(address_prefix=address_prefix, next_hop_type=next_hop_type)
         if next_hop_ip and next_hop_type == "VirtualAppliance":
-            params["next_hop_ip_address"] = next_hop_ip
+            params.next_hop_ip_address = next_hop_ip
 
         log.info("Adding route '%s' to table '%s'", route_name, route_table_name)
         client.routes.begin_create_or_update(
