@@ -125,19 +125,26 @@
         </p>
         {% endif %}
 
-        {# ── Aggregated "deploy everything" for VNET requests (only once a CIDR/subnet is assigned) ── #}
-        {% if rtype in ('vnet_new', 'hub_integration') and req.allocated_subnet and req.status not in terminals and req.status != wf[-1] %}
+        {# Deployment ownership. For self-deploy the requester creates the VNET, so
+           the admin never sees a VNET-creating action — only the hub-integration
+           steps, and only after the requester has marked the VNET created. #}
+        {% set is_admin_deploy = req.deployment_mode == 'admin' %}
+        {% set vnet_exists = (rtype == 'hub_integration') or ('vnet' in done_actions) or (req.status in [RequestStatus.VNET_CREATED, RequestStatus.HUB_INTEGRATION_IN_PROGRESS, RequestStatus.HUB_INTEGRATED]) %}
+        {% set bulk_ok = is_admin_deploy or (req.hub_integration and vnet_exists) %}
+
+        {# ── Aggregated deploy / hub-integration (only when there is admin work) ── #}
+        {% if rtype in ('vnet_new', 'hub_integration') and req.allocated_subnet and req.status not in terminals and req.status != wf[-1] and bulk_ok %}
         <div style="border:1px solid rgba(21,94,239,.4);background:rgba(21,94,239,.06);border-radius:10px;padding:12px;margin-bottom:14px;">
           <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#60a5fa;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
-            <span><i class="bi bi-lightning-charge-fill"></i> One-Click Deployment</span>
+            <span><i class="bi bi-lightning-charge-fill"></i> {{ 'One-Click Deployment' if is_admin_deploy else 'One-Click Hub Integration' }}</span>
             {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
           </div>
           <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.6;">
-            Run every remaining deployment step for this request in the correct order — you'll see exactly
+            {% if is_admin_deploy %}Run every remaining deployment step (VNET, peering, routes, firewall) in the correct order{% else %}Run every remaining hub-integration step (peering, hub routes, firewall) for the requester's VNET{% endif %} — you'll see exactly
             what will happen and confirm before anything runs.
           </div>
           <button class="btn btn-glow w-100" onclick="confirmDeployAll()">
-            <i class="bi bi-rocket-takeoff me-2"></i>Deploy Everything
+            <i class="bi bi-rocket-takeoff me-2"></i>{{ 'Deploy Everything' if is_admin_deploy else 'Complete Hub Integration' }}
           </button>
           <div id="deployAllPanel" style="display:none;margin-top:12px;border:1px solid rgba(21,94,239,.4);background:rgba(21,94,239,.05);border-radius:10px;padding:14px;"></div>
           <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
@@ -655,6 +662,7 @@
           {% endif %}
           {% endif %}
           {% if req.hub_integration %}
+          {% if vnet_exists %}
           {% if 'peer' in done_actions %}
           <button class="btn btn-glass w-100 mb-2 action-done" disabled>
             <i class="bi bi-check-circle-fill me-2" style="color:#7edb56;"></i>Peer Hub — Done
@@ -804,6 +812,12 @@
           <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
             Standard routing for outbound internet &amp; Azure VPN via firewall. For any other specific routing via the hub, contact <strong>Ankesh Singh</strong>.
           </div>
+          {% else %}
+          <p style="font-size:12px;color:#f59e0b;margin:0;">
+            <i class="bi bi-hourglass-split me-1"></i>Hub integration will be available once the VNET exists —
+            {% if is_admin_deploy %}deploy the VNET above first.{% else %}waiting for the requester to deploy and mark <strong>VNET Created</strong> with its details.{% endif %}
+          </p>
+          {% endif %}
           {% endif %}
           {% if req.deployment_mode != 'admin' and not req.hub_integration %}
           <p style="font-size:12px;color:var(--text-muted);margin:0;">Self-deploy, no hub integration — no Azure actions required.</p>
