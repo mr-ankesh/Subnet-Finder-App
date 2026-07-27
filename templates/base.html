@@ -50,7 +50,7 @@
           {# Nav is grouped by use case: Operations · ZPA Analyzer · Governance.
              New features slot into the matching group's dropdown below. #}
           {% set ops_eps = ['requests_list', 'subnet_allocator', 'allocator', 'requester_page', 'agent_page', 'admin_changes'] %}
-          {% set gov_eps = ['subscription_inventory_page', 'cost_dashboard', 'optimize_dashboard', 'admin_audit', 'admin_settings'] %}
+          {% set gov_eps = ['subscription_inventory_page', 'cost_dashboard', 'optimize_dashboard'] %}
           <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint == 'segment_select' %}active{% endif %}">
             <i class="bi bi-house"></i> Home
           </a>
@@ -86,10 +86,17 @@
               <a href="{{ url_for('subscription_inventory_page') }}" class="nav-link {% if request.endpoint == 'subscription_inventory_page' %}active{% endif %}"><i class="bi bi-card-checklist"></i> Subscriptions</a>
               <a href="{{ url_for('cost_dashboard') }}" class="nav-link {% if request.endpoint == 'cost_dashboard' %}active{% endif %}"><i class="bi bi-cash-coin"></i> Cost</a>
               <a href="{{ url_for('optimize_dashboard') }}" class="nav-link {% if request.endpoint == 'optimize_dashboard' %}active{% endif %}"><i class="bi bi-recycle"></i> Optimizer</a>
-              <a href="{{ url_for('admin_audit') }}" class="nav-link {% if request.endpoint == 'admin_audit' %}active{% endif %}"><i class="bi bi-journal-text"></i> Audit</a>
-              <a href="{{ url_for('admin_settings') }}" class="nav-link {% if request.endpoint == 'admin_settings' %}active{% endif %}"><i class="bi bi-gear"></i> Settings</a>
             </div>
           </div>
+          {% endif %}
+
+          {% if is_superadmin %}
+          <a href="{{ url_for('admin_audit') }}" class="nav-link {% if request.endpoint == 'admin_audit' %}active{% endif %}">
+            <i class="bi bi-journal-text"></i> Audit
+          </a>
+          <a href="{{ url_for('admin_settings') }}" class="nav-link {% if request.endpoint == 'admin_settings' %}active{% endif %}">
+            <i class="bi bi-gear"></i> Settings
+          </a>
           {% endif %}
 
           <a href="{{ url_for('help_admin') }}" class="nav-link {% if request.endpoint == 'help_admin' %}active{% endif %}">

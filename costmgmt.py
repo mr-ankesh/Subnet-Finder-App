@@ -144,29 +144,22 @@ _res_cost_cache = {}   # key -> (expires_at, {"costs":..., "currency":...})
 _RES_COST_TTL = 600
 
 
-def cost_by_resource(subscription_ids, days: int = 30) -> dict:
-    """Actual cost per resource from Cost Management over the trailing `days`,
-    grouped by ResourceId, for the given subscriptions. Returns
-    {"costs": {resource_id_lower: cost}, "currency": code}.
+def cost_by_resource(subscription_ids, timeframe: str = "MonthToDate") -> dict:
+    """Actual cost per resource from Cost Management, grouped by ResourceId, for the
+    given subscriptions. Returns {"costs": {resource_id_lower: cost}, "currency": code}.
 
-    A trailing window (not last calendar month) so resources created this month
-    still have a real cost. Used by the Resource Optimizer to show REAL costs
-    instead of retail estimates. The cost SP needs Cost Management Reader on the
-    scanned subscriptions."""
-    from datetime import datetime, timedelta
+    Uses the SAME timeframe as the subscription cost dashboard (MonthToDate) so the
+    optimizer's figures reconcile with the Cost view — no separate window. The cost
+    SP needs Cost Management Reader on the scanned subscriptions."""
     subs = [s for s in (subscription_ids or []) if s]
-    key = (days, tuple(sorted(subs)))
+    key = (timeframe, tuple(sorted(subs)))
     now = time.time()
     with _res_cost_lock:
         hit = _res_cost_cache.get(key)
         if hit and now < hit[0]:
             return hit[1]
 
-    end = datetime.utcnow()
-    start = end - timedelta(days=days)
-    body = {"type": "ActualCost", "timeframe": "Custom",
-            "timePeriod": {"from": start.strftime("%Y-%m-%dT00:00:00Z"),
-                           "to": end.strftime("%Y-%m-%dT23:59:59Z")},
+    body = {"type": "ActualCost", "timeframe": timeframe,
             "dataset": {"granularity": "None",
                         "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}},
                         "grouping": [{"type": "Dimension", "name": "ResourceId"}]}}

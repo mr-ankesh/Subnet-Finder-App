@@ -253,10 +253,14 @@ def _metric_stats(resource_id: str, metrics: list, days: int = 30) -> dict:
     return out
 
 
-def _scan_usage(running_vms: list, low_avg: float, low_max: float) -> list:
-    """Flag running VMs that were under-utilised over the last 30 days (low CPU).
-    One metric call per VM, bounded concurrency. Memory/network are reported when
-    available (memory needs the Azure Monitor Agent), but only CPU gates the flag."""
+def _scan_usage(vms: list, low_avg: float, low_max: float):
+    """Flag VMs that were under-utilised over the last 30 days (low CPU). A VM with
+    no CPU metric data in the window didn't run (deallocated) and is skipped — that
+    presence check is more reliable than Resource Graph's power state.
+
+    Returns (findings, checked) where `checked` counts VMs that actually had CPU
+    data (i.e. ran). One metric call per VM, bounded concurrency. Memory/network are
+    reported when available (memory needs the Azure Monitor Agent)."""
     from concurrent.futures import ThreadPoolExecutor
 
     def _check(r):
@@ -265,11 +269,11 @@ def _scan_usage(running_vms: list, low_avg: float, low_max: float) -> list:
                                         "Network In Total", "Network Out Total"], 30)
         except Exception as exc:
             log.info("metrics for %s unavailable: %s", r.get("name"), str(exc)[:80])
-            return None
+            return (False, None)
         cpu = s.get("Percentage CPU", {})
         avg, mx = cpu.get("avg"), cpu.get("max")
         if avg is None:
-            return None
+            return (False, None)                      # no data → didn't run in the window
         if avg < low_avg and (mx is None or mx < low_max):
             detail = (f"VM '{r.get('size','')}' averaged {avg:.1f}% CPU "
                       f"(peak {mx:.0f}%) over 30 days — downsize or deallocate")
@@ -277,20 +281,22 @@ def _scan_usage(running_vms: list, low_avg: float, low_max: float) -> list:
             if mem is not None:
                 detail += f"; avg free memory {mem / 1e9:.1f} GB"
             net = s.get("Network In Total", {}).get("avg")
-            if net is not None and net < 1e7:      # < ~10 MB/day inbound → also quiet
+            if net is not None and net < 1e7:         # < ~10 MB/day inbound → also quiet
                 detail += "; low network traffic"
-            return _f("underutilized_vm", "Underutilized VM (low CPU)", "medium",
-                      r["subscriptionId"], r, detail)
-        return None
+            return (True, _f("underutilized_vm", "Underutilized VM (low CPU)", "medium",
+                             r["subscriptionId"], r, detail))
+        return (True, None)                           # ran, but adequately utilised
 
-    findings = []
-    if not running_vms:
-        return findings
+    findings, checked = [], 0
+    if not vms:
+        return findings, checked
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for res in ex.map(_check, running_vms):
+        for ran, res in ex.map(_check, vms):
+            if ran:
+                checked += 1
             if res:
                 findings.append(res)
-    return findings
+    return findings, checked
 
 
 # Severity ordering for sorting.
@@ -314,14 +320,14 @@ def scan_all(force: bool = False) -> dict:
              "avg_threshold": float(cfg.OPT_LOW_CPU_AVG or 5), "peak_threshold": float(cfg.OPT_LOW_CPU_MAX or 20)}
     if subs and cfg.OPT_USAGE_SCAN:
         try:
-            running = _arg("Resources | where type =~ 'microsoft.compute/virtualmachines' "
-                           "| extend power = tostring(properties.extended.instanceView.powerState.code) "
-                           "| where power == 'PowerState/running' "
-                           "| project id, name, resourceGroup, location, subscriptionId, "
-                           "size=tostring(properties.hardwareProfile.vmSize)", subs)
-            uv = _scan_usage(running, usage["avg_threshold"], usage["peak_threshold"])
+            # All VMs (not filtered by ARG power state, which is often not indexed);
+            # _scan_usage skips VMs with no CPU data (i.e. that didn't run).
+            vms = _arg("Resources | where type =~ 'microsoft.compute/virtualmachines' "
+                       "| project id, name, resourceGroup, location, subscriptionId, "
+                       "size=tostring(properties.hardwareProfile.vmSize)", subs)
+            uv, checked = _scan_usage(vms, usage["avg_threshold"], usage["peak_threshold"])
             findings += uv
-            usage["checked"], usage["flagged"] = len(running), len(uv)
+            usage["checked"], usage["flagged"] = checked, len(uv)
         except Exception:
             log.exception("optimize: usage-pattern scan failed")
 
@@ -340,7 +346,7 @@ def scan_all(force: bool = False) -> dict:
     import costmgmt
     if findings and costmgmt.configured():
         try:
-            cr = costmgmt.cost_by_resource(subs, days=30)
+            cr = costmgmt.cost_by_resource(subs, timeframe="MonthToDate")
             cmap, cost_currency_code = cr["costs"], cr.get("currency", "")
             for f in findings:
                 retail = f.get("monthly_estimate")          # rough estimate from the detector
@@ -351,7 +357,7 @@ def scan_all(force: bool = False) -> dict:
                 else:
                     f["monthly_estimate"], f["cost_is_actual"] = retail, False
             cost_source = "actual" if cost_matched else "estimate"
-            cost_timeframe = "last 30 days"
+            cost_timeframe = "month-to-date"
         except Exception:
             log.exception("optimize: actual-cost lookup failed, keeping estimates")
             for f in findings:

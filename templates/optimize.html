@@ -127,12 +127,12 @@ async function runScan(btn, force) {
     const actual = d.cost_source === 'actual';
     const total = d.totals.count || 0, matched = d.cost_matched || 0;
     const costNote = actual
-      ? `<span style="color:#199e70;">Costs: actual for ${matched} of ${total} findings — last 30 days from Cost Management${d.cost_currency_code ? ' (' + d.cost_currency_code + ')' : ''}${matched < total ? '; the rest (~) are retail estimates' : ''}.</span>`
+      ? `<span style="color:#199e70;">Costs: actual for ${matched} of ${total} findings — ${d.cost_timeframe || 'month-to-date'} from Cost Management${d.cost_currency_code ? ' (' + d.cost_currency_code + ')' : ''}${matched < total ? '; the rest (~) are retail estimates' : ''}.</span>`
       : `<span style="color:#f59e0b;">Costs: approximate retail estimates ${d.cost_sp_configured ? '(Cost SP returned no matching figures — check its Cost Management Reader access on the scanned subscriptions)' : '(configure the Cost SP for actual figures)'}.</span>`;
     const u = d.usage || {};
     const usageNote = !u.enabled
       ? '<span style="color:var(--text-muted);">CPU/memory usage scan is off (enable in Settings → Resource Optimizer).</span>'
-      : `<span style="color:var(--text-muted);">Usage scan: <b style="color:${u.flagged ? '#f59e0b' : '#199e70'};">${u.flagged}</b> of ${u.checked} running VMs under-utilised over 30 days (avg CPU &lt; ${u.avg_threshold}%, peak &lt; ${u.peak_threshold}%).${u.flagged ? ` <a href="#" onclick="filterByCategory('underutilized_vm');return false;" style="color:#60a5fa;">View</a>` : ''}</span>`;
+      : `<span style="color:var(--text-muted);">Usage scan: <b style="color:${u.flagged ? '#f59e0b' : '#199e70'};">${u.flagged}</b> of ${u.checked} VMs (that ran in the last 30 days) under-utilised (avg CPU &lt; ${u.avg_threshold}%, peak &lt; ${u.peak_threshold}%).${u.flagged ? ` <a href="#" onclick="filterByCategory('underutilized_vm');return false;" style="color:#60a5fa;">View</a>` : ''}${u.checked === 0 ? ' No VM metrics returned — check the SP has metrics read on the VMs.' : ''}</span>`;
     document.getElementById('ozAsOf').innerHTML =
       'Scanned ' + (d.generated_at || '') + ' · cached ~10 min<br>' + costNote + '<br>' + usageNote;
     const th = document.getElementById('thCost'); if (th) th.textContent = actual ? 'Cost / mo' : '~ / mo';
