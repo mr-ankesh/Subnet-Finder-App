@@ -99,6 +99,16 @@ SETTINGS_SPEC = {
                                     "optimizer SP can see (Reader)."),
     "OPT_SNAPSHOT_AGE_DAYS": _f("optimize", "Flag snapshots older than (days)", "90", type="int",
                                help="Managed-disk snapshots older than this are reported as stale."),
+    "OPT_USAGE_SCAN":       _f("optimize", "Scan usage patterns (CPU)", "true", type="bool",
+                               help="Also flag running VMs that were under-utilised over the last 30 days, "
+                                    "using Azure Monitor CPU metrics (Reader covers metrics read). Adds one "
+                                    "metric query per running VM — slightly slower; results are cached."),
+    "OPT_LOW_CPU_AVG":      _f("optimize", "Low-CPU average threshold (%)", "5", type="int",
+                               help="A running VM whose 30-day AVERAGE CPU is below this is a downsize/"
+                                    "deallocate candidate."),
+    "OPT_LOW_CPU_MAX":      _f("optimize", "Low-CPU peak threshold (%)", "20", type="int",
+                               help="…and only if its 30-day PEAK CPU also stayed below this (so bursty but "
+                                    "mostly-idle VMs aren't wrongly flagged)."),
 
     # ── Hub & Subscriptions ──
     "HUB_SUBSCRIPTION_ID":   _f("hub", "Hub subscription ID"),

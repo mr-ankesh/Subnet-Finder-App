@@ -120,6 +120,11 @@ NSGs/route tables, empty resource groups).
   the scan is **strictly read-only**: the platform reports findings and links to
   the Azure Portal, but **never deletes anything**.
 - Snapshots older than `OPT_SNAPSHOT_AGE_DAYS` (default 90) are flagged as stale.
+- **Usage-pattern scan** (`OPT_USAGE_SCAN`, on by default) flags running VMs whose
+  last-30-day CPU stayed low (Azure Monitor metrics — `Reader` covers
+  `Microsoft.Insights/metrics/read`; memory needs the Azure Monitor Agent in the
+  guest, so it's shown only when present). GPU utilisation needs a separate
+  collection pipeline — see **docs/GPU_UTILIZATION.md**.
 - Verify from **Settings → Resource Optimizer → Test Optimizer SP**. Results are
   cached ~10 minutes.
 

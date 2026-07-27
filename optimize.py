@@ -13,7 +13,7 @@ subscriptions at once. Reader is sufficient for Resource Graph.
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from config import cfg
@@ -221,6 +221,78 @@ def _scan(subscriptions: list, snap_days: int) -> list:
     return findings
 
 
+# ── Usage-pattern detection (Azure Monitor metrics, last 30 days) ─────────
+def _metric_stats(resource_id: str, metrics: list, days: int = 30) -> dict:
+    """Daily avg/max for the given platform metrics of one resource over `days`.
+    Returns {metric_name: {'avg': float|None, 'max': float|None}}. Reader covers
+    Microsoft.Insights/metrics/read."""
+    end = datetime.utcnow()
+    start = end - timedelta(days=days)
+    params = {
+        "api-version": "2019-07-01",
+        "metricnames": ",".join(metrics),
+        "aggregation": "Average,Maximum",
+        "interval": "P1D",
+        "timespan": f"{start.strftime('%Y-%m-%dT%H:%M:%SZ')}/{end.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+    }
+    resp = requests.get(f"{_ARM}{resource_id}/providers/microsoft.insights/metrics",
+                        headers=_headers(), params=params, timeout=30)
+    resp.raise_for_status()
+    out = {}
+    for m in resp.json().get("value", []):
+        name = (m.get("name") or {}).get("value") or ""
+        avgs, maxes = [], []
+        for ts in m.get("timeseries", []):
+            for dp in ts.get("data", []):
+                if dp.get("average") is not None:
+                    avgs.append(dp["average"])
+                if dp.get("maximum") is not None:
+                    maxes.append(dp["maximum"])
+        out[name] = {"avg": (sum(avgs) / len(avgs)) if avgs else None,
+                     "max": max(maxes) if maxes else None}
+    return out
+
+
+def _scan_usage(running_vms: list, low_avg: float, low_max: float) -> list:
+    """Flag running VMs that were under-utilised over the last 30 days (low CPU).
+    One metric call per VM, bounded concurrency. Memory/network are reported when
+    available (memory needs the Azure Monitor Agent), but only CPU gates the flag."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _check(r):
+        try:
+            s = _metric_stats(r["id"], ["Percentage CPU", "Available Memory Bytes",
+                                        "Network In Total", "Network Out Total"], 30)
+        except Exception as exc:
+            log.info("metrics for %s unavailable: %s", r.get("name"), str(exc)[:80])
+            return None
+        cpu = s.get("Percentage CPU", {})
+        avg, mx = cpu.get("avg"), cpu.get("max")
+        if avg is None:
+            return None
+        if avg < low_avg and (mx is None or mx < low_max):
+            detail = (f"VM '{r.get('size','')}' averaged {avg:.1f}% CPU "
+                      f"(peak {mx:.0f}%) over 30 days — downsize or deallocate")
+            mem = s.get("Available Memory Bytes", {}).get("avg")
+            if mem is not None:
+                detail += f"; avg free memory {mem / 1e9:.1f} GB"
+            net = s.get("Network In Total", {}).get("avg")
+            if net is not None and net < 1e7:      # < ~10 MB/day inbound → also quiet
+                detail += "; low network traffic"
+            return _f("underutilized_vm", "Underutilized VM (low CPU)", "medium",
+                      r["subscriptionId"], r, detail)
+        return None
+
+    findings = []
+    if not running_vms:
+        return findings
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for res in ex.map(_check, running_vms):
+            if res:
+                findings.append(res)
+    return findings
+
+
 # Severity ordering for sorting.
 _SEV_RANK = {"high": 3, "medium": 2, "low": 1}
 
@@ -236,6 +308,19 @@ def scan_all(force: bool = False) -> dict:
     subs = list_subscriptions()
     snap_days = cfg.OPT_SNAPSHOT_AGE_DAYS or 90
     findings = _scan(subs, snap_days) if subs else []
+
+    # Usage-pattern pass: running VMs under-utilised over the last 30 days (CPU).
+    if subs and cfg.OPT_USAGE_SCAN:
+        try:
+            running = _arg("Resources | where type =~ 'microsoft.compute/virtualmachines' "
+                           "| extend power = tostring(properties.extended.instanceView.powerState.code) "
+                           "| where power == 'PowerState/running' "
+                           "| project id, name, resourceGroup, location, subscriptionId, "
+                           "size=tostring(properties.hardwareProfile.vmSize)", subs)
+            findings += _scan_usage(running, float(cfg.OPT_LOW_CPU_AVG or 5),
+                                    float(cfg.OPT_LOW_CPU_MAX or 20))
+        except Exception:
+            log.exception("optimize: usage-pattern scan failed")
 
     # attach a friendly subscription name to each finding (for the table + filter)
     names = _sub_names()
