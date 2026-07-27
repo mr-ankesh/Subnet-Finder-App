@@ -237,7 +237,14 @@ def _metric_stats(resource_id: str, metrics: list, days: int = 30) -> dict:
     }
     resp = requests.get(f"{_ARM}{resource_id}/providers/microsoft.insights/metrics",
                         headers=_headers(), params=params, timeout=30)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        # Surface Azure's error code/message (e.g. AuthorizationFailed) instead of a bare status.
+        try:
+            err = (resp.json() or {}).get("error", {}) or {}
+            raise RuntimeError(f"{resp.status_code} {err.get('code', '')}: "
+                               f"{str(err.get('message', ''))[:140]}".strip())
+        except ValueError:
+            resp.raise_for_status()
     out = {}
     for m in resp.json().get("value", []):
         name = (m.get("name") or {}).get("value") or ""
@@ -258,9 +265,11 @@ def _scan_usage(vms: list, low_avg: float, low_max: float):
     no CPU metric data in the window didn't run (deallocated) and is skipped — that
     presence check is more reliable than Resource Graph's power state.
 
-    Returns (findings, checked) where `checked` counts VMs that actually had CPU
-    data (i.e. ran). One metric call per VM, bounded concurrency. Memory/network are
-    reported when available (memory needs the Azure Monitor Agent)."""
+    Returns (findings, stats) where stats = {found, checked, errored, error}:
+      found   — VMs seen; checked — VMs that returned CPU data (i.e. ran);
+      errored — VMs whose metrics call failed; error — a sample failure message.
+    One metric call per VM, bounded concurrency. Memory/network are reported when
+    available (memory needs the Azure Monitor Agent)."""
     from concurrent.futures import ThreadPoolExecutor
 
     def _check(r):
@@ -268,12 +277,11 @@ def _scan_usage(vms: list, low_avg: float, low_max: float):
             s = _metric_stats(r["id"], ["Percentage CPU", "Available Memory Bytes",
                                         "Network In Total", "Network Out Total"], 30)
         except Exception as exc:
-            log.info("metrics for %s unavailable: %s", r.get("name"), str(exc)[:80])
-            return (False, None)
+            return ("error", None, str(exc)[:180])
         cpu = s.get("Percentage CPU", {})
         avg, mx = cpu.get("avg"), cpu.get("max")
         if avg is None:
-            return (False, None)                      # no data → didn't run in the window
+            return ("nodata", None, None)             # no data → didn't run in the window
         if avg < low_avg and (mx is None or mx < low_max):
             detail = (f"VM '{r.get('size','')}' averaged {avg:.1f}% CPU "
                       f"(peak {mx:.0f}%) over 30 days — downsize or deallocate")
@@ -283,20 +291,26 @@ def _scan_usage(vms: list, low_avg: float, low_max: float):
             net = s.get("Network In Total", {}).get("avg")
             if net is not None and net < 1e7:         # < ~10 MB/day inbound → also quiet
                 detail += "; low network traffic"
-            return (True, _f("underutilized_vm", "Underutilized VM (low CPU)", "medium",
-                             r["subscriptionId"], r, detail))
-        return (True, None)                           # ran, but adequately utilised
+            return ("ran", _f("underutilized_vm", "Underutilized VM (low CPU)", "medium",
+                              r["subscriptionId"], r, detail), None)
+        return ("ran", None, None)                    # ran, but adequately utilised
 
-    findings, checked = [], 0
+    findings = []
+    stats = {"found": len(vms or []), "checked": 0, "errored": 0, "error": None}
     if not vms:
-        return findings, checked
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for ran, res in ex.map(_check, vms):
-            if ran:
-                checked += 1
-            if res:
-                findings.append(res)
-    return findings, checked
+        return findings, stats
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for status, res, err in ex.map(_check, vms):
+            if status == "error":
+                stats["errored"] += 1
+                if err and not stats["error"]:
+                    stats["error"] = err
+                    log.warning("optimize usage: VM metrics failed — %s", err)
+            elif status == "ran":
+                stats["checked"] += 1
+                if res:
+                    findings.append(res)
+    return findings, stats
 
 
 # Severity ordering for sorting.
@@ -316,7 +330,8 @@ def scan_all(force: bool = False) -> dict:
     findings = _scan(subs, snap_days) if subs else []
 
     # Usage-pattern pass: running VMs under-utilised over the last 30 days (CPU).
-    usage = {"enabled": bool(cfg.OPT_USAGE_SCAN), "checked": 0, "flagged": 0,
+    usage = {"enabled": bool(cfg.OPT_USAGE_SCAN), "found": 0, "checked": 0, "errored": 0,
+             "flagged": 0, "error": None,
              "avg_threshold": float(cfg.OPT_LOW_CPU_AVG or 5), "peak_threshold": float(cfg.OPT_LOW_CPU_MAX or 20)}
     if subs and cfg.OPT_USAGE_SCAN:
         try:
@@ -325,11 +340,13 @@ def scan_all(force: bool = False) -> dict:
             vms = _arg("Resources | where type =~ 'microsoft.compute/virtualmachines' "
                        "| project id, name, resourceGroup, location, subscriptionId, "
                        "size=tostring(properties.hardwareProfile.vmSize)", subs)
-            uv, checked = _scan_usage(vms, usage["avg_threshold"], usage["peak_threshold"])
+            uv, ustat = _scan_usage(vms, usage["avg_threshold"], usage["peak_threshold"])
             findings += uv
-            usage["checked"], usage["flagged"] = checked, len(uv)
-        except Exception:
+            usage.update(found=ustat["found"], checked=ustat["checked"],
+                         errored=ustat["errored"], error=ustat["error"], flagged=len(uv))
+        except Exception as exc:
             log.exception("optimize: usage-pattern scan failed")
+            usage["error"] = str(exc)[:180]
 
     # attach a friendly subscription name to each finding (for the table + filter)
     names = _sub_names()
