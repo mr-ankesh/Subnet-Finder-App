@@ -47,49 +47,51 @@
         </button>
         <nav class="nav-links" id="navLinks">
           {% if is_admin %}
-          {# Admin landing = pools/home #}
+          {# Nav is grouped by use case: Operations · ZPA Analyzer · Governance.
+             New features slot into the matching group's dropdown below. #}
+          {% set ops_eps = ['requests_list', 'subnet_allocator', 'allocator', 'requester_page', 'agent_page', 'admin_changes'] %}
+          {% set gov_eps = ['subscription_inventory_page', 'cost_dashboard', 'optimize_dashboard', 'admin_audit', 'admin_settings'] %}
           <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint == 'segment_select' %}active{% endif %}">
             <i class="bi bi-house"></i> Home
           </a>
-          <a href="{{ url_for('subnet_allocator') }}" class="nav-link {% if request.endpoint in ('subnet_allocator', 'allocator') %}active{% endif %}">
-            <i class="bi bi-hdd-network"></i> Subnet Allocator
-          </a>
-          <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
-            <i class="bi bi-person"></i> Portal
-          </a>
-          <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint and 'request' in request.endpoint %}active{% endif %}">
-            <i class="bi bi-list-task"></i> Requests
-          </a>
+
+          {# ── Operations ── #}
+          <div class="nav-group">
+            <span class="nav-link nav-group-btn {% if request.endpoint in ops_eps %}active{% endif %}" tabindex="0" role="button" aria-haspopup="true">
+              <i class="bi bi-diagram-3"></i> Operations <i class="bi bi-chevron-down nav-caret"></i>
+            </span>
+            <div class="nav-dropdown">
+              <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint == 'requests_list' %}active{% endif %}"><i class="bi bi-list-task"></i> Requests</a>
+              <a href="{{ url_for('subnet_allocator') }}" class="nav-link {% if request.endpoint in ('subnet_allocator', 'allocator') %}active{% endif %}"><i class="bi bi-hdd-network"></i> Subnet Allocator</a>
+              <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}"><i class="bi bi-person"></i> Requester Portal</a>
+              <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}"><i class="bi bi-robot"></i> Admin Agent</a>
+              <a href="{{ url_for('admin_changes') }}" class="nav-link {% if request.endpoint == 'admin_changes' %}active{% endif %}"><i class="bi bi-arrow-counterclockwise"></i> Changes</a>
+            </div>
+          </div>
+
+          {# ── ZPA Analyzer (its own area) ── #}
           {% if is_superadmin or is_itadmin %}
           <a href="{{ url_for('it_reachability') }}" class="nav-link {% if request.endpoint == 'it_reachability' %}active{% endif %}">
             <i class="bi bi-hdd-network"></i> ZPA Analyzer
           </a>
           {% endif %}
-          <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}">
-            <i class="bi bi-robot"></i> Admin Agent
-          </a>
+
+          {# ── Governance ── #}
           {% if is_superadmin %}
-          <a href="{{ url_for('subscription_inventory_page') }}" class="nav-link {% if request.endpoint == 'subscription_inventory_page' %}active{% endif %}">
-            <i class="bi bi-card-checklist"></i> Subscriptions
-          </a>
-          <a href="{{ url_for('cost_dashboard') }}" class="nav-link {% if request.endpoint == 'cost_dashboard' %}active{% endif %}">
-            <i class="bi bi-cash-coin"></i> Cost
-          </a>
-          <a href="{{ url_for('optimize_dashboard') }}" class="nav-link {% if request.endpoint == 'optimize_dashboard' %}active{% endif %}">
-            <i class="bi bi-recycle"></i> Optimizer
-          </a>
-          <a href="{{ url_for('admin_audit') }}" class="nav-link {% if request.endpoint == 'admin_audit' %}active{% endif %}">
-            <i class="bi bi-journal-text"></i> Audit
-          </a>
+          <div class="nav-group">
+            <span class="nav-link nav-group-btn {% if request.endpoint in gov_eps %}active{% endif %}" tabindex="0" role="button" aria-haspopup="true">
+              <i class="bi bi-bank"></i> Governance <i class="bi bi-chevron-down nav-caret"></i>
+            </span>
+            <div class="nav-dropdown">
+              <a href="{{ url_for('subscription_inventory_page') }}" class="nav-link {% if request.endpoint == 'subscription_inventory_page' %}active{% endif %}"><i class="bi bi-card-checklist"></i> Subscriptions</a>
+              <a href="{{ url_for('cost_dashboard') }}" class="nav-link {% if request.endpoint == 'cost_dashboard' %}active{% endif %}"><i class="bi bi-cash-coin"></i> Cost</a>
+              <a href="{{ url_for('optimize_dashboard') }}" class="nav-link {% if request.endpoint == 'optimize_dashboard' %}active{% endif %}"><i class="bi bi-recycle"></i> Optimizer</a>
+              <a href="{{ url_for('admin_audit') }}" class="nav-link {% if request.endpoint == 'admin_audit' %}active{% endif %}"><i class="bi bi-journal-text"></i> Audit</a>
+              <a href="{{ url_for('admin_settings') }}" class="nav-link {% if request.endpoint == 'admin_settings' %}active{% endif %}"><i class="bi bi-gear"></i> Settings</a>
+            </div>
+          </div>
           {% endif %}
-          <a href="{{ url_for('admin_changes') }}" class="nav-link {% if request.endpoint == 'admin_changes' %}active{% endif %}">
-            <i class="bi bi-arrow-counterclockwise"></i> Changes
-          </a>
-          {% if is_superadmin %}
-          <a href="{{ url_for('admin_settings') }}" class="nav-link {% if request.endpoint == 'admin_settings' %}active{% endif %}">
-            <i class="bi bi-gear"></i> Settings
-          </a>
-          {% endif %}
+
           <a href="{{ url_for('help_admin') }}" class="nav-link {% if request.endpoint == 'help_admin' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide
           </a>

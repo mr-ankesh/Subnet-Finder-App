@@ -693,15 +693,41 @@ body {
   align-items: center;
   gap: 0.25rem;
   margin-right: 1rem;
-  /* On a crowded super-admin nav, let the link row scroll horizontally rather
-     than clip on the right or squeeze the brand. Scrollbar is hidden; on wide
-     screens where everything fits, nothing scrolls. */
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
 }
-.nav-links::-webkit-scrollbar { display: none; }
+
+/* ── Grouped nav dropdowns (Operations / Governance) ── */
+.nav-group { position: relative; }
+.nav-group-btn { cursor: pointer; user-select: none; }
+.nav-caret { font-size: 0.62rem; opacity: 0.6; margin-left: 1px; transition: transform 0.18s; }
+.nav-group:hover .nav-caret, .nav-group:focus-within .nav-caret { transform: rotate(180deg); }
+.nav-dropdown {
+  position: absolute; top: calc(100% + 6px); left: 0;
+  min-width: 210px; display: none; flex-direction: column; gap: 2px;
+  background: rgba(9, 21, 37, 0.98);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border); border-radius: 12px; padding: 6px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45); z-index: 1040;
+}
+/* small hover bridge so the menu doesn't vanish crossing the 6px gap */
+.nav-group::after { content: ""; position: absolute; top: 100%; left: 0; right: 0; height: 8px; }
+.nav-group:hover .nav-dropdown, .nav-group:focus-within .nav-dropdown { display: flex; }
+.nav-dropdown .nav-link { white-space: nowrap; width: 100%; }
+
+/* In the mobile drawer, groups become labelled, always-open sections. */
+@media (max-width: 1160px) {
+  .nav-group { width: 100%; }
+  .nav-dropdown {
+    position: static; display: flex; min-width: 0;
+    background: none; border: none; box-shadow: none;
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+    padding: 2px 0 6px 18px;
+  }
+  .nav-group::after, .nav-caret { display: none; }
+  .nav-group-btn {
+    cursor: default; color: var(--text-muted);
+    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+}
 .nav-links .nav-link {
   display: flex;
   align-items: center;
