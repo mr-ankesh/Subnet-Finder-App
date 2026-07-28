@@ -49,6 +49,12 @@ def ensure_table():
         """)
         # Add any columns missing from a pre-existing table (e.g. the owner emails
         # or auto_budget_alerts introduced later), so upgrades need no manual migration.
+        # PRAGMA is SQLite-only and db_backend no-ops it on Postgres (returning no
+        # columns), which would make this try to ADD columns the CREATE TABLE above
+        # already has → DuplicateColumn. On Postgres the schema is always complete,
+        # so skip the SQLite column back-fill entirely.
+        if db_backend.IS_POSTGRES:
+            return
         have = {r["name"] for r in conn.execute("PRAGMA table_info(subscription_inventory)").fetchall()}
         for col in (*FIELDS, *EXTRA_COLUMNS):
             if col not in have:
