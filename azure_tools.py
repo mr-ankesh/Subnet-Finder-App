@@ -2305,11 +2305,18 @@ def get_aks_cluster_status(subscription_id: str, resource_group: str,
 
 @_guard
 def _kv_name(base: str) -> str:
-    """A globally-unique-ish, valid Key Vault name (3-24, alnum + hyphen)."""
+    """A globally-unique-ish, VALID Key Vault name. Azure rules: 3-24 chars,
+    alphanumeric + hyphen, must begin with a letter, end with a letter/digit, and
+    NOT contain consecutive hyphens."""
     import hashlib
-    clean = re.sub(r"[^a-zA-Z0-9-]", "", base or "aks").strip("-") or "aks"
-    h = hashlib.md5((base or "").encode()).hexdigest()[:6]
-    return (clean[:17] + "-" + h)[:24].strip("-")
+    h = hashlib.md5((base or "").encode()).hexdigest()[:6]     # 6 hex chars (alnum) for uniqueness
+    clean = re.sub(r"[^a-zA-Z0-9]+", "-", base or "aks")       # runs of non-alnum → single hyphen
+    clean = re.sub(r"-+", "-", clean).strip("-")               # collapse + trim hyphens
+    if not clean or not clean[0].isalpha():                    # must begin with a letter
+        clean = ("kv-" + clean).strip("-")
+    prefix = clean[:24 - 1 - len(h)].rstrip("-")               # leave room for "-<hash>", no trailing hyphen
+    name = re.sub(r"-+", "-", f"{prefix}-{h}").strip("-")[:24]
+    return name if len(name) >= 3 else (name + "kv" + h)[:24]
 
 
 @_guard
@@ -2347,7 +2354,8 @@ def create_aks_disk_encryption(subscription_id: str, resource_group: str, locati
         return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
 
     kv_name = _kv_name(base_name)
-    des_name = (re.sub(r"[^a-zA-Z0-9-]", "", base_name or "aks")[:76] + "-des")
+    des_name = (re.sub(r"-+", "-", re.sub(r"[^a-zA-Z0-9]+", "-", base_name or "aks")).strip("-")[:76]
+                or "aks").rstrip("-") + "-des"
     kvm = KeyVaultManagementClient(cred, subscription_id)
     compute = ComputeManagementClient(cred, subscription_id)
 
