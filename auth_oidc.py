@@ -84,6 +84,22 @@ def roles_from_token(token: dict) -> set:
     return roles
 
 
+def groups_from_token(token: dict) -> list:
+    """Keycloak group names from the 'groups' claim (ID + access token + userinfo).
+    A 'Group Membership' client mapper must add this claim. Handles both the leaf
+    form ('Alpha Team') and the full-path form ('/Parent/Alpha Team') → 'Alpha Team'."""
+    out, seen = [], set()
+    for src in (token.get("userinfo") or {},
+                _decode_jwt_payload(token.get("id_token", "") or ""),
+                _decode_jwt_payload(token.get("access_token", "") or "")):
+        for g in (src.get("groups") or []):
+            name = str(g).strip().rstrip("/").split("/")[-1].strip()
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                out.append(name)
+    return out
+
+
 def test_connection() -> dict:
     """
     Diagnose SSO reachability by fetching the OIDC discovery document — the

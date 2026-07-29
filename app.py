@@ -391,6 +391,15 @@ def _teams() -> list:
     return out
 
 
+def _available_teams() -> list:
+    """The teams the CURRENT user may file under / view. Under Keycloak SSO these are
+    the user's own groups (so team visibility is enforced by real membership). In open
+    mode they're the configured TEAMS list (selection-based)."""
+    if session.get("sso"):
+        return list(session.get("sso_groups") or [])
+    return _teams()
+
+
 def _deploy_tags(req) -> dict:
     """Mandatory resource tags applied to everything deployed for a request:
       owner       — the business owner's email (from the request)
@@ -560,6 +569,7 @@ def auth_callback():
     session["sso_user"] = username
     session["sso_email"] = info.get("email") or ""
     session["sso_has_name"] = bool(info.get("name") or full)   # real name vs username fallback
+    session["sso_groups"] = oidc.groups_from_token(token)       # Keycloak groups = teams
     session["admin_name"] = display               # audit actor
     if token.get("id_token"):
         session["sso_id_token"] = token["id_token"]
@@ -1817,7 +1827,7 @@ def azure_subnets():
 @require_login
 def requester_page():
     session.setdefault("requester_history", [])
-    return render_template("requester.html", teams=_teams())
+    return render_template("requester.html", teams=_available_teams())
 
 
 @app.route("/requester/clear", methods=["POST"])
@@ -1867,7 +1877,7 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     if not str(details.get("justification") or "").strip():
         return {"error": "A business justification is required."}, 400
     # Team is mandatory when teams are configured, and must be a known team.
-    teams = _teams()
+    teams = _available_teams()
     if teams:
         team = str(details.get("team") or "").strip()
         if not team:
@@ -2125,7 +2135,7 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
                                  "(e.g. *.presight.ai) — these are IPs: " + ", ".join(bad)}, 400
 
     # Team is mandatory when teams are configured, and must be a known team.
-    teams = _teams()
+    teams = _available_teams()
     if teams:
         team = str(data.get("team", "")).strip()
         if not team:
@@ -2252,7 +2262,7 @@ def requester_team_requests():
     """Every request raised by a given team — so a team member sees the whole
     team's tickets, not just their own. `team` query param must be a known team."""
     team = str(request.args.get("team", "")).strip()
-    teams = _teams()
+    teams = _available_teams()
     if not team or team.lower() not in {t.lower() for t in teams}:
         return jsonify({"teams": teams, "team": team, "requests": []})
     rows = (SpokeRequest.query.order_by(SpokeRequest.created_at.desc()).limit(500).all())
@@ -2264,7 +2274,7 @@ def requester_team_requests():
 @app.route("/api/requester/teams")
 @require_login
 def requester_teams():
-    return jsonify({"teams": _teams()})
+    return jsonify({"teams": _available_teams()})
 
 
 @app.route("/api/requester/vnet-created", methods=["POST"])

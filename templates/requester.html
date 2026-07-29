@@ -1957,13 +1957,17 @@ async function loadMyRequests() {
 // Restore the requester's team on the forms + default the team view to it.
 function restoreTeam() {
   const t = localStorage.getItem('myTeam');
-  if (!t) return;
   ['g_team', 'f_team'].forEach(id => {
     const el = document.getElementById(id);
-    if (el && [...el.options].some(o => o.value === t)) el.value = t;
+    if (!el) return;
+    if (t && [...el.options].some(o => o.value === t)) el.value = t;
+    // Auto-select when there is exactly one team (e.g. an SSO user with one group).
+    if (!el.value) { const opts = [...el.options].filter(o => o.value); if (opts.length === 1) el.value = opts[0].value; }
   });
-  const scope = document.getElementById('mrScope');
-  if (scope && [...scope.options].some(o => o.value === 'team:' + t)) scope.value = 'team:' + t;
+  if (t) {
+    const scope = document.getElementById('mrScope');
+    if (scope && [...scope.options].some(o => o.value === 'team:' + t)) scope.value = 'team:' + t;
+  }
 }
 restoreTeam();
 
