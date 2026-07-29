@@ -1013,8 +1013,14 @@
             </div>
             {% elif sso %}
             <div style="font-size:12.5px;color:rgba(255,255,255,.55);margin-bottom:12px;">
-              Signed in as <strong style="color:#fff;">{{ sso_name }}</strong>{% if sso_email %} · {{ sso_email }}{% endif %} — you see only your own requests.
-              <div style="color:#f59e0b;margin-top:6px;">No Keycloak group was found on your login. If you were just added to a group, <strong>sign out and back in</strong>. Otherwise ask an admin to add you to a group and enable the group-membership token mapper.</div>
+              Signed in as <strong style="color:#fff;">{{ sso_name }}</strong>{% if sso_email %} · {{ sso_email }}{% endif %}.
+              <div style="border-left:3px solid #f59e0b;background:rgba(245,158,11,.08);padding:9px 12px;border-radius:6px;margin-top:8px;color:rgba(255,255,255,.78);line-height:1.6;">
+                <i class="bi bi-exclamation-triangle-fill" style="color:#f59e0b;"></i>
+                <strong style="color:#fff;">Viewing your individual requests only.</strong>
+                Your account is not currently assigned to a team, so you can see only the requests you have raised — and other users cannot see them.
+                To view your team's requests (and allow your teammates to view yours), please contact your administrator to be added to your team's group.
+                Once you have been assigned, sign out and sign in again for the change to take effect.
+              </div>
             </div>
             {% endif %}
             <div id="myRequestsList"><div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div></div>
