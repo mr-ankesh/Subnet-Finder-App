@@ -62,7 +62,7 @@
     {% endmacro %}
 
     {% if is_admin %}
-      {{ module(url_for('requests_list'), 'bi-list-task', 'Requests', 'Review and action VNET, firewall, ZPA, DNS, AKS and network-issue requests.') }}
+      {{ module(url_for('requests_list'), 'bi-list-task', 'Tickets', 'Review and action all requests — networking, AKS, DNS, firewall, ZPA and more.') }}
       {{ module(url_for('subnet_allocator'), 'bi-hdd-network', 'Subnet Allocator', 'Browse IP pools and allocate, view or release subnets across the estate.', '#199e70') }}
       {% if is_superadmin or is_itadmin %}
       {{ module(url_for('it_reachability'), 'bi-hdd-network', 'ZPA Analyzer', 'Connector health dashboard and source→destination reachability analysis.', '#8b5cf6') }}
@@ -78,7 +78,7 @@
       {% if is_superadmin %}
       {{ module(url_for('admin_settings'), 'bi-gear', 'Settings', 'Azure credentials, cost SP, notifications, naming, AKS and agent config.') }}
       {% endif %}
-      {{ module(url_for('requester_page'), 'bi-person', 'Requester Portal', 'Submit a new network or platform request as a requester.') }}
+      {{ module(url_for('requester_page'), 'bi-person', 'Request Center', 'Raise a request for cloud infrastructure or changes — as a requester.') }}
       {{ module(url_for('help_admin'), 'bi-book', 'Guide', 'How the platform works and how each module is used.') }}
     {% else %}
       {% if is_allocator %}
@@ -88,7 +88,7 @@
       {{ module(url_for('it_reachability'), 'bi-hdd-network', 'ZPA Analyzer', 'Connector health dashboard and source→destination reachability analysis.', '#8b5cf6') }}
       {% endif %}
       {% if is_requester or not sso %}
-      {{ module(url_for('requester_page'), 'bi-person', 'Requester Portal', 'Submit and track your network and platform requests.') }}
+      {{ module(url_for('requester_page'), 'bi-person', 'Request Center', 'Raise and track your cloud infrastructure and change requests.') }}
       {{ module(url_for('help_requester'), 'bi-book', 'Guide', 'How to submit requests and what each type does.') }}
       {% endif %}
     {% endif %}

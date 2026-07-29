@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Presight R&D | Spoke Requests{% endblock %}
+{% block title %}Tickets | Presight AlMadar 360{% endblock %}
 
 {% block content %}
 <div class="alloc-page-header">
   <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
   <div class="alloc-page-header-content">
-    <h1 class="alloc-page-title">Network Requests</h1>
-    <p class="alloc-page-sub">Every network request across the tenant — filter by type or status, then open one to assign CIDRs, run Azure actions, and track it through to completion.</p>
+    <h1 class="alloc-page-title">Tickets</h1>
+    <p class="alloc-page-sub">Every request across the estate — networking, AKS, DNS, firewall, ZPA and more. Filter by type or status, then open one to action it and track it to completion.</p>
   </div>
 </div>
 
@@ -14,7 +14,7 @@
 
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
     <div>
-      <h2 style="font-family:var(--font-heading);font-size:1.1rem;font-weight:600;color:var(--text);margin:0;">All Requests</h2>
+      <h2 style="font-family:var(--font-heading);font-size:1.1rem;font-weight:600;color:var(--text);margin:0;">All Tickets</h2>
       <p style="font-size:13px;color:var(--text-muted);margin:4px 0 0;">{{ requests|length }} total</p>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
@@ -57,7 +57,7 @@
     <div class="empty-state" style="padding:60px 24px;">
       <i class="bi bi-inbox empty-icon"></i>
       <p style="font-size:15px;margin-bottom:16px;">No spoke requests yet.</p>
-      <p style="font-size:13px;color:var(--text-muted);">Requesters can submit requests via the <a href="{{ url_for('requester_page') }}" style="color:var(--accent);">Requester Portal</a>.</p>
+      <p style="font-size:13px;color:var(--text-muted);">Requesters can raise requests via the <a href="{{ url_for('requester_page') }}" style="color:var(--accent);">Request Center</a>.</p>
     </div>
   </div>
   {% else %}

@@ -61,9 +61,9 @@
               <i class="bi bi-diagram-3"></i> Operations <i class="bi bi-chevron-down nav-caret"></i>
             </span>
             <div class="nav-dropdown">
-              <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint == 'requests_list' %}active{% endif %}"><i class="bi bi-list-task"></i> Requests</a>
+              <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint == 'requests_list' %}active{% endif %}"><i class="bi bi-list-task"></i> Tickets</a>
               <a href="{{ url_for('subnet_allocator') }}" class="nav-link {% if request.endpoint in ('subnet_allocator', 'allocator') %}active{% endif %}"><i class="bi bi-hdd-network"></i> Subnet Allocator</a>
-              <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}"><i class="bi bi-person"></i> Requester Portal</a>
+              <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}"><i class="bi bi-person"></i> Request Center</a>
               <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}"><i class="bi bi-robot"></i> Admin Agent</a>
               <a href="{{ url_for('admin_changes') }}" class="nav-link {% if request.endpoint == 'admin_changes' %}active{% endif %}"><i class="bi bi-arrow-counterclockwise"></i> Changes</a>
             </div>
@@ -128,7 +128,7 @@
           {% endif %}
           {% if is_requester or not sso %}
           <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
-            <i class="bi bi-person"></i> Requester Portal
+            <i class="bi bi-person"></i> Request Center
           </a>
           <a href="{{ url_for('help_requester') }}" class="nav-link {% if request.endpoint == 'help_requester' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide
