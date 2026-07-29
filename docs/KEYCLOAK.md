@@ -1,9 +1,62 @@
 # Keycloak (OIDC) Integration Guide
 
-Status: **prepared, not yet implemented.** The Settings → Authentication tab already
-stores all Keycloak configuration (encrypted client secret included). Login remains
-password-based (`ADMIN_PASSWORD`) until the steps below are implemented. This document
-is the implementation recipe.
+Status: **implemented and live.** SSO login, role-based admin/requester access, and
+group-based team visibility (below) are all working in production. Sections 1–6
+below are kept as the original implementation recipe/reference; the **Team &
+group-based visibility** section describes the actual current behavior.
+
+## Team & group-based visibility (live behavior)
+
+Requesters can belong to a **team** (Keycloak group). Team members see every ticket
+raised by anyone in their team, not just their own — no separate per-request sharing
+needed.
+
+### How a user's team is determined
+
+- On login (`/auth/callback`), the app reads the Keycloak `groups` claim from the
+  ID token / access token / userinfo (`auth_oidc.groups_from_token()`) and stores the
+  normalized group names in `session["sso_groups"]`. Full group paths
+  (`/Parent/Alpha Team`) are reduced to the leaf name (`Alpha Team`); duplicates are
+  de-duplicated case-insensitively.
+- `_available_teams()` (`app.py`) is the single enforcement point used everywhere a
+  team list is needed (request form, "My/Team Requests" panel, `/api/requester/teams`,
+  `/api/requester/team-requests`):
+  - **SSO mode** → returns `session["sso_groups"]` exactly. A user can only file
+    under, or view, a team they are actually a member of in Keycloak.
+  - **Local/open mode** (no SSO) → returns the admin-configured `Settings → Teams`
+    list. This is selection-based, not enforced, since open mode has no per-user
+    identity.
+
+### Visibility rules
+
+| Situation | What the user sees |
+|---|---|
+| SSO user, in ≥1 Keycloak group | Can select any of their groups as "team" when filing a request, and can view **all tickets raised by that team** via `/api/requester/team-requests?team=<name>` (server rejects any team not in their own `sso_groups`). |
+| SSO user, in **no** Keycloak group | Falls back to **individual mode**: `/api/requester/my-requests` returns only tickets matching their own signed-in email/name. They see nobody else's tickets, and nobody else sees theirs. The UI shows an amber notice explaining this and pointing them to their administrator to be added to a team group. |
+| Local/open mode (no SSO) | Team is a plain dropdown from `Settings → Teams`; any user can pick any configured team — not identity-enforced, by design (no login = no identity to enforce against). |
+
+Verified by test: two different no-group SSO users cannot see each other's tickets;
+a user attempting to query a team they don't belong to gets zero results.
+
+### Keycloak-side prerequisite: the `groups` claim
+
+Group membership is **not** included in tokens by default — it requires a client
+mapper:
+
+1. Keycloak admin console → your realm → **Client scopes** (or directly on the
+   `subnet-manager` client) → **Mappers → Add mapper → By configuration → Group
+   Membership**.
+2. Token Claim Name: `groups`.
+3. Enable **Add to ID token**, **Add to access token**, and **Add to userinfo**
+   (the app reads all three, first match wins).
+4. Full group path vs. name: either works — the app strips any leading path and
+   keeps only the leaf name, so `/Presight/Alpha Team` and `Alpha Team` both resolve
+   to the same team `Alpha Team`.
+5. Create the groups under **Groups** in Keycloak (e.g. `Alpha Team`, `Bravo Team`)
+   and assign users to them. A user assigned to zero groups falls back to individual
+   mode (see table above).
+6. Users must **sign out and sign in again** after being added to a group — the
+   group list is captured once, at login, into the session.
 
 ## Why Keycloak here
 
