@@ -545,7 +545,7 @@
                       <input type="text" class="form-input-custom" data-detail="allocated_cidr" placeholder="e.g. 10.110.51.0/24">
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label-custom">Was this VNET created by the network admin via this portal? *</label>
+                      <label class="form-label-custom">Was this VNET created by the admin via this portal? *</label>
                       <select class="form-input-custom" data-detail="created_by_admin" onchange="onDecomFlagsChange()">
                         <option value="">— select —</option>
                         <option value="yes">Yes — created via this portal</option>
@@ -899,7 +899,7 @@
                         {% if aks_defaults.private %}private API server{% else %}public API server{% endif %} ·
                         Entra ID + Azure RBAC · local accounts disabled ·
                         auto-upgrade {{ aks_defaults.upgrade }} / node OS {{ aks_defaults.node_os }}.
-                        Need something different? Note it in the summary below — the network admin can adjust before deploying.
+                        Need something different? Note it in the summary below — the admin can adjust before deploying.
                       </div>
                     </div>
                   </div>
