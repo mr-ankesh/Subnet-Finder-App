@@ -42,6 +42,7 @@ CATEGORIES = {
     "naming":        {"title": "Naming Conventions",  "desc": "Templates for generated resource names. Placeholders: {vnet} {request_id} {region} {cidr_mask} {purpose} {date}. Global prefix/suffix are joined with '-'."},
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
     "aks":           {"title": "AKS Defaults",         "desc": "Defaults applied to 'AKS Cluster' deployment requests. The requester only chooses VNET/subnet, Kubernetes version and node pool sizing — everything else (network profile, CIDRs, security, upgrade channels) comes from here and can be tuned per environment."},
+    "teams":         {"title": "Teams",                "desc": "The requester teams. A team is mandatory when raising a request, and a requester can see every ticket raised by their team."},
     "agent":         {"title": "AI Agent / LLM",      "desc": "Provider and model used by the requester & admin chat agents. Changes apply to the next conversation turn — no restart needed."},
     "auth":          {"title": "Authentication",      "desc": "Keycloak-ready SSO configuration. Values are stored now; enforcement ships with the integration (see docs/KEYCLOAK.md for the step-by-step guide) — login stays password-based until then."},
     "safety":        {"title": "Safety",              "desc": "Guard rails for Azure execution."},
@@ -203,6 +204,12 @@ SETTINGS_SPEC = {
     "TPL_ROUTE_NAME":           _f("naming", "Route name (hub UDRs)", "to-{vnet}"),
     "TPL_ROUTE_TABLE_NAME":     _f("naming", "Route table name (spoke)", "rt-{vnet}"),
     "TPL_FW_RULE_NAME":         _f("naming", "Firewall rule name", "{vnet}-allow-internet"),
+
+    # ── Teams (requester teams) ──
+    "TEAMS":                 _f("teams", "Teams", multiline=True,
+                                help="One team per line (or comma-separated). Requesters pick their team when "
+                                     "raising a request (mandatory), and can view every ticket raised by that "
+                                     "team. Leave blank to disable team selection."),
 
     # ── Notifications ──
     "TEAMS_WEBHOOK_URL":      _f("notifications", "Teams webhook URL", secret=True,

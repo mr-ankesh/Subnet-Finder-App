@@ -379,6 +379,18 @@ def current_actor() -> str:
     return session.get("admin_name") or "Admin"
 
 
+def _teams() -> list:
+    """Configured requester teams (one per line or comma-separated), de-duped."""
+    raw = (cfg.TEAMS or "").replace(",", "\n")
+    out, seen = [], set()
+    for t in raw.splitlines():
+        t = t.strip()
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out
+
+
 def _deploy_tags(req) -> dict:
     """Mandatory resource tags applied to everything deployed for a request:
       owner       — the business owner's email (from the request)
@@ -1805,7 +1817,7 @@ def azure_subnets():
 @require_login
 def requester_page():
     session.setdefault("requester_history", [])
-    return render_template("requester.html")
+    return render_template("requester.html", teams=_teams())
 
 
 @app.route("/requester/clear", methods=["POST"])
@@ -1854,6 +1866,15 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     # Business justification is mandatory for every request type, portal-wide.
     if not str(details.get("justification") or "").strip():
         return {"error": "A business justification is required."}, 400
+    # Team is mandatory when teams are configured, and must be a known team.
+    teams = _teams()
+    if teams:
+        team = str(details.get("team") or "").strip()
+        if not team:
+            return {"error": "Please select your team."}, 400
+        if team.lower() not in {t.lower() for t in teams}:
+            return {"error": f"Unknown team '{team}'."}, 400
+        details["team"] = team
     missing = [k for k in TYPE_REQUIRED_DETAILS.get(request_type, []) if not details.get(k)]
     if missing:
         return {"error": "Missing required fields: " + ", ".join(missing)}, 400
@@ -2103,7 +2124,18 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
                 return {"error": "Application rules only accept FQDN destinations "
                                  "(e.g. *.presight.ai) — these are IPs: " + ", ".join(bad)}, 400
 
+    # Team is mandatory when teams are configured, and must be a known team.
+    teams = _teams()
+    if teams:
+        team = str(data.get("team", "")).strip()
+        if not team:
+            return {"error": "Please select your team."}, 400
+        if team.lower() not in {t.lower() for t in teams}:
+            return {"error": f"Unknown team '{team}'."}, 400
+
     details_payload = {"justification": justification}
+    if teams:
+        details_payload["team"] = str(data.get("team")).strip()
     # project/env/criticality/owner_email drive the mandatory resource tags
     # (owner/requester/project/env/criticality/creator)
     for _k, _cap in (("project", 64), ("env", 64), ("criticality", 32), ("owner_email", 200)):
@@ -2212,6 +2244,27 @@ def requester_my_requests():
         return jsonify({"sso": True, "requests": []})
     rows = q.order_by(SpokeRequest.created_at.desc()).limit(200).all()
     return jsonify({"sso": True, "requests": [r.to_dict() for r in rows]})
+
+
+@app.route("/api/requester/team-requests")
+@require_login
+def requester_team_requests():
+    """Every request raised by a given team — so a team member sees the whole
+    team's tickets, not just their own. `team` query param must be a known team."""
+    team = str(request.args.get("team", "")).strip()
+    teams = _teams()
+    if not team or team.lower() not in {t.lower() for t in teams}:
+        return jsonify({"teams": teams, "team": team, "requests": []})
+    rows = (SpokeRequest.query.order_by(SpokeRequest.created_at.desc()).limit(500).all())
+    out = [r.to_dict() for r in rows
+           if str((r.get_details() or {}).get("team") or "").lower() == team.lower()]
+    return jsonify({"teams": teams, "team": team, "requests": out})
+
+
+@app.route("/api/requester/teams")
+@require_login
+def requester_teams():
+    return jsonify({"teams": _teams()})
 
 
 @app.route("/api/requester/vnet-created", methods=["POST"])

@@ -76,8 +76,8 @@
         <!-- Action Tabs -->
         <div class="action-tabs mb-3">
           <button class="action-tab active" onclick="showAction('new-request')"><i class="bi bi-plus-circle"></i> New Request</button>
-          {% if sso %}
-          <button class="action-tab" onclick="showAction('my-requests'); loadMyRequests();"><i class="bi bi-list-check"></i> My Requests</button>
+          {% if sso or teams %}
+          <button class="action-tab" onclick="showAction('my-requests'); loadMyRequests();"><i class="bi bi-list-check"></i> {% if teams %}My / Team Requests{% else %}My Requests{% endif %}</button>
           {% endif %}
           <button class="action-tab" onclick="showAction('check-status')"><i class="bi bi-search"></i> Check Status</button>
           <button class="action-tab" onclick="showAction('vnet-created')"><i class="bi bi-cloud-upload"></i> VNET Created</button>
@@ -124,6 +124,16 @@
                 <label class="form-label-custom">Your Email <span style="color:rgba(255,255,255,.4);font-weight:400;">(for status updates)</span></label>
                 <input type="email" class="form-input-custom" id="f_email" placeholder="e.g. john@presight.ai">
               </div>
+              {% if teams %}
+              <div class="col-md-6">
+                <label class="form-label-custom">Team *</label>
+                <select class="form-input-custom" id="f_team">
+                  <option value="">— select your team —</option>
+                  {% for t in teams %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+                </select>
+                <div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:3px;">Your team can see all tickets raised under it.</div>
+              </div>
+              {% endif %}
               <div class="col-md-6">
                 <label class="form-label-custom">IP Pool *</label>
                 <select class="form-input-custom" id="f_pool">
@@ -329,6 +339,16 @@
                   <label class="form-label-custom">Your Email <span style="color:rgba(255,255,255,.4);font-weight:400;">(for status updates)</span></label>
                   <input type="email" class="form-input-custom" id="g_email" placeholder="e.g. john@presight.ai">
                 </div>
+                {% if teams %}
+                <div class="col-md-6">
+                  <label class="form-label-custom">Team *</label>
+                  <select class="form-input-custom" id="g_team">
+                    <option value="">— select your team —</option>
+                    {% for t in teams %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+                  </select>
+                  <div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:3px;">Your team can see all tickets raised under it.</div>
+                </div>
+                {% endif %}
 
                 <!-- ── Firewall Policy ── -->
                 <div class="col-12 type-section" id="section-firewall_policy" style="display:none;">
@@ -975,17 +995,27 @@
           </div>
         </div>
 
-        {% if sso %}
-        <!-- My Requests (authenticated requester — own requests only) -->
+        {% if sso or teams %}
+        <!-- My Requests / Team Requests -->
         <div class="glass-card action-panel" id="panel-my-requests" style="display:none;">
           <div class="card-header-custom" style="display:flex;align-items:center;justify-content:space-between;">
-            <span><i class="bi bi-list-check text-info"></i> My Requests</span>
+            <span><i class="bi bi-list-check text-info"></i> {% if teams %}My / Team Requests{% else %}My Requests{% endif %}</span>
             <button class="btn btn-glass btn-sm" style="font-size:11px;" onclick="loadMyRequests()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
           </div>
           <div class="card-body-custom">
+            {% if teams %}
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+              <span style="font-size:12px;color:rgba(255,255,255,.6);">Show:</span>
+              <select class="form-input-custom" id="mrScope" style="max-width:260px;font-size:12.5px;" onchange="loadMyRequests()">
+                <option value="mine">My requests</option>
+                {% for t in teams %}<option value="team:{{ t }}">Team: {{ t }} (all tickets)</option>{% endfor %}
+              </select>
+            </div>
+            {% elif sso %}
             <div style="font-size:12.5px;color:rgba(255,255,255,.55);margin-bottom:12px;">
               Signed in as <strong style="color:#fff;">{{ sso_name }}</strong>{% if sso_email %} · {{ sso_email }}{% endif %} — you see only your own requests.
             </div>
+            {% endif %}
             <div id="myRequestsList"><div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div></div>
             <div id="myStatusResult" style="margin-top:14px;"></div>
           </div>
@@ -1449,6 +1479,12 @@ async function submitServiceRequest() {
   if (!justification) return showResult('newReqResult', resultBox('error', 'Business justification is required.'));
 
   const details = { justification };
+  const gTeamEl = document.getElementById('g_team');
+  if (gTeamEl) {
+    if (!gTeamEl.value) return showResult('newReqResult', resultBox('error', 'Please select your team.'));
+    details.team = gTeamEl.value;
+    localStorage.setItem('myTeam', gTeamEl.value);
+  }
   const section = document.getElementById('section-' + currentType);
   if (section) {
     section.querySelectorAll('[data-detail]').forEach(el => {
@@ -1765,9 +1801,16 @@ async function submitNewRequest() {
   if (!project) return showResult('newReqResult', resultBox('error', 'Project is required (used for resource tags).'));
   if (!ownerEmail) return showResult('newReqResult', resultBox('error', 'Owner email is required (used for the owner tag).'));
   if (!criticality) return showResult('newReqResult', resultBox('error', 'Criticality is required (used for resource tags).'));
+  const fTeamEl = document.getElementById('f_team');
+  let team = '';
+  if (fTeamEl) {
+    if (!fTeamEl.value) return showResult('newReqResult', resultBox('error', 'Please select your team.'));
+    team = fTeamEl.value;
+    localStorage.setItem('myTeam', team);
+  }
   const payload = { cidr_needed: cidr, purpose, justification, requester_name: name, requester_email: email,
                     ip_range: pool, hub_integration: hub, deployment_mode: mode,
-                    project, owner_email: ownerEmail, env, criticality };
+                    project, owner_email: ownerEmail, env, criticality, team };
 
   if (mode === 'admin') {
     const sub = document.getElementById('f_sub').value.trim();
@@ -1859,37 +1902,19 @@ function goToMyRequests() {
   loadMyRequests();
 }
 
-async function loadMyRequests() {
-  const box = document.getElementById('myRequestsList');
-  if (!box) return;
-  box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div>';
-  let reqs = [];
-  try {
-    const d = await (await fetch('/api/requester/my-requests')).json();
-    reqs = d.requests || [];
-  } catch (e) {}
-  // Merge in requests tracked locally on this browser (covers open/non-SSO mode).
-  const have = new Set(reqs.map(r => r.id));
-  const localIds = getLocalReqIds().filter(id => !have.has(id));
-  const fetched = await Promise.all(localIds.map(async id => {
-    try {
-      const s = await (await fetch(`/api/requester/status/${id}`)).json();
-      return (s && !s.error) ? s : null;
-    } catch (e) { return null; }
-  }));
-  reqs = reqs.concat(fetched.filter(Boolean));
-  reqs.sort((a, b) => (b.id || 0) - (a.id || 0));
-
+function _renderReqTable(box, reqs, showRequester) {
   if (!reqs.length) {
-    box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.55);padding:8px 0;">You haven\'t raised any requests yet. Submit one and it will appear here.</div>';
+    box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.55);padding:8px 0;">No requests to show yet.</div>';
     return;
   }
+  const head = '<th>#</th><th>Type</th>' + (showRequester ? '<th>Requester</th>' : '') +
+               '<th>Purpose</th><th>Status</th><th>Raised</th><th></th>';
   box.innerHTML =
-    '<div style="overflow-x:auto;"><table class="gls-table" style="width:100%;"><thead><tr>' +
-    '<th>#</th><th>Type</th><th>Purpose</th><th>Status</th><th>Raised</th><th></th></tr></thead><tbody>' +
+    '<div style="overflow-x:auto;"><table class="gls-table" style="width:100%;"><thead><tr>' + head + '</tr></thead><tbody>' +
     reqs.map(r => `<tr>
       <td style="color:rgba(255,255,255,.6);">#${r.id}</td>
       <td style="font-size:12px;color:#00BCF2;white-space:nowrap;">${r.type_label || r.request_type}</td>
+      ${showRequester ? `<td style="font-size:12px;white-space:nowrap;">${(r.requester_name||'—').replace(/</g,'&lt;')}</td>` : ''}
       <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(r.purpose||'').replace(/</g,'&lt;')}</td>
       <td><span class="status-badge status-${statusColor(r.status)}">${r.status_label || r.status}</span></td>
       <td style="font-size:11.5px;color:rgba(255,255,255,.5);white-space:nowrap;">${r.created_at || ''}</td>
@@ -1897,6 +1922,50 @@ async function loadMyRequests() {
     </tr>`).join('') +
     '</tbody></table></div>';
 }
+
+async function loadMyRequests() {
+  const box = document.getElementById('myRequestsList');
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div>';
+  const scopeEl = document.getElementById('mrScope');
+  const scope = scopeEl ? scopeEl.value : 'mine';
+
+  // Team view: every ticket raised by that team (with the requester shown).
+  if (scope.indexOf('team:') === 0) {
+    const team = scope.slice(5);
+    try {
+      const d = await (await fetch('/api/requester/team-requests?team=' + encodeURIComponent(team))).json();
+      _renderReqTable(box, d.requests || [], true);
+    } catch (e) { box.innerHTML = '<div style="font-size:13px;color:#f87171;">Could not load team requests.</div>'; }
+    return;
+  }
+
+  // "Mine": server list (SSO) + locally-tracked ids (works in open mode).
+  let reqs = [];
+  try { reqs = (await (await fetch('/api/requester/my-requests')).json()).requests || []; } catch (e) {}
+  const have = new Set(reqs.map(r => r.id));
+  const localIds = getLocalReqIds().filter(id => !have.has(id));
+  const fetched = await Promise.all(localIds.map(async id => {
+    try { const s = await (await fetch(`/api/requester/status/${id}`)).json(); return (s && !s.error) ? s : null; }
+    catch (e) { return null; }
+  }));
+  reqs = reqs.concat(fetched.filter(Boolean));
+  reqs.sort((a, b) => (b.id || 0) - (a.id || 0));
+  _renderReqTable(box, reqs, false);
+}
+
+// Restore the requester's team on the forms + default the team view to it.
+function restoreTeam() {
+  const t = localStorage.getItem('myTeam');
+  if (!t) return;
+  ['g_team', 'f_team'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && [...el.options].some(o => o.value === t)) el.value = t;
+  });
+  const scope = document.getElementById('mrScope');
+  if (scope && [...scope.options].some(o => o.value === 'team:' + t)) scope.value = 'team:' + t;
+}
+restoreTeam();
 
 function statusColor(s) {
   const ok = ['COMPLETED','HUB_INTEGRATED'], bad = ['CANCELLED','REJECTED'];
