@@ -1014,6 +1014,7 @@
             {% elif sso %}
             <div style="font-size:12.5px;color:rgba(255,255,255,.55);margin-bottom:12px;">
               Signed in as <strong style="color:#fff;">{{ sso_name }}</strong>{% if sso_email %} · {{ sso_email }}{% endif %} — you see only your own requests.
+              <div style="color:#f59e0b;margin-top:6px;">No Keycloak group was found on your login. If you were just added to a group, <strong>sign out and back in</strong>. Otherwise ask an admin to add you to a group and enable the group-membership token mapper.</div>
             </div>
             {% endif %}
             <div id="myRequestsList"><div style="font-size:13px;color:rgba(255,255,255,.5);">Loading…</div></div>
