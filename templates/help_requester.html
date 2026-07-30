@@ -43,6 +43,10 @@
           <dd style="margin:4px 0 0;">Three kinds: <strong>Add an A/CNAME record</strong> in a private zone (needs a description for the audit trail); <strong>Link your zone to the Hub</strong> (checks the hub doesn't already have it); <strong>Link a Hub zone to your VNET</strong> (checks the zone exists in the hub, then takes your VNET details). The availability check is mandatory for the link kinds.</dd></div>
         <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-trash3 me-1"></i>VNET Decommission</dt>
           <dd style="margin:4px 0 0;">Retire a spoke. You'll confirm whether it was created via this portal and whether you made manual changes — if you did, remove them first (extra subnets, NSGs, private endpoints, attached devices, peerings). The admin verifies in Azure before deleting anything.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-boxes me-1"></i>AKS Cluster</dt>
+          <dd style="margin:4px 0 0;">Deploy an AKS cluster into an existing VNET/subnet (raise a New VNET or New Subnet request first if you don't have one yet). Pick a name, resource group, subscription, tier (Free / Standard / Premium), and whether you'll need ZPA R&amp;D access later. Kubernetes version, node size, scaling and networking all default sensibly if you don't specify them — the admin can adjust before deploying.</dd></div>
+        <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-life-preserver me-1"></i>Report Network Issue</dt>
+          <dd style="margin:4px 0 0;">Describe what isn't working, plus the source (an IP, an AKS cluster, or a VM/resource) and destination (IP or FQDN). The network team's automated diagnosis (routing, DNS, firewall, return path) runs in the background and its findings are attached to the ticket.</dd></div>
         <div><dt style="color:#60a5fa;font-weight:700;"><i class="bi bi-chat-square-text me-1"></i>Other</dt>
           <dd style="margin:4px 0 0;">Anything that doesn't fit the above — describe it and set a priority.</dd></div>
       </dl>

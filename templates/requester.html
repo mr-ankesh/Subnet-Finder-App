@@ -37,7 +37,7 @@
         <div class="card-header-custom"><i class="bi bi-map"></i> Workflow Steps</div>
         <div class="card-body-custom">
           <div style="display:flex;flex-direction:column;gap:10px;">
-            {% for step, label in [('1','Submit CIDR Request'),('2','Admin Assigns CIDR'),('3','Create Your VNET'),('4','Hub Integration (if needed)')] %}
+            {% for step, label in [('1','Pick a Request Type'),('2','Submit Details (Form or AI)'),('3','Admin Reviews & Implements'),('4','Track Status to Completion')] %}
             <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
               <div style="width:22px;height:22px;border-radius:50%;background:rgba(0,120,212,0.2);border:1px solid rgba(0,120,212,0.3);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#00BCF2;flex-shrink:0;">{{ step }}</div>
               <span style="color:rgba(255,255,255,0.6);">{{ label }}</span>
@@ -1125,7 +1125,7 @@
             <div class="chat-title">
               <div class="agent-avatar" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);"><i class="bi bi-robot"></i></div>
               <div>
-                <div class="fw-600">Spoke Request Assistant</div>
+                <div class="fw-600">AlMadar 360 Request Assistant</div>
                 <div class="chat-status"><span class="status-dot"></span> Online</div>
               </div>
             </div>
@@ -1142,11 +1142,12 @@
             <div class="message agent-message">
               <div class="message-avatar" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);"><i class="bi bi-robot"></i></div>
               <div class="message-bubble">
-                <p>Hello! I'm your Spoke Request Assistant. I can help you:</p>
+                <p>Hello! I'm the AlMadar 360 request assistant. I can help you:</p>
                 <ul>
-                  <li>Submit a new CIDR request</li>
-                  <li>Update status once VNET is deployed</li>
-                  <li>Request hub integration</li>
+                  <li>Submit a new VNET / CIDR request</li>
+                  <li>Raise other requests — firewall rules, hub integration, ZPA routing, additional subnets, DNS changes, AKS clusters, VNET decommission, or report a network issue</li>
+                  <li>Update status once your VNET is deployed</li>
+                  <li>Request hub integration for an existing VNET</li>
                   <li>Check your request status</li>
                   <li>Send a reminder to admin</li>
                 </ul>

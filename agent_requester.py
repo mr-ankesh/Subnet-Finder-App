@@ -18,7 +18,8 @@ text, and never show your internal reasoning or <think> analysis; reply only wit
 the final answer.
 
 You help internal teams submit and track requests: spoke VNETs, firewall policy
-changes, hub integration, ZPA routing, subnets, DNS, AKS clusters and decommissions.
+changes, hub integration, ZPA routing, subnets, DNS, AKS clusters, decommissions,
+and network issue reports.
 
 YOUR CAPABILITIES:
 1. Create a new spoke VNET / CIDR request — collect details conversationally, then submit:
@@ -70,6 +71,28 @@ YOUR CAPABILITIES:
        the hub. If found, also collect subscription_id, resource_group, vnet_name.
        If not found, do NOT submit; suggest checking the name or a zone_link_to_hub
        request.
+   - aks_cluster: cluster_name (2-63 chars: letters, digits, '-', '_', '.'),
+     resource_group, subscription_id, vnet_name, subnet_name (an EXISTING VNet/
+     subnet the cluster's nodes join — if the user doesn't have one yet, tell
+     them to raise a New VNET or New Subnet request first, then come back),
+     node_pool_name (default "nodepool1" if they don't care), tier (ask:
+     Free = no uptime SLA/dev-test, Standard = 99.95% SLA/production,
+     Premium = long-term support), region (default uaenorth, the org standard —
+     only ask for region_justification if they genuinely need a different
+     region), autoscaling ("disabled" with node_count, default 2, or "enabled"
+     with min_count/max_count), zpa_rnd_access ("yes"/"no" — will this cluster
+     need ZPA R&D connectivity later?), justification. Kubernetes version, node
+     size, availability zones and networking (CNI, pod/service CIDR) all take
+     sensible defaults if the user doesn't specify them — don't interrogate them
+     on every field, just mention defaults apply.
+   - network_issue: issue (free-text description of what's broken), source_kind
+     ("ip", "aks", or "vm" — what the traffic originates from; default "ip"),
+     source (the source IP if source_kind is "ip"; otherwise also collect
+     source_subscription, source_rg, source_resource), destination (IP or
+     FQDN they're trying to reach), dest_port (optional, e.g. "443" or
+     "TCP/443"), justification. Submitting kicks off an automated routing/DNS/
+     firewall diagnosis in the background — tell the user findings will show up
+     on the ticket shortly.
    - other: description, priority (low/normal/high)
 3. Update status to "VNET Created" — when the requester has deployed their spoke VNET.
 4. Request Hub Integration for an existing VNET request — collect outbound rules + VNET details.
@@ -82,6 +105,9 @@ WORKFLOW GUIDANCE:
 - When they say their VNET is created, update to VNET_CREATED and ask if they need hub integration.
 - Always confirm details before submitting.
 - Be friendly, concise, and guide them step by step.
+- For create_service_request, if the result comes back with "available_teams", ask
+  the user which of those teams to file under, then resend with details.team set —
+  don't ask about team otherwise, it's handled automatically.
 
 WHAT YOU CANNOT DO:
 - Assign CIDRs (admin only)
@@ -154,8 +180,8 @@ TOOLS_OPENAI = [
             "name": "create_service_request",
             "description": ("Create a non-VNET network request: firewall_policy, hub_integration, "
                             "zpa_rnd_routing, zpa_other_routing, zpa_nmo_routing, subnet_additional, "
-                            "vnet_decommission, dns, or other. Collect the type-specific details "
-                            "first (see system prompt)."),
+                            "vnet_decommission, dns, aks_cluster, network_issue, or other. Collect "
+                            "the type-specific details first (see system prompt)."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -163,7 +189,7 @@ TOOLS_OPENAI = [
                                         "enum": ["firewall_policy", "hub_integration", "zpa_rnd_routing",
                                                  "zpa_other_routing", "zpa_nmo_routing",
                                                  "subnet_additional", "vnet_decommission",
-                                                 "dns", "other"]},
+                                                 "dns", "aks_cluster", "network_issue", "other"]},
                     "purpose":         {"type": "string", "description": "One-line summary of the request"},
                     "requester_name":  {"type": "string"},
                     "requester_email": {"type": "string"},
@@ -320,10 +346,41 @@ def _tool_create_service_request(request_type, purpose, requester_name,
                                  details, requester_email=None) -> str:
     """Create a non-VNET request via the same validated path as the form API."""
     try:
-        from app import _create_service_request
+        from app import _create_service_request, _available_teams
+        details = dict(details or {})
+
+        # Team is mandatory whenever teams are configured (Settings → Teams, or
+        # the signed-in user's Keycloak groups) — the form always sends it via a
+        # required <select>, but the agent doesn't know the option list. Auto-fill
+        # the obvious single-team case; otherwise hand the options back so the
+        # caller can ask the user and retry, instead of a bare "select your team".
+        if not details.get("team"):
+            teams = _available_teams()
+            if len(teams) == 1:
+                details["team"] = teams[0]
+            elif len(teams) > 1:
+                return json.dumps({
+                    "error": "This request needs a team. Ask the user which one, then "
+                             "resend with details.team set to one of: " + ", ".join(teams),
+                    "available_teams": teams,
+                })
+
+        # AKS has a few required/guarded fields the form always submits (via
+        # <select> defaults or a fixed input value) that an LLM can plausibly
+        # omit if the user doesn't care — mirror those defaults server-side so
+        # a real answer doesn't 400 on a field nobody was actually asked about.
+        if request_type == "aks_cluster":
+            from config import cfg
+            details.setdefault("node_pool_name", "nodepool1")
+            details.setdefault("zpa_rnd_access", "no")
+            details.setdefault("tier", cfg.AKS_DEFAULT_TIER)
+            details.setdefault("autoscaling", "disabled")
+            if details["autoscaling"] != "enabled":
+                details.setdefault("node_count", str(cfg.AKS_DEFAULT_NODE_COUNT))
+
         result, code = _create_service_request(
             request_type=request_type, purpose=purpose, requester_name=requester_name,
-            requester_email=requester_email, details=details or {},
+            requester_email=requester_email, details=details,
         )
         if code != 200:
             return json.dumps(result)

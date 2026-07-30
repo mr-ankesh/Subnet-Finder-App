@@ -84,13 +84,13 @@ confuse the two "deployment" meanings; `docs/HOW_IT_WORKS.md` §7 has the table.
 
 `app.py` (~200KB, 103 `@app.route` handlers) is the monolith: routes, view
 logic, and wiring. It imports core pieces (`config`, `models`, `audit`,
-`changes`, `db_backend`, `search`, `settings_store`, `auth_oidc`, `naming`)
-at module level, but imports feature modules **lazily inside the route
-functions that use them**: `azure_tools`, `agent_admin`, `agent_requester`,
-`approvals`, `budgetalerts`, `costmgmt`, `netdiag`, `optimize`, `reachability`,
-`subinventory`, `chats`. This is deliberate — when touching one of these
-features, the relevant code lives entirely in its own module; `app.py` is
-just the route surface calling into it.
+`changes`, `db_backend`, `search`, `settings_store`, `auth_oidc`, `naming`,
+`notifications`) at module level, but imports feature modules **lazily
+inside the route functions that use them**: `azure_tools`, `agent_admin`,
+`agent_requester`, `approvals`, `budgetalerts`, `costmgmt`, `netdiag`,
+`optimize`, `reachability`, `subinventory`, `chats`. This is deliberate — when
+touching one of these features, the relevant code lives entirely in its own
+module; `app.py` is just the route surface calling into it.
 
 ### Azure changes: imperative SDK calls, not IaC
 
@@ -225,6 +225,21 @@ forecast *also* says you'll land over budget (unless already ≥100% now, which
 always fires). This suppresses false alarms near month-end; it never invents
 new ones. Read the module docstring before changing thresholds — the logic
 is intentionally more subtle than "percent crossed a line."
+
+### Notifications: template-first, LLM-drafted as an enhancement
+
+`notifications.py` sends Teams (Power Automate webhook, Adaptive Card format)
+and SMTP email notifications for request lifecycle events (submitted, status
+changed, CIDR assigned, hub integrated, approval requested/decided, etc.) and
+budget-alert emails. Every event has a hardcoded fallback subject/body; when
+`NOTIFY_AI_DRAFT` is on, it asks the LLM (reusing `netdiag`'s admin-agent
+client) to draft a nicer version, but `_parse_draft()` requires the response
+to strictly start with `Subject:` and rejects anything that looks like leaked
+reasoning/chain-of-thought — any parse failure or exception silently falls
+back to the template, so a misbehaving LLM never blocks or corrupts a
+notification. Recipients/webhook/SMTP config live under `Settings →
+Notifications`; nothing here is Azure-scoped, so it works identically in
+local dev and prod as long as `SMTP_HOST`/`TEAMS_WEBHOOK_URL` are set.
 
 ### Network diagnosis is read-only, and says so where it can't see
 
