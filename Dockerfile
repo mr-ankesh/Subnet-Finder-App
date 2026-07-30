@@ -37,6 +37,12 @@ RUN groupadd -r -g 10001 app && useradd -r -u 10001 -g app app \
     && mkdir -p data && chown -R app:app /app
 USER 10001
 
+# gunicorn's control server writes a socket under $HOME. `useradd -r` points HOME
+# at /home/app but never creates it, so under a read-only-rootfs / restricted
+# securityContext that write fails ("Permission denied: '/home/app'"). Point HOME
+# at a writable path so it works regardless of how the pod mounts the filesystem.
+ENV HOME=/tmp
+
 EXPOSE 8080
 
 # Container-level health check (K8s uses its own probes on /health)

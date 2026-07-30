@@ -211,6 +211,23 @@ with app.app_context():
     except Exception:
         db.session.rollback()
 
+    # Postgres: create_all() builds fresh schemas but never ALTERs pre-existing
+    # tables, and the PRAGMA-based block above is SQLite-only. So columns added
+    # after a Postgres DB was first created (e.g. an existing DB migrated from
+    # SQLite) must be added here. ADD COLUMN IF NOT EXISTS is idempotent — a no-op
+    # when create_all already built the column on a fresh database.
+    if db_backend.IS_POSTGRES:
+        for table, col, ddl in (
+            ("spoke_requests", "approval_state", "VARCHAR(20) NOT NULL DEFAULT 'not_required'"),
+        ):
+            try:
+                db.session.execute(db.text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ddl}"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+                log.exception("[migration] Postgres ADD COLUMN %s.%s failed", table, col)
+
     # Auto-migrate subnet inventory from Excel on first run
     _auto_migrate_excel()
 
