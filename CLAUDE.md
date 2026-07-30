@@ -16,6 +16,37 @@ Read `docs/HOW_IT_WORKS.md` first for the actual request-lifecycle and Azure
 execution model — it's short and answers most "why is this built this way"
 questions better than re-deriving them from code.
 
+## Local dev vs. production — not the same stack
+
+These two environments differ in backend **and** auth, not just config values,
+so code that only gets exercised in one of them (SSO, group/manager claims,
+Postgres-only migration paths) can look fine locally and still break prod:
+
+| | Local dev / testing | Production (AKS) |
+|---|---|---|
+| Database | **SQLite** (`data/requests.db`), single writer | **PostgreSQL** (`DATABASE_URL` set, `db_backend.IS_POSTGRES` true) |
+| Auth | **Local password** login (`ADMIN_PASSWORD`), `AUTH_PROVIDER=local`, **no Keycloak/SSO** | **Keycloak SSO**, `AUTH_PROVIDER=keycloak` — roles, groups, manager claim all live |
+| Replicas | 1 (forced — SQLite is single-writer) | **3** (`helm/subnet-manager/intdev-aks-values.yaml` sets `replicaCount: 3`; the Helm chart refuses `replicaCount > 1` unless Postgres is configured, see `templates/deployment.yaml`) |
+
+Practical implications when changing code:
+- Anything SSO-gated (Keycloak team/group visibility, line-manager approval
+  routing, audit actor from token) is **inert in local dev** — there's no
+  Keycloak to exercise it against. Verify that logic by reasoning through it
+  or with an isolated/mocked check, not by running it locally and seeing it
+  "work."
+- A new DB column on an **existing** table needs an explicit Postgres
+  migration path — `db.create_all()` only creates new tables, and any
+  `PRAGMA`-based schema introspection in the bootstrap must be guarded
+  behind `db_backend.IS_POSTGRES` or it silently no-ops on Postgres (this bug
+  class has recurred: see the `approval_state` backfill fix).
+- With 3 replicas live in prod, don't assume in-process state (module-level
+  caches, in-memory locks) is shared — anything that needs to be consistent
+  across requests has to go through the DB, since any of the 3 pods can serve
+  a given request.
+- Prod ships via **rebuilt container image** (Helm upgrade), never by
+  patching a running pod — there's no code sync between local and the AKS
+  deployment other than through that image.
+
 ## Commands
 
 There is no build step, linter, or test suite in this repo (pure Flask +
@@ -103,10 +134,13 @@ separate pool-config table.
 
 ### Two DB backends, one abstraction
 
+(See the local-vs-prod table above for which backend each environment
+actually runs.)
+
 - **SQLite** (default, `data/requests.db`) — single writer, so exactly one
   replica.
 - **PostgreSQL** (`DATABASE_URL` set) — app is otherwise stateless (cookie
-  sessions), so it scales to N replicas.
+  sessions), so it scales to N replicas — prod runs 3.
 
 The ORM (`models.py` via Flask-SQLAlchemy) is portable by default. The
 raw-SQL modules (`db_utils.py`, `audit.py`, `settings_store.py`, `changes.py`,
