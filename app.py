@@ -193,6 +193,12 @@ with app.app_context():
             db.session.execute(db.text("ALTER TABLE spoke_requests ADD COLUMN details TEXT"))
             db.session.commit()
             log.info("[migration] added spoke_requests.details column")
+        # Approval flow: cached approval state on the request
+        if "approval_state" not in cols:
+            db.session.execute(db.text(
+                "ALTER TABLE spoke_requests ADD COLUMN approval_state VARCHAR(20) NOT NULL DEFAULT 'not_required'"))
+            db.session.commit()
+            log.info("[migration] added spoke_requests.approval_state column")
         # vnet_info: subnet detail columns
         vcols = [r[1] for r in db.session.execute(db.text("PRAGMA table_info(vnet_info)"))]
         for col, ddl in (("subnet_name", "VARCHAR(120)"), ("subnet_size", "VARCHAR(10)"),
@@ -371,7 +377,22 @@ def inject_globals():
                              "policy": cfg.AKS_NETWORK_POLICY, "pod_cidr": cfg.AKS_POD_CIDR,
                              "service_cidr": cfg.AKS_SERVICE_CIDR, "dns_ip": cfg.AKS_DNS_SERVICE_IP,
                              "private": cfg.AKS_PRIVATE_CLUSTER, "outbound": cfg.AKS_OUTBOUND_TYPE,
-                             "upgrade": cfg.AKS_UPGRADE_CHANNEL, "node_os": cfg.AKS_NODE_OS_UPGRADE_CHANNEL}}
+                             "upgrade": cfg.AKS_UPGRADE_CHANNEL, "node_os": cfg.AKS_NODE_OS_UPGRADE_CHANNEL},
+            **_approvals_nav_ctx()}
+
+
+def _approvals_nav_ctx() -> dict:
+    """Nav context for the approval flow: whether it's active and how many items
+    await the signed-in user. Cheap + fully guarded so it never breaks a render."""
+    try:
+        import approvals as ap
+        if not (session.get("sso") and ap.enabled()):
+            return {"approvals_active": False, "my_approvals_count": 0}
+        n = len(ap.pending_for(session.get("sso_email") or "",
+                               bool(session.get("is_superadmin"))))
+        return {"approvals_active": True, "my_approvals_count": n}
+    except Exception:
+        return {"approvals_active": False, "my_approvals_count": 0}
 
 
 def current_actor() -> str:
@@ -571,6 +592,16 @@ def auth_callback():
     session["sso_has_name"] = bool(info.get("name") or full)   # real name vs username fallback
     session["sso_groups"] = oidc.groups_from_token(token)       # Keycloak groups = teams
     session["admin_name"] = display               # audit actor
+    # Line manager (for the approval flow) + record whether the claim was present,
+    # which is the dependency signal the approvals preflight relies on.
+    mgr_present, mgr_email = oidc.manager_from_token(token)
+    session["manager_email"] = mgr_email
+    session["manager_name"] = mgr_email
+    try:
+        import approvals
+        approvals.record_login_observation(mgr_present, mgr_email)
+    except Exception:
+        log.exception("approval manager-claim observation failed")
     if token.get("id_token"):
         session["sso_id_token"] = token["id_token"]
 
@@ -662,7 +693,25 @@ def admin_settings_save():
         # Keys only — secret values must never reach the audit trail
         audit.record("settings_changed", actor=current_actor(), actor_role="admin",
                      summary=f"Settings updated: {', '.join(saved)}", data={"keys": saved})
-    return jsonify({"success": not errors, "saved": saved, "errors": errors}), (200 if not errors else 400)
+
+    # Approval flow: enabling runs a dependency check. If prerequisites aren't met,
+    # auto-disable and tell the admin exactly what's missing.
+    approvals_notice = None
+    if "APPROVALS_ENABLED" in saved and str(data.get("APPROVALS_ENABLED", "")).lower() in ("true", "1", "yes"):
+        import approvals
+        pf = approvals.preflight()
+        if not pf["ok"]:
+            settings_store.set_override("APPROVALS_ENABLED", "false")
+            missing = [c["name"] for c in pf["checks"] if not c["ok"]]
+            approvals_notice = {"auto_disabled": True, "checks": pf["checks"],
+                                "message": "Approval flow was NOT enabled — unmet prerequisites: "
+                                           + "; ".join(missing)}
+            audit.record("settings_changed", actor=current_actor(), actor_role="admin",
+                         summary="Approval flow enable blocked — prerequisites unmet; auto-disabled",
+                         data={"missing": missing})
+
+    return jsonify({"success": not errors, "saved": saved, "errors": errors,
+                    "approvals_notice": approvals_notice}), (200 if not errors else 400)
 
 
 @app.route("/api/admin/settings/reset", methods=["POST"])
@@ -680,6 +729,22 @@ def admin_settings_reset():
     value = "" if spec["secret"] else raw
     return jsonify({"success": True, "key": key, "value": value, "source": source,
                     "is_set": bool(raw) if spec["secret"] else None})
+
+
+@app.route("/api/admin/settings/approvals-health")
+@require_superadmin
+def admin_approvals_health():
+    """Live dependency check for the approval flow, shown on the settings page."""
+    import approvals
+    pf = approvals.preflight()
+    return jsonify({
+        "flag": bool(cfg.APPROVALS_ENABLED),
+        "effective": approvals.enabled(),
+        "ok": pf["ok"],
+        "checks": pf["checks"],
+        "seen": approvals.manager_seen(),
+        "matrix": approvals.policy_matrix(),
+    })
 
 
 # ── Firewall collection definitions (one-time admin setup) ─────────────────
@@ -1859,6 +1924,86 @@ TYPE_REQUIRED_DETAILS = {
 }
 
 
+def _apply_submission_gate(req):
+    """If the approval flow holds this request type at submission, open the gate
+    (sets PENDING_APPROVAL, routes to the requester's line manager) and notify the
+    approver. No-op unless approvals are enabled and the type's policy requires it."""
+    try:
+        import approvals
+        mgr_email = session.get("manager_email", "") or ""
+        mgr_name = session.get("manager_name", "") or ""
+        # Snapshot the requester's line manager on the ticket so a later trigger-gate
+        # deploy (run by an admin, whose session has no such claim) still routes correctly.
+        if approvals.enabled() and mgr_email:
+            d = req.get_details()
+            d["line_manager_email"] = mgr_email
+            d["line_manager_name"] = mgr_name
+            req.set_details(d)
+            db.session.commit()
+        appr = approvals.open_submission_gate(
+            req,
+            requester_email=getattr(req, "requester_email", "") or "",
+            requester_name=getattr(req, "requester_name", "") or "",
+            manager_email=mgr_email,
+            manager_name=mgr_name,
+        )
+        if not appr:
+            return False
+        audit.record("approval_requested", actor="portal (auto)", actor_role="system",
+                     request_id=req.id,
+                     summary=f"Approval required — routed to {appr.assigned_to_name or 'super-admin'} "
+                             f"({appr.assigned_via})",
+                     data={"approval_id": appr.id, "gate": "submission", "via": appr.assigned_via})
+        try:
+            notifications.notify_approval_requested(req, appr)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        log.exception("submission approval gate failed for request #%s", getattr(req, "id", "?"))
+        return False
+
+
+# Read-only actions that never provision anything → never gated by trigger approval.
+_NON_DEPLOY_ACTIONS = {"aks_check"}
+
+
+def _trigger_gate_block(req, action_key):
+    """For a 'required @ trigger' request type, block an Azure deploy until the
+    line manager approves. Returns a (json, status) tuple to return, or None to
+    proceed. Raises a pending trigger checkpoint on first block."""
+    if action_key in _NON_DEPLOY_ACTIONS:
+        return None
+    try:
+        import approvals
+        if not approvals.needs_trigger_approval(req, action_key):
+            return None
+        # Manager on a trigger gate can't come from the admin's session — use the
+        # requester's snapshot taken at submission; otherwise fallback routing.
+        d = req.get_details() if hasattr(req, "get_details") else {}
+        appr = approvals.open_trigger_gate(
+            req, action_key, requested_by=current_actor(),
+            manager_email=d.get("line_manager_email", ""),
+            manager_name=d.get("line_manager_name", ""))
+        audit.record("approval_requested", actor=current_actor(), actor_role="admin",
+                     request_id=req.id,
+                     summary=f"Deploy blocked — approval required (routed to "
+                             f"{appr.assigned_to_name or 'super-admin'})",
+                     data={"approval_id": appr.id, "gate": "trigger", "action": action_key})
+        try:
+            notifications.notify_approval_requested(req, appr)
+        except Exception:
+            pass
+        who = appr.assigned_to_name or "a super-admin"
+        return (jsonify({
+            "error": f"Approval required before deploying. This request type must be approved by "
+                     f"{who} before any Azure changes are made. An approval request has been raised.",
+            "approval_required": True, "approval_id": appr.id}), 403)
+    except Exception:
+        log.exception("trigger approval gate failed for request #%s", getattr(req, "id", "?"))
+        return None
+
+
 def _create_service_request(request_type, purpose, requester_name, requester_email, details):
     """
     Shared creation path for non-VNET request types (used by the form API and the
@@ -2003,11 +2148,13 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
         notifications.notify_request_submitted(req)
     except Exception:
         pass
+    # Approval flow: hold at submission if this type requires it.
+    held = _apply_submission_gate(req)
     # Network-issue tickets: run the connectivity diagnosis in the background so
     # the admin sees findings the moment they open the request.
     if request_type == RequestType.NETWORK_ISSUE:
         _spawn_network_diagnosis(req_id, details)
-    return {"success": True, "request_id": req_id}, 200
+    return {"success": True, "request_id": req_id, "pending_approval": held}, 200
 
 
 def _spawn_network_diagnosis(req_id, details):
@@ -2182,7 +2329,8 @@ def _create_vnet_request(data: dict, actor: str = None, actor_role: str = "reque
         notifications.notify_cidr_requested(req)
     except Exception:
         pass
-    return {"success": True, "request_id": req_id}, 200
+    held = _apply_submission_gate(req)
+    return {"success": True, "request_id": req_id, "pending_approval": held}, 200
 
 
 @app.route("/api/requester/new-request", methods=["POST"])
@@ -2275,6 +2423,113 @@ def requester_team_requests():
 @require_login
 def requester_teams():
     return jsonify({"teams": _available_teams()})
+
+
+# ── Approval flow: queue + decisions ───────────────────────────────────────
+
+@app.route("/approvals")
+@require_login
+def approvals_page():
+    import approvals as ap
+    return render_template("approvals.html", approvals_enabled=ap.enabled())
+
+
+@app.route("/api/approvals/pending")
+@require_login
+def api_approvals_pending():
+    """Approvals awaiting the signed-in user's decision (their reports' requests)."""
+    import approvals as ap
+    email = session.get("sso_email") or ""
+    is_sa = bool(session.get("is_superadmin"))
+    out = []
+    for a in ap.pending_for(email, is_sa):
+        req = SpokeRequest.query.get(a.request_id)
+        d = a.to_dict()
+        d["request"] = req.to_dict() if req else None
+        out.append(d)
+    return jsonify({"enabled": ap.enabled(), "approvals": out, "count": len(out)})
+
+
+@app.route("/api/approvals/<int:appr_id>/decide", methods=["POST"])
+@require_login
+def api_approval_decide(appr_id):
+    import approvals as ap
+    from models import Approval
+    appr = Approval.query.get_or_404(appr_id)
+    if appr.status != "pending":
+        return jsonify({"error": f"This approval is already {appr.status}."}), 400
+    data = request.get_json(force=True) or {}
+    decision = str(data.get("decision", "")).lower()
+    if decision not in ("approve", "reject"):
+        return jsonify({"error": "decision must be 'approve' or 'reject'."}), 400
+    reason = str(data.get("reason", "")).strip()
+    if decision == "reject" and not reason:
+        return jsonify({"error": "A reason is required to reject a request."}), 400
+    email = session.get("sso_email") or ""
+    name = session.get("admin_name") or email
+    is_sa = bool(session.get("is_superadmin"))
+    if not ap.can_decide(appr, email, name, is_sa):
+        return jsonify({"error": "You are not the assigned approver for this request."}), 403
+    ap.decide(appr, decision, email, name, reason)
+    req = SpokeRequest.query.get(appr.request_id)
+    audit.record("approval_granted" if decision == "approve" else "approval_rejected",
+                 actor=name, actor_role="approver", request_id=appr.request_id,
+                 summary=f"Request #{appr.request_id} {decision}d by {name}"
+                         + (f" — {reason}" if reason else ""),
+                 data={"approval_id": appr.id, "gate": appr.gate, "reason": reason})
+    try:
+        if req:
+            notifications.notify_approval_decided(req, appr)
+    except Exception:
+        pass
+    return jsonify({"success": True, "status": appr.status})
+
+
+@app.route("/api/admin/requests/<int:req_id>/approvals")
+@require_login
+def api_request_approvals(req_id):
+    """Approval history for one request (for the request-detail panel)."""
+    import approvals as ap
+    email = session.get("sso_email") or ""
+    is_sa = bool(session.get("is_superadmin"))
+    out = []
+    for a in ap.for_request(req_id):
+        dd = a.to_dict()
+        dd["can_decide"] = bool(a.status == "pending" and ap.can_decide(a, email, "", is_sa))
+        out.append(dd)
+    pol = None
+    req = SpokeRequest.query.get(req_id)
+    if req:
+        pol = ap.policy_for(req.request_type or RequestType.VNET_NEW)
+    return jsonify({"enabled": ap.enabled(), "approvals": out, "policy": pol})
+
+
+@app.route("/api/admin/requests/<int:req_id>/request-approval", methods=["POST"])
+@require_admin
+def api_request_send_approval(req_id):
+    """Admin-discretion: send a specific request for line-manager approval."""
+    import approvals as ap
+    if not ap.enabled():
+        return jsonify({"error": "Approval flow is not enabled."}), 400
+    req = SpokeRequest.query.get_or_404(req_id)
+    pol = ap.policy_for(req.request_type or RequestType.VNET_NEW)
+    if pol["mode"] == ap.MODE_NONE:
+        return jsonify({"error": "This request type is not eligible for approval."}), 400
+    if req.approval_state == "pending":
+        return jsonify({"error": "This request is already awaiting approval."}), 400
+    d = req.get_details() or {}
+    appr = ap.request_discretion_approval(
+        req, requested_by=current_actor(),
+        manager_email=d.get("line_manager_email", ""),
+        manager_name=d.get("line_manager_name", ""))
+    audit.record("approval_requested", actor=current_actor(), actor_role="admin", request_id=req.id,
+                 summary=f"Sent for approval → {appr.assigned_to_name or 'super-admin'}",
+                 data={"approval_id": appr.id, "gate": "submission", "discretion": True})
+    try:
+        notifications.notify_approval_requested(req, appr)
+    except Exception:
+        pass
+    return jsonify({"success": True, "approval_id": appr.id})
 
 
 @app.route("/api/requester/vnet-created", methods=["POST"])
@@ -2539,6 +2794,11 @@ def admin_azure_action(req_id):
     action = payload.get("action", "")
     on_conflict = str(payload.get("on_conflict", "")).strip()
     details = req.get_details()
+
+    # Approval flow: block the deploy if this type needs trigger-time approval.
+    _gate = _trigger_gate_block(req, action)
+    if _gate is not None:
+        return _gate
 
     def _record_change(res, act=None):
         """Persist the mutation + its before-state into the change ledger."""
@@ -3840,6 +4100,10 @@ def request_deploy_all(req_id):
     t = req.request_type or RequestType.VNET_NEW
     if t not in (RequestType.VNET_NEW, RequestType.HUB_INTEGRATION):
         return jsonify({"error": "Aggregated deploy is only available for VNET requests."}), 400
+    # Approval flow: one trigger approval covers the whole aggregated deploy.
+    _gate = _trigger_gate_block(req, "deploy_all")
+    if _gate is not None:
+        return _gate
     if req.status in RequestType.TERMINALS:
         return jsonify({"error": f"Request is already {req.status_label()}."}), 400
     vi = req.vnet_info

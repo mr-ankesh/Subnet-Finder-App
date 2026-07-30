@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Approvals | AlMadar 360{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:1000px; padding:2rem 1rem;">
+
+  <div style="margin-bottom:1.25rem;">
+    <h2 style="font-family:var(--font-heading); margin:0;"><i class="bi bi-check2-square"></i> My Approvals</h2>
+    <div style="color:var(--text-muted); font-size:.9rem;">
+      Requests from your reports that need your decision. Approving releases the request;
+      rejecting closes it with your reason.
+    </div>
+  </div>
+
+  {% if not approvals_enabled %}
+  <div style="border:1px solid rgba(250,204,21,.4); background:rgba(250,204,21,.08); color:#facc15; border-radius:10px; padding:.8rem 1rem; font-size:.88rem;">
+    <i class="bi bi-info-circle-fill"></i> The approval flow is not active. Nothing to review.
+  </div>
+  {% else %}
+  <div id="apprList" style="display:flex; flex-direction:column; gap:.9rem;">
+    <div style="color:var(--text-muted);">Loading…</div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Decision modal -->
+<div id="decideModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:1000; align-items:center; justify-content:center;">
+  <div class="glass-card" style="max-width:480px; width:92%; padding:1.5rem;">
+    <h5 id="decideTitle" style="font-family:var(--font-heading); margin-bottom:.5rem;"></h5>
+    <div id="decideSub" style="color:var(--text-muted); font-size:.85rem; margin-bottom:1rem;"></div>
+    <label class="form-label" style="font-size:.82rem;">Reason <span id="reasonReq" style="color:#f87171; display:none;">(required)</span></label>
+    <textarea id="decideReason" class="form-control" rows="3" placeholder="Add a note for the requester…"></textarea>
+    <div style="display:flex; gap:.6rem; justify-content:flex-end; margin-top:1.1rem;">
+      <button class="btn-glass" onclick="closeDecide()">Cancel</button>
+      <button id="decideConfirm" class="btn-hero" onclick="confirmDecide()"></button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const APPR_TYPE_ICON = { };
+  let DECIDE = { id: null, decision: null };
+
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+  async function loadApprovals() {
+    const box = document.getElementById('apprList');
+    if (!box) return;
+    try {
+      const d = await (await fetch('/api/approvals/pending')).json();
+      if (!d.approvals || !d.approvals.length) {
+        box.innerHTML = `<div style="border:1px solid rgba(74,222,128,.35); background:rgba(74,222,128,.06); color:#4ade80; border-radius:10px; padding:1rem 1.1rem; font-size:.9rem;">
+          <i class="bi bi-check-circle-fill"></i> You're all caught up — no requests awaiting your approval.</div>`;
+        return;
+      }
+      box.innerHTML = d.approvals.map(a => {
+        const r = a.request || {};
+        const gate = a.gate === 'trigger' ? 'Before deployment' : 'Before it proceeds';
+        return `<div class="glass-card" style="padding:1.1rem 1.25rem;">
+          <div style="display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap;">
+            <div>
+              <div style="font-weight:700; color:#fff;">#${esc(r.id)} · ${esc(r.type_label||'Request')}</div>
+              <div style="color:var(--text-muted); font-size:.85rem; margin-top:.15rem;">${esc(r.purpose||'')}</div>
+              <div style="font-size:.8rem; color:var(--text-muted); margin-top:.5rem;">
+                <i class="bi bi-person"></i> ${esc(r.requester_name||'')}${r.requester_email? ' · '+esc(r.requester_email):''}
+                &nbsp;•&nbsp; <i class="bi bi-clock"></i> ${esc(a.requested_at||'')}
+                &nbsp;•&nbsp; <span style="color:#f59e0b;"><i class="bi bi-shield-check"></i> ${esc(gate)}</span>
+                ${a.assigned_via==='fallback' ? '&nbsp;•&nbsp; <span style="color:#f59e0b;">routed to fallback approver</span>' : ''}
+              </div>
+            </div>
+            <div style="display:flex; gap:.5rem; align-items:flex-start;">
+              <a href="/requests/${esc(r.id)}" class="btn-glass" style="font-size:.8rem;"><i class="bi bi-box-arrow-up-right"></i> Details</a>
+              <button class="btn-glass" style="font-size:.8rem; color:#f87171; border-color:rgba(248,113,113,.4);" onclick="openDecide(${a.id},'reject','#${esc(r.id)} ${esc(r.type_label||'')}')"><i class="bi bi-x-lg"></i> Reject</button>
+              <button class="btn-hero" style="font-size:.8rem;" onclick="openDecide(${a.id},'approve','#${esc(r.id)} ${esc(r.type_label||'')}')"><i class="bi bi-check-lg"></i> Approve</button>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      box.innerHTML = '<div style="color:#f87171;">Could not load approvals.</div>';
+    }
+  }
+
+  function openDecide(id, decision, label) {
+    DECIDE = { id, decision };
+    document.getElementById('decideTitle').textContent = (decision==='approve'?'Approve ':'Reject ') + label;
+    document.getElementById('decideSub').textContent = decision==='approve'
+      ? 'The request will be released to proceed.'
+      : 'The request will be closed as rejected. A reason is required.';
+    document.getElementById('reasonReq').style.display = decision==='approve' ? 'none' : 'inline';
+    document.getElementById('decideReason').value = '';
+    const btn = document.getElementById('decideConfirm');
+    btn.textContent = decision==='approve' ? 'Approve' : 'Reject';
+    btn.className = decision==='approve' ? 'btn-hero' : 'btn-hero';
+    document.getElementById('decideModal').style.display = 'flex';
+  }
+  function closeDecide(){ document.getElementById('decideModal').style.display = 'none'; }
+
+  async function confirmDecide() {
+    const reason = document.getElementById('decideReason').value.trim();
+    if (DECIDE.decision === 'reject' && !reason) { showToast('A reason is required to reject.', 'danger'); return; }
+    const btn = document.getElementById('decideConfirm'); btn.disabled = true;
+    try {
+      const r = await fetch(`/api/approvals/${DECIDE.id}/decide`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ decision: DECIDE.decision, reason })
+      });
+      const d = await r.json();
+      if (!r.ok || !d.success) { showToast(d.error || 'Failed.', 'danger'); btn.disabled = false; return; }
+      showToast(`Request ${d.status}.`, 'success');
+      closeDecide();
+      loadApprovals();
+    } catch (e) { showToast('Failed: ' + e, 'danger'); btn.disabled = false; }
+  }
+
+  {% if approvals_enabled %}loadApprovals();{% endif %}
+</script>
+{% endblock %}

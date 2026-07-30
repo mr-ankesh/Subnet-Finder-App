@@ -99,6 +99,11 @@
           </a>
           {% endif %}
 
+          {% if approvals_active %}
+          <a href="{{ url_for('approvals_page') }}" class="nav-link {% if request.endpoint == 'approvals_page' %}active{% endif %}">
+            <i class="bi bi-check2-square"></i> Approvals{% if my_approvals_count %} <span class="badge" style="background:#f59e0b;color:#1a1a1a;border-radius:9px;padding:1px 7px;font-size:.7rem;font-weight:700;">{{ my_approvals_count }}</span>{% endif %}
+          </a>
+          {% endif %}
           <a href="{{ url_for('help_admin') }}" class="nav-link {% if request.endpoint == 'help_admin' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide
           </a>
@@ -132,6 +137,11 @@
           </a>
           <a href="{{ url_for('help_requester') }}" class="nav-link {% if request.endpoint == 'help_requester' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide
+          </a>
+          {% endif %}
+          {% if approvals_active %}
+          <a href="{{ url_for('approvals_page') }}" class="nav-link {% if request.endpoint == 'approvals_page' %}active{% endif %}">
+            <i class="bi bi-check2-square"></i> Approvals{% if my_approvals_count %} <span class="badge" style="background:#f59e0b;color:#1a1a1a;border-radius:9px;padding:1px 7px;font-size:.7rem;font-weight:700;">{{ my_approvals_count }}</span>{% endif %}
           </a>
           {% endif %}
           {% if is_authed %}

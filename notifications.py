@@ -422,6 +422,68 @@ def notify_reminder(req, message: str) -> bool:
     ))
 
 
+# ── Approval flow ─────────────────────────────────────────────────────────
+def notify_approval_requested(req, appr) -> bool:
+    """Tell the assigned approver (the requester's line manager) that a request
+    awaits their decision. Emails the approver directly when we have their address."""
+    type_label = req.type_label() if hasattr(req, "type_label") else "Request"
+    gate = "before deployment" if getattr(appr, "gate", "") == "trigger" else "before it proceeds"
+    facts = [
+        {"title": "Request ID", "value": f"#{req.id}"},
+        {"title": "Type",       "value": type_label},
+        {"title": "Requester",  "value": req.requester_name},
+        {"title": "Summary",    "value": req.purpose},
+        {"title": "Approver",   "value": getattr(appr, "assigned_to_name", "") or "Super-admin"},
+    ]
+    subject = f"[AlMadar 360] Approval needed — {type_label} request #{req.id}"
+    body = (f"A {type_label} request (#{req.id}) raised by {req.requester_name} requires your "
+            f"approval {gate}.\n\nSummary: {req.purpose}\n\n"
+            f"Review and approve or reject it: {_url('/approvals') or '(portal)'}")
+    # Email the approver directly (if known) plus the corporate list.
+    recipients = _notify_emails()
+    to = getattr(appr, "assigned_to_email", "") or ""
+    if to:
+        recipients = recipients + [to]
+    if recipients and cfg.SMTP_HOST:
+        _send_email(recipients, subject, body)
+    return _post(_adaptive_card(
+        title=f"Approval needed — Request #{req.id}",
+        subtitle="Presight R&D · AlMadar 360",
+        body_text=f"**{req.requester_name}**'s **{type_label}** request needs approval {gate}.",
+        facts=facts, color="warning",
+        action_url=_url("/approvals"), action_label="Review Approvals",
+    ))
+
+
+def notify_approval_decided(req, appr) -> bool:
+    """Tell the requester (and the team) whether their request was approved/rejected."""
+    type_label = req.type_label() if hasattr(req, "type_label") else "Request"
+    approved = getattr(appr, "status", "") == "approved"
+    verb = "approved" if approved else "rejected"
+    facts = [
+        {"title": "Request ID", "value": f"#{req.id}"},
+        {"title": "Type",       "value": type_label},
+        {"title": "Decision",   "value": verb.title()},
+        {"title": "By",         "value": getattr(appr, "decided_by", "") or ""},
+    ]
+    reason = getattr(appr, "decision_reason", "") or ""
+    if reason:
+        facts.append({"title": "Reason", "value": reason})
+    _email_case(req, f"The request was {verb} by the approver",
+                f"[AlMadar 360] Request #{req.id} {verb}",
+                f"Your {type_label} request #{req.id} was {verb}"
+                + (f".\n\nReason: {reason}" if reason else "."),
+                facts=facts)
+    return _post(_adaptive_card(
+        title=f"Request #{req.id} {verb.title()}",
+        subtitle="Presight R&D · AlMadar 360",
+        body_text=f"The **{type_label}** request was **{verb}**"
+                  + (f" — {reason}" if reason else "."),
+        facts=facts, color="success" if approved else "danger",
+        action_url=_url(f"/requests/{req.id}"), action_label="View Request",
+    ))
+
+
 # ── Subscription budget alert — email the financial owner ─────────────────
 def _to_float(v):
     try:

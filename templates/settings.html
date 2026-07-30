@@ -49,6 +49,10 @@
         <h5 style="font-family:var(--font-heading); margin-bottom:.25rem;">{{ cat.title }}</h5>
         <div style="color:var(--text-muted); font-size:.85rem; margin-bottom:1.25rem;">{{ cat.desc }}</div>
 
+        {% if cat.key == 'approvals' %}
+        <div id="apprHealthBanner" style="margin-bottom:1.1rem;"></div>
+        {% endif %}
+
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem 1.25rem;" class="settings-grid">
           {% for f in cat.fields %}
           <div {% if f.multiline %}style="grid-column:1/-1;"{% elif f.type == 'bool' %}style="align-self:center;"{% endif %}>
@@ -153,6 +157,65 @@
         </div>
         <div id="fwColMsg" style="font-size:.8rem; margin-top:.5rem;"></div>
         {% endif %}
+
+        {% if cat.key == 'approvals' %}
+        <hr style="border-color:rgba(255,255,255,.1); margin:1.5rem 0;">
+
+        <!-- Dependency check -->
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:.5rem; flex-wrap:wrap;">
+          <h6 style="font-family:var(--font-heading); margin:0;">
+            <i class="bi bi-heart-pulse"></i> Dependency check
+          </h6>
+          <button class="btn-glass" onclick="apprRecheck()" style="font-size:.8rem;">
+            <i class="bi bi-arrow-clockwise"></i> Re-check
+          </button>
+        </div>
+        <div id="apprHealth" style="margin-top:.75rem; font-size:.85rem;">Checking…</div>
+
+        <!-- Prerequisites -->
+        <details style="margin-top:1.25rem; border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:.4rem .9rem;">
+          <summary style="cursor:pointer; font-weight:600; color:#fff; padding:.4rem 0;">
+            <i class="bi bi-list-check"></i> Prerequisites — Azure Entra ID &amp; Keycloak
+          </summary>
+          <div style="font-size:.82rem; color:var(--text-muted); line-height:1.7; padding:.5rem 0 .75rem;">
+            Approvals are routed to each requester's <strong>line manager</strong>. That relationship must
+            flow from Azure Entra ID into Keycloak and out as a token claim. Do this once:
+            <div style="color:#fff; margin:.7rem 0 .3rem;"><i class="bi bi-microsoft"></i> On Azure Entra ID</div>
+            <ol style="margin:0; padding-left:1.2rem;">
+              <li>Ensure every requester has their <strong>Manager</strong> set (User → Profile → Manager).
+                  Entra exposes this as the <code>manager</code> relationship.</li>
+              <li>The Keycloak user federation / directory sync must import users <em>with</em> the manager
+                  attribute (map the manager's <strong>email/UPN</strong>, not the raw object DN).</li>
+            </ol>
+            <div style="color:#fff; margin:.7rem 0 .3rem;"><i class="bi bi-shield-lock"></i> On Keycloak</div>
+            <ol style="margin:0; padding-left:1.2rem;">
+              <li>Realm → your client (or a client scope) → <strong>Mappers → Add mapper → By configuration →
+                  User Attribute</strong>.</li>
+              <li>User Attribute = the synced manager attribute; <strong>Token Claim Name = <code>manager</code></strong>
+                  (match the “Manager token claim” field above).</li>
+              <li>Enable <strong>Add to ID token</strong>, <strong>Add to access token</strong> and
+                  <strong>Add to userinfo</strong>. Claim type: String.</li>
+              <li>Also confirm <strong>Auth provider = keycloak</strong> and the SSO connection is filled in
+                  under <em>Authentication</em>.</li>
+              <li>Sign out and sign in once — the platform records that the claim is present, which satisfies
+                  the dependency check.</li>
+            </ol>
+            <div style="margin-top:.7rem;">Full guide: <code>docs/KEYCLOAK.md</code> → “Line-manager approval”.</div>
+          </div>
+        </details>
+
+        <!-- Per-type policy matrix -->
+        <h6 style="font-family:var(--font-heading); margin:1.5rem 0 .25rem;">
+          <i class="bi bi-sliders"></i> Per-type approval policy
+        </h6>
+        <div style="color:var(--text-muted); font-size:.8rem; margin-bottom:.9rem;">
+          Choose, per request type, whether approval is <strong>Required</strong>, left to
+          <strong>admin discretion</strong>, or <strong>not required</strong> — and when it's enforced.
+          Most network changes need none; cost/compute-heavy types (e.g. AKS) are the usual candidates.
+          Remember to <strong>Save Approvals</strong> after editing.
+        </div>
+        <div id="apprMatrix" style="font-size:.85rem;">Loading…</div>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -209,6 +272,14 @@
       if (!r.ok || !data.success) {
         const msgs = Object.entries(data.errors || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
         showToast(msgs || 'Save failed.', 'danger');
+        return;
+      }
+      if (data.approvals_notice && data.approvals_notice.auto_disabled) {
+        // Enable was blocked by the dependency check — keep the admin on the page.
+        showToast('Approval flow NOT enabled — prerequisites unmet.', 'danger');
+        if (typeof apprLoadHealth === 'function') apprLoadHealth();
+        const en = document.getElementById('in-APPROVALS_ENABLED');
+        if (en) en.checked = false;
         return;
       }
       showToast(data.saved.length ? `Saved: ${data.saved.join(', ')}` : 'No changes.', 'success');
@@ -419,5 +490,87 @@
   }
 
   if (document.getElementById('fwColTable')) fwColLoad();
+
+  // ── Approvals: dependency check + policy matrix ─────────────────────────
+  const APPR_TIMING_LABELS = { submission: 'At submission', trigger: 'At trigger', both: 'Both' };
+  const APPR_MODE_LABELS = { none: 'Not required', discretion: 'Admin discretion', required: 'Required' };
+  let APPR_MATRIX = [];
+
+  function apprEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+  async function apprLoadHealth() {
+    const banner = document.getElementById('apprHealthBanner');
+    const health = document.getElementById('apprHealth');
+    if (!health) return;
+    try {
+      const d = await (await fetch('/api/admin/settings/approvals-health')).json();
+      APPR_MATRIX = d.matrix || [];
+
+      // Top banner — effective state
+      if (banner) {
+        if (d.effective) {
+          banner.innerHTML = `<div style="border:1px solid rgba(74,222,128,.4); background:rgba(74,222,128,.08); color:#4ade80; border-radius:10px; padding:.7rem 1rem; font-size:.85rem;">
+            <i class="bi bi-check-circle-fill"></i> <strong>Approval flow is ACTIVE.</strong> Requests follow the per-type policy below.</div>`;
+        } else if (d.flag && !d.ok) {
+          banner.innerHTML = `<div style="border:1px solid rgba(248,113,113,.45); background:rgba(248,113,113,.08); color:#f87171; border-radius:10px; padding:.7rem 1rem; font-size:.85rem;">
+            <i class="bi bi-exclamation-octagon-fill"></i> <strong>Enabled but INACTIVE — prerequisites not met.</strong> Approvals will not run until the checks below pass.</div>`;
+        } else {
+          banner.innerHTML = `<div style="border:1px solid rgba(250,204,21,.4); background:rgba(250,204,21,.08); color:#facc15; border-radius:10px; padding:.7rem 1rem; font-size:.85rem;">
+            <i class="bi bi-info-circle-fill"></i> <strong>Approval flow is OFF.</strong> To enable it you must first have Azure Entra ID integrated with Keycloak and the manager claim mapped (see prerequisites). Enabling runs a dependency check and auto-disables if anything is missing.</div>`;
+        }
+      }
+
+      // Detailed checks
+      health.innerHTML = (d.checks || []).map(c => `
+        <div style="display:flex; gap:.55rem; align-items:flex-start; padding:.3rem 0;">
+          <span style="color:${c.ok ? '#4ade80' : '#f87171'}; flex:0 0 auto;">
+            <i class="bi ${c.ok ? 'bi-check-circle-fill' : 'bi-x-circle-fill'}"></i></span>
+          <span><span style="color:#fff;">${apprEsc(c.name)}</span>${c.detail ? `<div style="color:var(--text-muted); font-size:.78rem;">${apprEsc(c.detail)}</div>` : ''}</span>
+        </div>`).join('');
+
+      apprRenderMatrix();
+    } catch (e) {
+      health.innerHTML = '<span style="color:#f87171;">Could not load dependency status.</span>';
+    }
+  }
+
+  function apprRenderMatrix() {
+    const box = document.getElementById('apprMatrix');
+    if (!box) return;
+    box.innerHTML = `<div style="overflow-x:auto;"><table class="table table-dark table-sm" style="font-size:.82rem; min-width:520px;">
+      <thead><tr><th>Request type</th><th style="width:170px;">Approval</th><th style="width:170px;">When</th></tr></thead>
+      <tbody>${APPR_MATRIX.map((r, i) => `
+        <tr>
+          <td style="vertical-align:middle;">${apprEsc(r.label)}</td>
+          <td><select class="form-select form-select-sm appr-mode" data-type="${apprEsc(r.type)}" onchange="apprMatrixChanged()">
+            ${Object.entries(APPR_MODE_LABELS).map(([v, l]) => `<option value="${v}" ${r.mode === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select></td>
+          <td><select class="form-select form-select-sm appr-timing" data-type="${apprEsc(r.type)}" onchange="apprMatrixChanged()" ${r.mode === 'none' ? 'disabled' : ''}>
+            ${Object.entries(APPR_TIMING_LABELS).map(([v, l]) => `<option value="${v}" ${r.timing === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select></td>
+        </tr>`).join('')}</tbody></table></div>`;
+    apprMatrixChanged();  // sync hidden JSON to current state
+  }
+
+  function apprMatrixChanged() {
+    const policy = {};
+    document.querySelectorAll('.appr-mode').forEach(sel => {
+      const type = sel.dataset.type, mode = sel.value;
+      const timingSel = document.querySelector(`.appr-timing[data-type="${type}"]`);
+      if (timingSel) timingSel.disabled = (mode === 'none');
+      if (mode !== 'none') policy[type] = { mode, timing: timingSel ? timingSel.value : 'submission' };
+    });
+    const hidden = document.getElementById('in-APPROVAL_POLICY');
+    if (hidden) hidden.value = JSON.stringify(policy);
+  }
+
+  function apprRecheck() { apprLoadHealth(); }
+
+  if (document.getElementById('apprMatrix')) {
+    // Hide the raw JSON textarea cell — the matrix is the editor.
+    const raw = document.getElementById('in-APPROVAL_POLICY');
+    if (raw) { const cell = raw.closest('.settings-grid > div'); if (cell) cell.style.display = 'none'; }
+    apprLoadHealth();
+  }
 </script>
 {% endblock %}

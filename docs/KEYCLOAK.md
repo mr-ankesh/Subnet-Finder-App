@@ -67,6 +67,53 @@ mapper:
 
 ---
 
+## Line-manager approval (the approval flow)
+
+The optional approval flow (Settings → **Approvals**) holds selected request types
+until the requester's **line manager** approves. Routing is relationship-based —
+each request goes to *that requester's* manager, never a single global approver.
+The manager identity comes from a token claim that Keycloak maps from the Azure
+Entra ID `manager` attribute.
+
+**Enabling runs a dependency check** (Settings → Approvals → *Dependency check*). If
+the prerequisites below aren't detected, the feature **auto-disables** and shows
+exactly what's missing. It only becomes active once every check passes.
+
+### Prerequisites
+
+**On Azure Entra ID**
+1. Every requester must have their **Manager** set (Entra → User → Profile →
+   *Manager*). Entra exposes this as the `manager` relationship.
+2. Keycloak's user federation / directory sync must import users **with** the
+   manager attribute, mapped to the manager's **email/UPN** (not the raw object DN)
+   so it can be matched to the manager's login identity.
+
+**On Keycloak**
+1. Realm → your client (or a shared client scope) → **Mappers → Add mapper → By
+   configuration → User Attribute**.
+2. *User Attribute* = the synced manager attribute; **Token Claim Name = `manager`**
+   (must match Settings → Approvals → *Manager token claim*). Claim type: String.
+3. Enable **Add to ID token**, **Add to access token**, and **Add to userinfo**.
+4. Confirm **Auth provider = keycloak** and the SSO connection is filled in.
+5. Sign out and sign in once — the platform records that the `manager` claim is
+   present, which satisfies the final dependency check. (The claim key being present
+   is enough, even if a given user's manager is empty — e.g. the org top.)
+
+### How it behaves once active
+
+- **Per-type policy** (the matrix on the settings page): each request type is
+  *Not required*, *Admin discretion*, or *Required*. Most network changes need none;
+  cost/compute-heavy types (e.g. AKS) are the usual candidates.
+- **Gate timing**: *at submission* (held right after it's raised), *at trigger* (the
+  actual Azure deploy is blocked until approved), or *both*.
+- **Routing**: the requester's line manager is snapshotted onto the ticket at
+  submission. Approvals appear under **Approvals** in the nav for that manager, and
+  on the request detail page. One trigger approval covers a request's whole deploy.
+- **Fallback**: if a requester has no manager on file (or in non-SSO mode), the
+  approval routes to the *Fallback approver email* if set, otherwise to any
+  super-admin — and the ticket is flagged as fallback-routed.
+- **Self-approval** is blocked; the requester can never approve their own request.
+
 ## Step 1 — Keycloak side (admin console)
 
 1. **Realm**: use your existing org realm (e.g. `presight-rnd`) or create one.

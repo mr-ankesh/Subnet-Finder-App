@@ -43,6 +43,7 @@ CATEGORIES = {
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
     "aks":           {"title": "AKS Defaults",         "desc": "Defaults applied to 'AKS Cluster' deployment requests. The requester only chooses VNET/subnet, Kubernetes version and node pool sizing — everything else (network profile, CIDRs, security, upgrade channels) comes from here and can be tuned per environment."},
     "teams":         {"title": "Teams",                "desc": "The requester teams. A team is mandatory when raising a request, and a requester can see every ticket raised by their team."},
+    "approvals":     {"title": "Approvals",            "desc": "Optional approval flow: hold selected request types until the requester's line manager approves. Approval routing relies on the manager attribute flowing from Azure Entra ID into Keycloak and out as a token claim — enabling the feature runs a dependency check and auto-disables if the prerequisites aren't met."},
     "agent":         {"title": "AI Agent / LLM",      "desc": "Provider and model used by the requester & admin chat agents. Changes apply to the next conversation turn — no restart needed."},
     "auth":          {"title": "Authentication",      "desc": "Keycloak-ready SSO configuration. Values are stored now; enforcement ships with the integration (see docs/KEYCLOAK.md for the step-by-step guide) — login stays password-based until then."},
     "safety":        {"title": "Safety",              "desc": "Guard rails for Azure execution."},
@@ -324,6 +325,30 @@ SETTINGS_SPEC = {
                                   help="Access to the subnet allocator ONLY — find/allocate/release subnets. No request processing, Azure actions, Settings or Audit. Admins already have this."),
     "KEYCLOAK_ITADMIN_ROLE":  _f("auth", "IT-admin role", "it-admin",
                                  help="IT team access to the Reachability Tester (run ping/telnet/curl from the ZPA connector VMs). No other portal access. Super-admins already have this."),
+
+    # ── Approvals (line-manager approval flow) ──
+    "APPROVALS_ENABLED":       _f("approvals", "Enable approval flow", "false", type="bool",
+                                  help="Master switch. Turning this on runs a dependency check first — if Entra→Keycloak "
+                                       "manager mapping isn't detected, it auto-disables and shows what's missing."),
+    "APPROVAL_MANAGER_CLAIM":  _f("approvals", "Manager token claim", "manager",
+                                  help="Name of the OIDC token claim that carries the requester's line manager "
+                                       "(preferably the manager's email). Mapped in Keycloak from the Entra 'manager' attribute."),
+    "APPROVAL_FALLBACK_EMAIL": _f("approvals", "Fallback approver email",
+                                  help="Who approves when a requester has no line manager on file (or in non-SSO mode). "
+                                       "Leave blank to route unresolved approvals to any super-admin."),
+    "APPROVAL_PREVENT_SELF":   _f("approvals", "Prevent self-approval", "true", type="bool",
+                                  help="Stops the requester (and the deploying admin) from approving their own request, "
+                                       "even if they would otherwise be the assigned approver."),
+    "APPROVAL_DEFAULT_TIMING": _f("approvals", "Default gate timing", "submission",
+                                  options=["submission", "trigger", "both"],
+                                  help="When approval is enforced for a 'Required' type unless overridden per type. "
+                                       "submission = held right after it's raised; trigger = the actual Azure deploy is "
+                                       "blocked until approved; both = held at submission and re-checked at deploy."),
+    # Per-request-type policy, stored as JSON: {type: {mode, timing}}. Edited via the
+    # matrix on the settings page — mode ∈ none|discretion|required, timing ∈ submission|trigger|both.
+    "APPROVAL_POLICY":         _f("approvals", "Per-type policy (JSON)", "", multiline=True,
+                                  help="Advanced: raw JSON of the per-type approval policy. Normally edited with the "
+                                       "matrix above — every type defaults to 'Not required'."),
 
     # ── Safety ──
     "AZURE_DRY_RUN": _f("safety", "Dry-run mode (simulate Azure changes)", "true", type="bool",

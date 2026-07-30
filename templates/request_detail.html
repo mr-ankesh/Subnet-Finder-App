@@ -22,6 +22,9 @@
 
 <div style="max-width:1100px;margin:0 auto;padding:28px 40px 48px;">
 
+  <!-- Approval flow panel (populated by JS; hidden when the feature is off) -->
+  <div id="approvalPanel" data-req="{{ req.id }}" style="display:none;margin-bottom:20px;"></div>
+
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px;">
 
     <!-- Request Info -->
@@ -2126,5 +2129,90 @@ async function updateStatus(newStatus) {
     msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent='Network error.';
   }
 }
+
+// ── Approval flow panel ────────────────────────────────────────────────────
+const IS_ADMIN_VIEW = {{ 'true' if is_admin else 'false' }};
+function apprEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function loadApprovalPanel() {
+  const box = document.getElementById('approvalPanel');
+  if (!box) return;
+  const reqId = box.dataset.req;
+  let d;
+  try { d = await (await fetch(`/api/admin/requests/${reqId}/approvals`)).json(); }
+  catch(e){ return; }
+  if (!d.enabled) return;                       // feature off → stay hidden
+  const pol = d.policy || {};
+  const apprs = d.approvals || [];
+  const pending = apprs.find(a => a.status === 'pending');
+  // Nothing to show for a 'none' type with no history.
+  if (pol.mode === 'none' && !apprs.length) return;
+
+  let head, color, body = '';
+  if (pending) { head = 'Awaiting approval'; color = '#f59e0b'; }
+  else if (apprs.some(a => a.status === 'rejected')) { head = 'Approval rejected'; color = '#f87171'; }
+  else if (apprs.some(a => a.status === 'approved')) { head = 'Approved'; color = '#4ade80'; }
+  else { head = 'Approval', color = '#60a5fa'; }
+
+  // History rows
+  body += apprs.map(a => {
+    const badge = a.status === 'approved' ? '#4ade80' : a.status === 'rejected' ? '#f87171' : '#f59e0b';
+    const gate = a.gate === 'trigger' ? 'deployment' : 'submission';
+    return `<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12.5px;padding:6px 0;border-top:1px solid rgba(255,255,255,.06);">
+      <span><span style="color:${badge};font-weight:600;text-transform:capitalize;">${apprEsc(a.status)}</span>
+        · ${apprEsc(gate)} gate · approver: ${apprEsc(a.assigned_to_name||'super-admin')}${a.assigned_via==='fallback'?' (fallback)':''}</span>
+      <span style="color:var(--text-muted);">${a.decided_by?('by '+apprEsc(a.decided_by)+' · '+apprEsc(a.decided_at)) : apprEsc(a.requested_at)}</span>
+      ${a.decision_reason?`<div style="width:100%;color:var(--text-muted);">Reason: ${apprEsc(a.decision_reason)}</div>`:''}
+    </div>`;
+  }).join('');
+
+  // Actions
+  let actions = '';
+  if (pending && pending.can_decide) {
+    actions = `<div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn btn-glass" style="color:#f87171;border-color:rgba(248,113,113,.4);" onclick="detailDecide(${pending.id},'reject')"><i class="bi bi-x-lg"></i> Reject</button>
+      <button class="btn btn-glow" onclick="detailDecide(${pending.id},'approve')"><i class="bi bi-check-lg"></i> Approve</button>
+    </div>`;
+  } else if (pending) {
+    actions = `<div style="margin-top:10px;font-size:12.5px;color:var(--text-muted);"><i class="bi bi-hourglass-split"></i> Waiting on ${apprEsc(pending.assigned_to_name||'the approver')}.</div>`;
+  } else if (IS_ADMIN_VIEW && pol.mode === 'discretion' && !apprs.some(a=>a.status==='approved')) {
+    actions = `<div style="margin-top:12px;"><button class="btn btn-glass" onclick="detailSendApproval(${reqId})"><i class="bi bi-send"></i> Send for approval</button>
+      <span style="font-size:11.5px;color:var(--text-muted);margin-left:6px;">Route this request to the requester's line manager.</span></div>`;
+  }
+
+  box.style.display = 'block';
+  box.innerHTML = `<div class="glass-card"><div class="card-header-bar" style="border-left:3px solid ${color};"><i class="bi bi-check2-square"></i> Approval — <span style="color:${color};">${apprEsc(head)}</span></div>
+    <div class="card-body-pad">${body || '<div style="color:var(--text-muted);font-size:12.5px;">No approval activity yet.</div>'}${actions}</div></div>`;
+}
+
+async function detailDecide(id, decision) {
+  let reason = '';
+  if (decision === 'reject') {
+    reason = (prompt('Reason for rejection (required):') || '').trim();
+    if (!reason) { return; }
+  } else {
+    reason = (prompt('Optional note for the requester:') || '').trim();
+  }
+  try {
+    const r = await fetch(`/api/approvals/${id}/decide`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ decision, reason }) });
+    const d = await r.json();
+    if (!r.ok || !d.success) { alert(d.error || 'Failed.'); return; }
+    location.reload();
+  } catch(e){ alert('Failed: ' + e); }
+}
+
+async function detailSendApproval(reqId) {
+  if (!confirm("Send this request to the requester's line manager for approval?")) return;
+  try {
+    const r = await fetch(`/api/admin/requests/${reqId}/request-approval`, { method:'POST' });
+    const d = await r.json();
+    if (!r.ok || !d.success) { alert(d.error || 'Failed.'); return; }
+    location.reload();
+  } catch(e){ alert('Failed: ' + e); }
+}
+
+loadApprovalPanel();
 </script>
 {% endblock %}

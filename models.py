@@ -32,6 +32,8 @@ class RequestStatus:
     AKS_DEPLOYED      = "AKS_DEPLOYED"
     COMPLETED         = "COMPLETED"
     REJECTED          = "REJECTED"
+    # Approval flow: request held until the requester's line manager approves.
+    PENDING_APPROVAL  = "PENDING_APPROVAL"
 
     # Ordered workflow steps (not including CANCELLED)
     # Active workflow order. HUB_INTEGRATION_NEEDED is retired (kept as a constant
@@ -67,6 +69,7 @@ class RequestStatus:
         AKS_DEPLOYED:                "Cluster Deployed",
         COMPLETED:                   "Completed",
         REJECTED:                    "Rejected",
+        PENDING_APPROVAL:            "Pending Approval",
     }
 
     _COLORS = {
@@ -91,6 +94,7 @@ class RequestStatus:
         AKS_DEPLOYED:                "primary",
         COMPLETED:                   "success",
         REJECTED:                    "danger",
+        PENDING_APPROVAL:            "warning",
     }
 
     @classmethod
@@ -236,6 +240,8 @@ class SpokeRequest(db.Model):
     status           = db.Column(db.String(40),  nullable=False, default=RequestStatus.CIDR_REQUESTED)
     allocated_subnet = db.Column(db.String(50),  nullable=True)
     notes            = db.Column(db.Text,        nullable=True)
+    # Approval-flow cache: not_required | pending | approved | rejected
+    approval_state   = db.Column(db.String(20),  nullable=False, default="not_required")
     created_at       = db.Column(db.DateTime,    default=datetime.utcnow)
     updated_at       = db.Column(db.DateTime,    default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -289,6 +295,47 @@ class SpokeRequest(db.Model):
             "notes":            self.notes,
             "created_at":       self.created_at.strftime("%Y-%m-%d %H:%M") if self.created_at else "",
             "updated_at":       self.updated_at.strftime("%Y-%m-%d %H:%M") if self.updated_at else "",
+            "approval_state":   self.approval_state or "not_required",
+        }
+
+
+class Approval(db.Model):
+    """A single approval checkpoint on a request — routed to the requester's line
+    manager. A request can have a submission-gate approval and/or one trigger-gate
+    approval per deploy action."""
+    __tablename__ = "approvals"
+
+    id                = db.Column(db.Integer, primary_key=True)
+    request_id        = db.Column(db.Integer, db.ForeignKey("spoke_requests.id"), index=True, nullable=False)
+    gate              = db.Column(db.String(20),  nullable=False, default="submission")  # submission | trigger
+    action_key        = db.Column(db.String(60),  nullable=True)   # which deploy step (trigger gate only)
+    status            = db.Column(db.String(20),  nullable=False, default="pending")     # pending|approved|rejected|cancelled|consumed
+    requested_by      = db.Column(db.String(200), nullable=True)   # requester name/email
+    requested_at      = db.Column(db.DateTime,    default=datetime.utcnow)
+    # Snapshot of the assigned approver at the time the checkpoint opened.
+    assigned_to_email = db.Column(db.String(200), nullable=True)
+    assigned_to_name  = db.Column(db.String(200), nullable=True)
+    assigned_via      = db.Column(db.String(20),  nullable=False, default="manager")     # manager | fallback
+    decided_by        = db.Column(db.String(200), nullable=True)
+    decided_at        = db.Column(db.DateTime,    nullable=True)
+    decision_reason   = db.Column(db.Text,        nullable=True)
+    created_at        = db.Column(db.DateTime,    default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id":                self.id,
+            "request_id":        self.request_id,
+            "gate":              self.gate,
+            "action_key":        self.action_key,
+            "status":            self.status,
+            "requested_by":      self.requested_by,
+            "requested_at":      self.requested_at.strftime("%Y-%m-%d %H:%M") if self.requested_at else "",
+            "assigned_to_email": self.assigned_to_email,
+            "assigned_to_name":  self.assigned_to_name,
+            "assigned_via":      self.assigned_via,
+            "decided_by":        self.decided_by,
+            "decided_at":        self.decided_at.strftime("%Y-%m-%d %H:%M") if self.decided_at else "",
+            "decision_reason":   self.decision_reason,
         }
 
 

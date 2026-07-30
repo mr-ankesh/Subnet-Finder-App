@@ -100,6 +100,32 @@ def groups_from_token(token: dict) -> list:
     return out
 
 
+def manager_from_token(token: dict) -> tuple:
+    """The requester's line manager from the configured claim (ID + access token +
+    userinfo). Returns (present, value): `present` is True when the claim KEY exists
+    in any source — even empty — which proves the Keycloak mapper fired (the approval
+    dependency check relies on this). `value` is the manager's email/identifier.
+
+    Handles a plain string, a list (first entry), or an object (email/mail/username)."""
+    claim = (cfg.APPROVAL_MANAGER_CLAIM or "manager").strip()
+    present, value = False, ""
+    for src in (token.get("userinfo") or {},
+                _decode_jwt_payload(token.get("id_token", "") or ""),
+                _decode_jwt_payload(token.get("access_token", "") or "")):
+        if not isinstance(src, dict) or claim not in src:
+            continue
+        present = True
+        raw = src.get(claim)
+        if isinstance(raw, list):
+            raw = raw[0] if raw else ""
+        if isinstance(raw, dict):
+            raw = raw.get("email") or raw.get("mail") or raw.get("preferred_username") or raw.get("username") or ""
+        raw = str(raw or "").strip()
+        if raw and not value:
+            value = raw
+    return present, value
+
+
 def test_connection() -> dict:
     """
     Diagnose SSO reachability by fetching the OIDC discovery document — the
