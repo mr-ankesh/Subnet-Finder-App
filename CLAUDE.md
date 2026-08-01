@@ -16,6 +16,35 @@ Read `docs/HOW_IT_WORKS.md` first for the actual request-lifecycle and Azure
 execution model — it's short and answers most "why is this built this way"
 questions better than re-deriving them from code.
 
+## Session Memory Protocol
+
+This repo maintains a `.memory/` directory as a persistent project-memory and
+progress-tracking system, separate from this architecture guide. **Memory
+maintenance is mandatory and part of the definition of done** — no feature
+or fix is complete until the relevant `.memory/` files reflect it.
+
+**At the start of every session**, read (in this order):
+1. `.memory/project-overview.md`
+2. `.memory/current-state.md`
+3. `.memory/next-actions.md`
+4. The latest file in `.memory/daily/` (most recent `YYYY-MM-DD.md`)
+
+**At the end of every session** (or immediately after finishing a feature —
+don't wait for session end if the feature is done sooner):
+1. Update `.memory/current-state.md` (completed / in-progress / pending / blockers)
+2. Update `.memory/next-actions.md` (remove completed items, add new ones, keep prioritized)
+3. Update (or create) today's `.memory/daily/YYYY-MM-DD.md`
+4. Add an entry to `.memory/architecture-decisions.md` if a significant
+   decision was made (append-only — never delete or rewrite past entries)
+5. Update `.memory/known-issues.md` / `.memory/feature-roadmap.md` if scope changed
+6. Roll up into `.memory/weekly/YYYY-Www.md` / `.memory/monthly/YYYY-MM.md`
+   when a week/month completes
+
+Rules: keep entries concise and bulleted; never delete historical
+daily/weekly/monthly records (archive, don't remove); another Claude session
+must be able to resume work using only the `.memory/` directory plus this
+file.
+
 ## Local dev vs. production — not the same stack
 
 These two environments differ in backend **and** auth, not just config values,
@@ -207,14 +236,103 @@ from agent code. `chats.py` persists conversations across sessions/devices.
 
 `models.py` defines `RequestType` (`vnet_new`, `firewall_policy`,
 `hub_integration`, `zpa_rnd_routing`, `zpa_other_routing`, `zpa_nmo_routing`,
-`subnet_additional`, `vnet_decommission`, `dns`, `aks_cluster`,
+`subnet_additional`, `vnet_decommission`, `dns`, `aks_cluster`, `vm_create`,
 `network_issue`, `other`) and `RequestStatus` (VNET-specific states like
 `CIDR_ASSIGNED`/`HUB_INTEGRATED` plus generic per-type states like
 `IN_REVIEW`/`RULE_IMPLEMENTED`/`FW_RULES_UPDATED`). Status advances only from
 completed portal actions (never manually), except a manual-completion escape
 hatch for out-of-band work, which requires a mandatory note. Cancel/Reject
 walks the audit trail and reverts every deployed change in dependency-safe
-order.
+order. `vm_create` is the one exception to "status advances from a single
+completed action" — see below, its completion is per-VM-plan-item, not
+per-action.
+
+### VM(s) request: the one type with N Azure mutations per action
+
+`vm_create` deploys 1–N VMs per request. Every other type maps one portal
+action to one Azure mutation; this one maps a single "Deploy" click to N
+independent VM creations, so several pieces work differently from the rest of
+the app:
+
+- **Live Azure lookups** (`azure_tools.list_vm_skus` / `list_vm_images` /
+  `list_disk_skus` / `list_vm_zones` / `check_vm_quota`, exposed as
+  `/api/azure/vm-skus|vm-images|disk-skus|vm-zones|vm-quota`) are
+  requester-accessible (`@require_login`, not admin-only — the requester needs
+  them before submitting) and return `{ok, data, error}`, never a 500: an
+  Azure failure is a normal "form falls back to free text" outcome, not a
+  server error. Subscription/region come only from the request body — these
+  routes never fall back to a configured hub/spoke subscription, so a
+  requester can't enumerate resources without typing one in themselves.
+- **Multi-VM naming**: the requester types a base name; deploy always appends
+  `-001`, `-002`… zero-padded to `VM_NAME_SUFFIX_DIGITS` (Settings → VM
+  Defaults), even for a single VM, so a later request against the same base is
+  never ambiguous. `azure_tools.list_existing_vm_indexes()` scans the target
+  RG's VM **and** NIC **and** disk names (not just VMs — an orphaned NIC/disk
+  from a previously failed deploy collides just as hard) to skip past every
+  taken index before assigning new ones.
+- **`details["vm_plan"]`** — `[{name, computer_name, zone, nic, os_disk,
+  data_disks, status, resource_ids, error}, …]` — is resolved and persisted
+  **once**, at first preview (`azure_tools.build_vm_plan()`, called from
+  `app._vm_preview()`); re-opening the preview never reshuffles names or
+  zones already committed. Windows `computer_name` is derived separately from
+  the VM's resource name (`derive_windows_computer_name()`) — Windows' 15-char
+  limit is independent of, and much tighter than, the 64-char Azure
+  resource-name limit the base name itself is validated against at submit.
+- **Admin preview → deploy**: `vm_check`/`vm_deploy` are actions in the shared
+  `/api/admin/azure-action` dispatcher — the same one every other type uses,
+  no parallel endpoint. `vm_check` resolves/refreshes the plan without
+  creating anything; `vm_deploy` loops the plan's still-pending VMs through
+  `azure_tools.create_vm()`: RG → NIC (no public IP, ever; no NSG created —
+  the subnet's own applies) → **one** VM-creation call with named, inline
+  OS/data disks. A separately pre-created disk later `Attach`-ed to the VM
+  would never go through Azure's guest-OS provisioning agent, so a custom
+  disk name and correct computer-name/SSH-key/password provisioning can only
+  coexist by declaring the disks inside the VM's own creation call — see
+  `create_vm()`'s docstring.
+- **Resumable deploy**: a VM already `status: created` is skipped on
+  re-deploy; a failure stops the loop (no rollback of VMs that already
+  succeeded) and persists progress after *every* VM, not just at the end, so
+  a mid-loop crash still reflects what actually happened. `_auto_advance()`
+  has a bespoke `VM_CREATE` branch reading `vm_plan` directly — unlike every
+  other type's generic audit-derived done/required set comparison — and
+  completes only once every plan item is `created`.
+- **Per-VM change ledger**: each successful `create_vm()` gets its own
+  `changes.record()` entry with `revert_op="delete_vm"` — reverting one VM
+  never touches the others. `delete_vm()` is a single VM-delete call: the NIC
+  and every disk were tagged `delete_option="Delete"` at creation, so Azure
+  cascades the cleanup itself, never touching the subnet, its NSG, or
+  anything else this portal didn't create.
+- **Quota**: checked at submit (informational — a warning shown in the form,
+  never a submit gate) and again immediately before the deploy loop (a
+  **hard** block there, scoped to only the pending/failed VMs, not the
+  original full count). No caching — `check_vm_quota()` hits Azure's live
+  `usages.list()` every time, since headroom moves while a request sits.
+- **`zones: null` is a deliberate, preserved signal, not a bug.** The generic
+  `details = {k: v for k, v in … if v not in (None, "")}` line at the top of
+  `_create_service_request()` (shared by every non-VNET type) strips `None`
+  values, which would otherwise turn "this SKU has no zone support" into the
+  same thing as "the requester left zones blank." `_create_service_request`
+  captures whether `zones` was explicitly `None` *before* that filter runs and
+  re-injects it after, so the distinction survives into the stored `details`
+  JSON as an auditable record.
+- **`app._cached_vm_skus()`** memoizes `list_vm_skus`'s 1000+-entry scan using
+  Flask's `g` — thread-local, cleared after every request. This is
+  deliberately **not** a module-level cache: prod runs 3 replicas, and
+  anything that outlives one request could go stale or diverge between pods
+  (see the local-vs-prod table above). It only avoids re-scanning when the
+  *same* incoming request needs SKU data more than once.
+- **Password handling**: `VM_REQUIRE_SSH_KEY` (default on) hides password
+  auth from the form entirely; when it's off, the requester still never types
+  a password — only `auth_mode: "password"` is recorded. The admin enters the
+  actual password in the deploy panel, and it travels exactly one hop (the
+  `vm_deploy` request body → `create_vm()`'s one API call) — never written to
+  `details`, `audit_log`, or `change_log`, and never appears in a `create_vm()`
+  return message. `azure_tools._guard` (the shared dry-run decorator every
+  mutating function uses) excludes any kwarg whose name contains
+  `password`/`secret`/`key`/`token`/`credential` from its dry-run log line and
+  simulated response — a real leak path caught before it shipped: without
+  this, a dry-run deploy would have echoed the admin's password straight into
+  the audit trail's `data` column via `_audit_azure()`.
 
 ### Budget alerts: forecast-gated, not raw-threshold
 
@@ -287,3 +405,13 @@ scroll FPS on AKS — don't reintroduce those patterns.
   a future GPU-utilization dashboard + optimizer finding (DCGM exporter +
   Managed Prometheus pipeline). Nothing in the current codebase implements
   this; treat it as a spec to build toward, not existing behavior.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

@@ -515,6 +515,135 @@
         </script>
         {% endif %}
 
+        {# ── VM(s) deploy ── #}
+        {% if rtype == 'vm_create' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        {% set vd = req.get_details() %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-pc-display"></i> VM Deployment</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;font-family:var(--mono);line-height:1.6;">
+            {{ vd.get('vm_base_name') }} × {{ vd.get('vm_count') }} @ {{ vd.get('resource_group') }} ({{ vd.get('region') or 'uaenorth' }})<br>
+            VNET {{ vd.get('vnet_name') }} / subnet {{ vd.get('subnet_name') }}<br>
+            {{ vd.get('vm_size') }} · {{ vd.get('os_image') or '(default image)' }} · {{ vd.get('os_disk_type') }} OS disk<br>
+            Auth: {{ 'SSH key' if vd.get('auth_mode') == 'ssh_key' else 'Password (entered at deploy time)' }}
+          </div>
+          <button class="btn btn-glass w-100 mb-2" onclick="vmCheckPlan(this)">
+            <i class="bi bi-clipboard-pulse me-2"></i>1 · Check / Refresh Plan
+          </button>
+          <div id="vmPlanBox" style="display:none;margin-bottom:10px;"></div>
+          {% if vd.get('auth_mode') == 'password' %}
+          <div style="margin-bottom:10px;">
+            <label class="aks-ov-lbl">Admin password (this deploy only — never stored)</label>
+            <input type="password" id="vmAdminPassword" class="aks-ov" autocomplete="new-password"
+                  placeholder="Set the initial password for these VMs">
+            <div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">
+              Entered here only — never written to this request, the audit trail, or the change ledger.
+            </div>
+          </div>
+          {% endif %}
+          <button class="btn btn-glow w-100" onclick="vmDeploy(this)">
+            <i class="bi bi-rocket-takeoff me-2"></i>2 · Deploy Pending VM(s)
+          </button>
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            Step 1 resolves (once) and shows the exact name, computer name, zone, NIC and disk names
+            for every VM, plus the live quota check — nothing is created until you click Deploy.
+            Deploy is <strong>resumable</strong>: VMs already created are skipped automatically, so a
+            partial failure only needs a re-click to retry what's left. A failure stops the batch
+            without rolling back the VMs that already succeeded — each has its own entry in the
+            change ledger and can be reverted independently.
+          </div>
+          <div id="actionResults" style="display:none;margin-top:10px;"></div>
+        </div>
+        <script>
+          const VM_REQ_AUTH_MODE = {{ (vd.get('auth_mode') or 'ssh_key')|tojson }};
+
+          function vmStatusStyle(st) {
+            if (st === 'created') return { c: '#7edb56', i: 'check-circle-fill' };
+            if (st === 'failed') return { c: '#f87171', i: 'x-circle-fill' };
+            return { c: '#f59e0b', i: 'hourglass-split' };   // pending
+          }
+
+          function vmRenderPlan(d) {
+            const box = document.getElementById('vmPlanBox');
+            box.style.display = 'block';
+            if (d.error) {
+              box.innerHTML = `<div style="border:1px solid #f8717166;background:rgba(248,113,113,.08);border-radius:10px;padding:12px 14px;font-size:13px;color:#f87171;">${d.error.replace(/</g,'&lt;')}</div>`;
+              return;
+            }
+            const plan = d.plan || [];
+            let rows = plan.map(p => {
+              const s = vmStatusStyle(p.status);
+              const disks = (p.data_disks || []).join(', ') || 'none';
+              return `<div style="border:1px solid ${s.c}55;background:${s.c}0f;border-radius:8px;padding:8px 10px;margin-bottom:6px;font-family:var(--mono);font-size:11.5px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <span style="color:${s.c};font-weight:700;"><i class="bi bi-${s.i} me-1"></i>${p.name}</span>
+                  <span style="color:var(--text-muted);text-transform:uppercase;font-size:10px;">${p.status}</span>
+                </div>
+                <div style="color:var(--text-dim);margin-top:3px;">
+                  computer name: ${p.computer_name} · zone: ${p.zone || 'none'}<br>
+                  nic: ${p.nic} · os disk: ${p.os_disk} · data disks: ${disks}
+                </div>
+                ${p.error ? `<div style="color:#f87171;margin-top:3px;">${p.error.replace(/</g,'&lt;')}</div>` : ''}
+              </div>`;
+            }).join('');
+            let quotaHtml = '';
+            if (d.quota) {
+              const q = d.quota;
+              const avail = q.checks && q.checks.length ? Math.min(...q.checks.map(c => c.available)) : '?';
+              const qc = q.fits ? '#7edb56' : '#f59e0b';
+              quotaHtml = `<div style="font-size:11.5px;color:${qc};margin-bottom:8px;"><i class="bi bi-speedometer2 me-1"></i>Requested ${q.requested_vcpus} vCPU / available ${avail} vCPU${q.fits ? '' : ' — exceeds current quota'}</div>`;
+            }
+            box.innerHTML = quotaHtml + rows +
+              `<div style="font-size:10.5px;color:var(--text-muted);margin-top:6px;">${d.pending_count} of ${d.total_count} still pending.</div>`;
+          }
+
+          async function vmCheckPlan(btn) {
+            const orig = btn ? btn.innerHTML : null;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Checking…'; }
+            try {
+              const d = await (await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'vm_check' }) })).json();
+              vmRenderPlan(d);
+            } catch (e) {
+              document.getElementById('vmPlanBox').style.display = 'block';
+              document.getElementById('vmPlanBox').innerHTML = '<div style="color:#f87171;font-size:12px;">Network error while checking.</div>';
+            }
+            if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+          }
+
+          async function vmDeploy(btn) {
+            const extra = {};
+            if (VM_REQ_AUTH_MODE === 'password') {
+              const pw = document.getElementById('vmAdminPassword').value;
+              if (!pw) { alert('Enter the admin password for these VMs first.'); return; }
+              extra.admin_password = pw;
+            }
+            const orig = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Deploying…';
+            const box = document.getElementById('actionResults');
+            box.style.display = 'block';
+            box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Deploying — this can take a little while per VM…</span>';
+            try {
+              const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'vm_deploy', ...extra }) });
+              const d = await resp.json();
+              if (VM_REQ_AUTH_MODE === 'password') document.getElementById('vmAdminPassword').value = '';
+              vmRenderPlan(d);
+              const color = d.success ? '#7edb56' : '#f59e0b';
+              box.innerHTML = `<span style="font-size:12px;color:${color};">${(d.error || d.message || '').replace(/</g,'&lt;')}</span>`;
+              if (d.success) setTimeout(() => location.reload(), 1800);
+            } catch (e) {
+              box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+            }
+            btn.disabled = false; btn.innerHTML = orig;
+          }
+        </script>
+        {% endif %}
+
         {# ── Network issue diagnosis ── #}
         {% if rtype == 'network_issue' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
         {% set ni = req.get_details() %}

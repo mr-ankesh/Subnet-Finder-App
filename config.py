@@ -26,6 +26,12 @@ AKS_FALLBACK_SIZES = ["Standard_D8ds_v5", "Standard_D4ds_v5",
 # The organisation-standard region shown to requesters (UAE North).
 AKS_STANDARD_REGION = "uaenorth"
 
+# Managed-disk SKUs legal as a VM's OS disk (Azure rejects PremiumV2_LRS/
+# UltraSSD_LRS there — those are data-disk-only). Data disks get the full set,
+# filtered further to what the chosen VM SKU actually supports (list_disk_skus).
+VM_OS_DISK_TYPES = ["Standard_LRS", "StandardSSD_LRS", "Premium_LRS"]
+VM_DATA_DISK_TYPES = VM_OS_DISK_TYPES + ["PremiumV2_LRS", "UltraSSD_LRS"]
+
 
 # ── UI categories (tab order) ───────────────────────────────────────────────
 
@@ -42,6 +48,7 @@ CATEGORIES = {
     "naming":        {"title": "Naming Conventions",  "desc": "Templates for generated resource names. Placeholders: {vnet} {request_id} {region} {cidr_mask} {purpose} {date}. Global prefix/suffix are joined with '-'."},
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
     "aks":           {"title": "AKS Defaults",         "desc": "Defaults applied to 'AKS Cluster' deployment requests. The requester only chooses VNET/subnet, Kubernetes version and node pool sizing — everything else (network profile, CIDRs, security, upgrade channels) comes from here and can be tuned per environment."},
+    "vm":            {"title": "VM Defaults",          "desc": "Defaults and guard rails applied to 'Virtual Machine(s)' deployment requests — max VMs per request, curated image list, disk/naming defaults, and whether password auth is offered at all (SSH keys are the default and recommended everywhere)."},
     "teams":         {"title": "Teams",                "desc": "The requester teams. A team is mandatory when raising a request, and a requester can see every ticket raised by their team."},
     "approvals":     {"title": "Approvals",            "desc": "Optional approval flow: hold selected request types until the requester's line manager approves. Approval routing relies on the manager attribute flowing from Azure Entra ID into Keycloak and out as a token claim — enabling the feature runs a dependency check and auto-disables if the prerequisites aren't met."},
     "agent":         {"title": "AI Agent / LLM",      "desc": "Provider and model used by the requester & admin chat agents. Changes apply to the next conversation turn — no restart needed."},
@@ -286,6 +293,45 @@ SETTINGS_SPEC = {
                                    options=["patch", "stable", "rapid", "node-image", "none"]),
     "AKS_NODE_OS_UPGRADE_CHANNEL": _f("aks", "Node OS upgrade channel", "SecurityPatch",
                                       options=["SecurityPatch", "NodeImage", "None", "Unmanaged"]),
+
+    # ── VM Defaults ──
+    # SKUs, images, disk types and zones are fetched live from Azure per request
+    # (subscription + region scoped), so only guard rails and fallbacks live here.
+    "VM_MAX_PER_REQUEST":       _f("vm", "Max VMs per request", "10", type="int",
+                                   help="Upper bound on the VM count field in the request form."),
+    "VM_DEFAULT_REGION":        _f("vm", "Default region", AKS_STANDARD_REGION,
+                                   help="Region pre-selected for new VM requests. A justification is required "
+                                        "to deploy outside this region."),
+    "VM_ALLOWED_SKU_FAMILIES":  _f("vm", "Allowed SKU families",
+                                   help="Comma-separated SKU family prefixes to allow in the size picker "
+                                        "(e.g. 'Standard_D,Standard_E'). Blank = every family Azure returns "
+                                        "for the chosen subscription/region."),
+    "VM_DEFAULT_IMAGES":        _f("vm", "Curated image list", multiline=True,
+                                   default="Canonical:ubuntu-24_04-lts:server\n"
+                                           "Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2\n"
+                                           "MicrosoftWindowsServer:WindowsServer:2025-datacenter-azure-edition\n"
+                                           "MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition",
+                                   help="One 'publisher:offer:sku' per line (or comma-separated), shown as "
+                                        "quick picks in the image dropdown — each resolves to its latest "
+                                        "version at deploy time. The requester can also type an explicit "
+                                        "'publisher:offer:sku:version' to override."),
+    "VM_DEFAULT_OS_DISK_TYPE":  _f("vm", "Default OS disk type", "Premium_LRS",
+                                   options=VM_OS_DISK_TYPES,
+                                   help="PremiumV2_LRS/UltraSSD_LRS are data-disk-only in Azure, so they're not "
+                                        "offered here."),
+    "VM_DEFAULT_OS_DISK_SIZE_GB": _f("vm", "Default OS disk size (GB)", "128", type="int"),
+    "VM_NAME_SUFFIX_DIGITS":    _f("vm", "Name suffix digits", "3", type="int",
+                                   help="Zero-padded numeric suffix width for multi-VM names, e.g. 3 -> '-001'."),
+    "VM_NAME_ALWAYS_SUFFIXED":  _f("vm", "Always suffix VM names", "true", type="bool",
+                                   help="When on (recommended), even a single VM gets the '-001' suffix so a "
+                                        "later request against the same base name is predictable. When off, a "
+                                        "count-of-1 request is left unsuffixed."),
+    "VM_REQUIRE_SSH_KEY":       _f("vm", "Require SSH key (no password auth)", "true", type="bool",
+                                   help="When on, password auth isn't offered at all — every VM request uses an "
+                                        "SSH public key. When off, requesters may choose password auth, but the "
+                                        "password itself is still never captured from them: the admin sets it "
+                                        "once at deploy time, and it is never written to the request, the audit "
+                                        "trail or the change ledger."),
 
     # ── AI Agent / LLM ──
     "AGENT_PROVIDER":     _f("agent", "Provider", "anthropic",

@@ -11,6 +11,17 @@
   .deploy-opt input { accent-color:#00BCF2; flex-shrink:0; }
   .deploy-opt:has(input:checked) { border-color:#00BCF2; background:rgba(0,120,212,.12); color:#fff; }
   .deploy-opt small { color:rgba(255,255,255,.45); }
+  .vm-sku-dropdown { position:absolute; z-index:20; left:0; right:0; top:100%; margin-top:2px;
+    max-height:280px; overflow-y:auto; background:#14181f; border:1px solid rgba(255,255,255,.15);
+    border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+  .vm-sku-group { padding:6px 12px 3px; font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.5px; color:#00BCF2; background:rgba(0,188,242,.05); position:sticky; top:0; }
+  .vm-sku-option { padding:6px 12px; font-size:12px; color:rgba(255,255,255,.85); cursor:pointer;
+    display:flex; justify-content:space-between; gap:10px; align-items:center; }
+  .vm-sku-option:hover { background:rgba(0,120,212,.15); }
+  .vm-sku-name { font-weight:600; white-space:nowrap; }
+  .vm-sku-specs { font-size:10.5px; color:rgba(255,255,255,.5); white-space:nowrap; }
+  .vm-sku-empty { padding:10px 12px; font-size:12px; color:rgba(255,255,255,.5); }
 </style>
 <div class="page-hero" style="position:relative;overflow:hidden;">
   <video class="p-hero-video" autoplay muted loop playsinline preload="auto"
@@ -905,6 +916,222 @@
                   </div>
                 </div>
 
+                <!-- ── Virtual Machine(s) ── -->
+                <div class="col-12 type-section" id="section-vm_create" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <div style="background:rgba(126,219,86,.06);border:1px solid rgba(126,219,86,.25);border-radius:10px;padding:12px;">
+                        <div style="font-size:12px;color:#7edb56;font-weight:600;margin-bottom:6px;"><i class="bi bi-magic me-1"></i>Auto-name your resources (optional)</div>
+                        <div style="font-size:11px;color:rgba(255,255,255,.6);margin-bottom:10px;line-height:1.6;">
+                          Enter a <strong>project</strong> and <strong>environment</strong> and we'll name the VM base name and resource group using
+                          <code>&lt;type&gt;-&lt;project&gt;-&lt;env&gt;-prs-aen-001</code> — e.g. project <code>g100</code>, env <code>dev</code> →
+                          VM base <code>vm-g100-dev-prs-aen-001</code>, RG <code>rg-g100-dev-prs-aen-001</code>. You can still edit them.
+                        </div>
+                        <div class="row g-2">
+                          <div class="col-md-4"><label class="form-label-custom">Project *</label><input type="text" class="form-input-custom" data-detail="project" id="vm_proj" placeholder="e.g. g100"></div>
+                          <div class="col-md-4"><label class="form-label-custom">Environment *</label><input type="text" class="form-input-custom" data-detail="env" id="vm_env" placeholder="e.g. dev"></div>
+                          <div class="col-md-4" style="display:flex;align-items:flex-end;"><button type="button" class="btn-secondary-custom" style="width:100%;" onclick="vmGenerateNames()"><i class="bi bi-arrow-repeat me-1"></i>Generate names</button></div>
+                        </div>
+                        <div class="row g-2" style="margin-top:6px;">
+                          <div class="col-md-4"><label class="form-label-custom">Owner email *</label>
+                            <input type="email" class="form-input-custom" data-detail="owner_email" placeholder="owner@presight.ai"></div>
+                          <div class="col-md-4"><label class="form-label-custom">Criticality *</label>
+                            <select class="form-input-custom" data-detail="criticality">
+                              <option value="">— select —</option><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option>
+                            </select>
+                          </div>
+                          <div class="col-12 field-help">Tagged on every VM created: owner (owner email), requester (your email), project, env, criticality, creator (the deploying admin).</div>
+                        </div>
+                        <div id="vmNameMsg" style="font-size:11px;color:#7edb56;margin-top:6px;"></div>
+                      </div>
+                    </div>
+
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VM Base Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="vm_base_name" maxlength="{{ 64 - 1 - vm_defaults.suffix_digits }}" placeholder="vm-g100-dev-prs-aen">
+                      <div class="field-help">Max {{ 64 - 1 - vm_defaults.suffix_digits }} characters — reserves room for the <code style="color:#00BCF2;">-{{ '0' * vm_defaults.suffix_digits }}</code> suffix (always added, even for a single VM). This is the Azure <em>resource</em> name; on Windows images the in-guest computer name is separately derived and truncated to 15 characters once you pick an image, shown per VM before deploy. If this base name was already used, the admin continues from the next free number.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">VM Count *</label>
+                      <input type="number" class="form-input-custom" data-detail="vm_count" min="1" max="{{ vm_defaults.max_count }}" value="1" oninput="vmUpdateQuota()">
+                      <div class="field-help">Up to {{ vm_defaults.max_count }} VMs per request (Settings → VM Defaults).</div>
+                    </div>
+                    <div class="col-12" id="vmQuotaBox" style="display:none;font-size:11.5px;border:1px solid var(--border);border-radius:8px;padding:8px 12px;"></div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Resource Group *</label>
+                      <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-g100-dev-prs-aen-001">
+                      <div class="field-help">Created automatically if it doesn't exist.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subscription ID *</label>
+                      <input type="text" class="form-input-custom" data-detail="subscription_id" id="vm_subscription" placeholder="00000000-0000-0000-0000-000000000000">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Region *</label>
+                      <select class="form-input-custom" data-detail="region" id="vm_region" onchange="onVmRegionChange()">
+                        <option value="{{ vm_defaults.region }}" selected>{{ vm_defaults.region }} (standard)</option>
+                        <option value="uaecentral">UAE Central</option>
+                        <option value="westeurope">West Europe</option>
+                        <option value="northeurope">North Europe</option>
+                        <option value="eastus">East US</option>
+                      </select>
+                      <div class="field-help">Choose another only if genuinely required — a live region list (with Azure fetch) lands with the next stage of this feature.</div>
+                    </div>
+                    <div class="col-12" id="vmRegionJustifyWrap" style="display:none;">
+                      <label class="form-label-custom">Justification for non-standard region *</label>
+                      <input type="text" class="form-input-custom" data-detail="region_justification" placeholder="Why is a region other than the standard one needed?">
+                    </div>
+
+                    <div class="col-12" style="margin-top:2px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-diagram-3 me-1"></i> Virtual Network &amp; Subnet
+                      </div>
+                      <button type="button" class="btn-secondary-custom" style="font-size:11px;padding:5px 11px;" onclick="vmFetchVnets(this)">
+                        <i class="bi bi-cloud-download"></i> Fetch VNets from subscription
+                      </button>
+                    </div>
+                    <div class="col-12" id="vmVnetPickerRow" style="display:none;">
+                      <div class="row g-2">
+                        <div class="col-md-6">
+                          <label class="form-label-custom" style="font-size:11px;">Pick a VNet</label>
+                          <select class="form-input-custom" id="vmVnetSelect" onchange="vmVnetPicked()"></select>
+                        </div>
+                        <div class="col-md-6">
+                          <label class="form-label-custom" style="font-size:11px;">Pick a subnet</label>
+                          <select class="form-input-custom" id="vmSubnetSelect" onchange="vmSubnetPicked()"><option value="">— fetch a VNet first —</option></select>
+                        </div>
+                      </div>
+                      <div id="vmVnetMsg" style="font-size:11px;color:var(--text-muted);margin-top:6px;"></div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">VNET Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_name" id="vm_vnet_name" placeholder="vnet-conn-prd-prs-aen-001">
+                      <div class="field-help">Use "Fetch VNets" above to pick one, or type it directly.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Subnet Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="subnet_name" id="vm_subnet_name" placeholder="snet-app-conn-prd-prs-aen-001">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">VNet Resource Group</label>
+                      <input type="text" class="form-input-custom" data-detail="vnet_resource_group" id="vm_vnet_rg" placeholder="blank = same as VM resource group">
+                      <div class="field-help">Only if the VNet lives in a different RG than the VM.</div>
+                    </div>
+                    <div class="col-12">
+                      <div style="border:1px solid rgba(0,188,242,.3);background:rgba(0,188,242,.06);border-radius:8px;padding:10px 12px;font-size:11.5px;color:var(--text-dim);line-height:1.6;">
+                        <i class="bi bi-shield-lock me-1" style="color:#00BCF2;"></i>
+                        VMs are created with <strong>no public IP</strong> — outbound/inbound access follows the subnet's
+                        own NSG and route table. If you need inbound access, raise a firewall or ZPA routing request separately.
+                        The VNet must be in this VM's own subscription and region.
+                      </div>
+                    </div>
+
+                    <div class="col-12" style="margin-top:2px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-cpu me-1"></i> Compute &amp; OS
+                      </div>
+                    </div>
+                    <div class="col-md-6" style="position:relative;">
+                      <label class="form-label-custom">VM Size / SKU *</label>
+                      <div style="display:flex;gap:6px;">
+                        <input type="text" class="form-input-custom" data-detail="vm_size" id="vm_size"
+                               placeholder="e.g. Standard_D4ds_v5" autocomplete="off"
+                               oninput="vmFilterSkus()" onfocus="vmFilterSkus()"
+                               onblur="setTimeout(function(){document.getElementById('vmSkuDropdown').style.display='none';}, 150)">
+                        <button type="button" class="btn-secondary-custom" style="white-space:nowrap;font-size:11px;padding:0 11px;" onclick="vmFetchSkus(this)" title="Fetch VM sizes from Azure"><i class="bi bi-cloud-download"></i></button>
+                      </div>
+                      <div id="vmSkuDropdown" class="vm-sku-dropdown" style="display:none;"></div>
+                      <div class="field-help" id="vmSkuMsg">Fetch live sizes from Azure (grouped by family, vCPU/RAM/max data disks shown inline), or type a size name directly.</div>
+                    </div>
+                    <div class="col-md-6" style="position:relative;">
+                      <label class="form-label-custom">OS Image</label>
+                      <div style="display:flex;gap:6px;">
+                        <input type="text" class="form-input-custom" data-detail="os_image" id="vm_os_image"
+                               placeholder="Search images, or type publisher:offer:sku[:version]" autocomplete="off"
+                               oninput="vmFilterImages()" onfocus="vmFilterImages()"
+                               onblur="setTimeout(function(){document.getElementById('vmImageDropdown').style.display='none';}, 150)">
+                        <button type="button" class="btn-secondary-custom" style="white-space:nowrap;font-size:11px;padding:0 11px;" onclick="vmFetchImages(this)" title="Resolve recommended images to their latest version"><i class="bi bi-cloud-download"></i></button>
+                      </div>
+                      <div id="vmImageDropdown" class="vm-sku-dropdown" style="display:none;"></div>
+                      <div style="margin-top:5px;">
+                        <button type="button" class="btn-secondary-custom" style="font-size:10.5px;padding:3px 9px;" onclick="vmFetchMarketplaceImages(this)">
+                          <i class="bi bi-shop-window me-1"></i>Load Marketplace Images
+                        </button>
+                      </div>
+                      <div class="field-help" id="vmImageMsg">Recommended images load automatically. Blank = platform default. Loading Marketplace adds more OS families (Ubuntu, Windows Server, RHEL, Debian, SUSE, …) — optional, and never required to submit.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">OS Disk Type *</label>
+                      <select class="form-input-custom" data-detail="os_disk_type">
+                        {% for t in vm_os_disk_types %}<option value="{{ t }}" {% if t == vm_defaults.os_disk_type %}selected{% endif %}>{{ t }}</option>{% endfor %}
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">OS Disk Size (GB)</label>
+                      <input type="number" class="form-input-custom" data-detail="os_disk_size_gb" min="30" max="2048" value="{{ vm_defaults.os_disk_size_gb }}">
+                    </div>
+                    <div class="col-md-4" id="vmZonesWrap">
+                      <label class="form-label-custom">Availability Zone(s)</label>
+                      <input type="text" class="form-input-custom" data-detail="zones" id="vm_zones_text" placeholder="e.g. 1 or 1,2,3 — blank = no pinning">
+                      <div id="vmZoneChecks" style="margin-top:5px;"></div>
+                      <div class="field-help">Multiple VMs spread round-robin across the zones you list. Hidden automatically if the chosen SKU has no zones.</div>
+                    </div>
+
+                    <div class="col-12" style="margin-top:2px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-hdd-stack me-1"></i> Data Disks (optional)
+                      </div>
+                      <select class="form-input-custom" id="vmDiskCount" style="max-width:120px;font-size:11px;" onchange="renderVmDiskBlocks()">
+                        <option value="0">0 disks</option>
+                        <option value="1">1 disk</option>
+                        <option value="2">2 disks</option>
+                        <option value="3">3 disks</option>
+                        <option value="4">4 disks</option>
+                      </select>
+                      <span class="field-help" id="vmDiskCapMsg"></span>
+                    </div>
+                    <div class="col-12" id="vmDiskBlocks"></div>
+
+                    <div class="col-12" style="margin-top:2px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-key me-1"></i> Access
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Authentication *</label>
+                      <select class="form-input-custom" data-detail="auth_mode" id="vm_auth_mode" onchange="onVmAuthChange()">
+                        <option value="ssh_key">SSH public key</option>
+                        {% if not vm_defaults.require_ssh_key %}
+                        <option value="password">Password (set by admin at deploy time)</option>
+                        {% endif %}
+                      </select>
+                      {% if vm_defaults.require_ssh_key %}
+                      <div class="field-help">Password authentication is disabled for this portal (Settings → VM Defaults).</div>
+                      {% endif %}
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom" style="cursor:pointer;">
+                        <input type="checkbox" data-detail="accelerated_networking" id="vm_accel_net" style="margin-right:6px;">
+                        Accelerated networking
+                        <span class="field-help" style="display:inline;">— disabled automatically if the chosen SKU doesn't support it.</span>
+                      </label>
+                    </div>
+                    <div class="col-12" id="vmSshKeyWrap">
+                      <label class="form-label-custom">SSH Public Key *</label>
+                      <textarea class="form-input-custom" data-detail="ssh_public_key" rows="2" placeholder="ssh-rsa AAAA... (paste the public key)"></textarea>
+                      <div class="field-help">A single line, starting with ssh-rsa, ssh-ed25519 or ecdsa-sha2-*.</div>
+                    </div>
+                    <div class="col-12" id="vmPasswordNoteWrap" style="display:none;">
+                      <div style="border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.08);border-radius:10px;padding:10px 12px;font-size:11.5px;color:var(--text-dim);line-height:1.6;">
+                        <i class="bi bi-info-circle-fill me-1" style="color:#f59e0b;"></i>
+                        No password is collected here — the admin sets the initial password directly in the deploy
+                        panel when creating the VM(s). It is never stored in this request, the audit trail or the
+                        change ledger.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- ── Report Network Issue ── -->
                 <div class="col-12 type-section" id="section-network_issue" style="display:none;">
                   <div class="row g-3">
@@ -984,7 +1211,7 @@
                   <textarea class="form-input-custom" id="g_justification" rows="2" placeholder="Why is this needed? (business reason — required for every request)"></textarea>
                 </div>
                 <div class="col-12">
-                  <button class="btn-primary-custom" onclick="submitServiceRequest()">
+                  <button class="btn-primary-custom" id="submitReqBtn" onclick="submitServiceRequest()">
                     <i class="bi bi-send"></i> Submit Request
                   </button>
                 </div>
@@ -1294,6 +1521,7 @@ function selectType(t) {
       }
     }
     if (t === 'aks_cluster') { onAksTierChange(); onAksZpaChange(); onAksRegionChange(); }
+    if (t === 'vm_create') { onVmRegionChange(); onVmAuthChange(); renderVmDiskBlocks(); }
     if (t === 'network_issue') onNiSrcKind();
     if (t === 'firewall_policy') onFwActionChange();
   }
@@ -1361,6 +1589,42 @@ function aksGenerateNames() {
   sec.querySelector('[data-detail="resource_group"]').value = `rg-${base}`;
   msg.style.color = '#7edb56';
   msg.innerHTML = '<i class="bi bi-check-circle me-1"></i>Cluster + RG named from ' + p + ' / ' + e + ' — edit as needed.';
+}
+
+// Shared <type>-<project>-<env>-prs-aen-NNN naming helper. vnetGenerateNames()
+// and aksGenerateNames() above still duplicate this logic inline — candidates
+// for a later consolidation onto this helper (not done here to avoid unrelated
+// churn on this change).
+function applyNamingConvention(projId, envId, msgId, fields) {
+  const p = nameSlug(document.getElementById(projId).value);
+  const e = nameSlug(document.getElementById(envId).value);
+  const msg = document.getElementById(msgId);
+  if (!p || !e) { msg.style.color = '#f59e0b'; msg.textContent = 'Enter both a project and an environment first.'; return null; }
+  const base = `${p}-${e}-prs-aen-001`;
+  fields.forEach(([selector, prefix]) => {
+    const el = document.querySelector(selector);
+    if (el) el.value = `${prefix}-${base}`;
+  });
+  msg.style.color = '#7edb56';
+  msg.innerHTML = '<i class="bi bi-check-circle me-1"></i>Names filled from ' + p + ' / ' + e + ' — edit any as needed.';
+  return base;
+}
+
+function vmGenerateNames() {
+  // Resource group keeps the fixed '-001' the AKS/VNET convention always uses.
+  // The VM base name OMITS it — deploy's own per-VM -NNN numbering fills that
+  // exact slot instead (vm-<project>-<env>-prs-aen-001, -002, ...), so there's
+  // no double suffix. That resolved per-VM RESOURCE name is independent of
+  // osProfile.computerName (15-char Windows limit), which is derived separately
+  // once an image tells us the OS (stage 2) and previewed per VM (stage 3).
+  const base = applyNamingConvention('vm_proj', 'vm_env', 'vmNameMsg', [
+    ['#section-vm_create [data-detail="resource_group"]', 'rg'],
+  ]);
+  if (base === null) return;
+  const vmBase = `vm-${base.replace(/-001$/, '')}`;
+  document.querySelector('#section-vm_create [data-detail="vm_base_name"]').value = vmBase;
+  document.getElementById('vmNameMsg').innerHTML =
+    '<i class="bi bi-check-circle me-1"></i>VM base + RG named — edit as needed.';
 }
 
 function onAksScaleChange() {
@@ -1471,6 +1735,352 @@ function aksSubnetPicked() {
   if (name) document.getElementById('aks_subnet_name').value = name;
 }
 
+// ── VM live Azure lookups: subscription+region -> SKUs; SKU -> disk types,
+// zones, max data disks, accelerated networking. Every lookup degrades to
+// free text / static defaults on fetch failure — nothing here blocks the form. ──
+const VM_STANDARD_REGION = {{ (vm_defaults.region or 'uaenorth') | tojson }};
+const VM_STATIC_DATA_DISK_TYPES = {{ vm_data_disk_types | tojson }};
+
+function onVmRegionChange() {
+  const el = document.getElementById('vm_region'); if (!el) return;
+  document.getElementById('vmRegionJustifyWrap').style.display = (el.value !== VM_STANDARD_REGION) ? '' : 'none';
+}
+
+function onVmAuthChange() {
+  const el = document.getElementById('vm_auth_mode'); if (!el) return;
+  const isSsh = el.value !== 'password';
+  document.getElementById('vmSshKeyWrap').style.display = isSsh ? '' : 'none';
+  document.getElementById('vmPasswordNoteWrap').style.display = isSsh ? 'none' : '';
+}
+
+// null = not yet fetched (fall back to the static server-rendered list);
+// [] = fetched, this SKU genuinely has no data-disk support.
+let VM_DATA_DISK_TYPES_LIVE = null;
+
+function renderVmDiskBlocks() {
+  const n = parseInt(document.getElementById('vmDiskCount').value || '0', 10);
+  const holder = document.getElementById('vmDiskBlocks');
+  const types = VM_DATA_DISK_TYPES_LIVE !== null ? VM_DATA_DISK_TYPES_LIVE : VM_STATIC_DATA_DISK_TYPES;
+  const opts = types.map(t => `<option value="${t}">${t}</option>`).join('');
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    rows.push(`<div class="row g-2" style="margin-bottom:6px;">
+      <div class="col-md-6"><label class="form-label-custom" style="font-size:11px;">Data disk ${i + 1} size (GB)</label>
+        <input type="number" class="form-input-custom vm-disk-size" min="4" max="65536" value="128"></div>
+      <div class="col-md-6"><label class="form-label-custom" style="font-size:11px;">Data disk ${i + 1} type</label>
+        <select class="form-input-custom vm-disk-type">${opts}</select></div>
+    </div>`);
+  }
+  holder.innerHTML = rows.join('');
+}
+
+// ── SKU picker: searchable, family-grouped, vCPU/RAM/max-data-disks inline ──
+let VM_SKUS = [];
+let VM_SELECTED_SKU = null;
+
+async function vmFetchSkus(btn) {
+  const sub = document.getElementById('vm_subscription').value.trim();
+  const region = document.getElementById('vm_region').value.trim();
+  const msg = document.getElementById('vmSkuMsg');
+  if (!sub) { msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure (1000+ sizes typically — may take a few seconds)…';
+  try {
+    const r = await fetch(`/api/azure/vm-skus?subscription=${encodeURIComponent(sub)}&region=${encodeURIComponent(region)}`);
+    const d = await r.json();
+    if (!d.ok) { msg.style.color = '#f87171'; msg.textContent = (d.error || 'Failed') + ' — falling back to free text.'; VM_SKUS = []; }
+    else {
+      VM_SKUS = d.data.skus || [];
+      msg.style.color = '#7edb56';
+      msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${VM_SKUS.length} size(s) loaded — type to search, or click the box.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure — falling back to free text.'; VM_SKUS = []; }
+  btn.disabled = false; btn.innerHTML = orig;
+  vmFilterSkus();
+}
+
+function vmFilterSkus() {
+  const dd = document.getElementById('vmSkuDropdown');
+  if (!VM_SKUS.length) { dd.style.display = 'none'; return; }
+  const q = document.getElementById('vm_size').value.trim().toLowerCase();
+  const exact = VM_SKUS.find(s => s.name.toLowerCase() === q);
+  if (exact && (!VM_SELECTED_SKU || VM_SELECTED_SKU.name !== exact.name)) { VM_SELECTED_SKU = exact; vmOnSkuChange(); }
+  const matches = q ? VM_SKUS.filter(s => s.name.toLowerCase().includes(q) || s.family.toLowerCase().includes(q)) : VM_SKUS;
+  if (!matches.length) { dd.innerHTML = '<div class="vm-sku-empty">No matches — free text will be sent as typed.</div>'; dd.style.display = ''; return; }
+  const groups = {};
+  matches.slice(0, 300).forEach(s => { (groups[s.family] = groups[s.family] || []).push(s); });
+  dd.innerHTML = Object.keys(groups).sort().map(fam => `
+    <div class="vm-sku-group">${fam}</div>
+    ${groups[fam].map(s => `
+      <div class="vm-sku-option" onmousedown="vmPickSku('${s.name}')">
+        <span class="vm-sku-name">${s.name}</span>
+        <span class="vm-sku-specs">${s.vcpus} vCPU · ${s.memory_gb} GB · max ${s.max_data_disks} disks${s.premium_io ? ' · Premium' : ''}${s.accelerated_networking ? ' · AccelNet' : ''}</span>
+      </div>`).join('')}
+  `).join('');
+  dd.style.display = '';
+  if (matches.length > 300) dd.innerHTML += `<div class="vm-sku-empty">+${matches.length - 300} more — keep typing to narrow it down.</div>`;
+}
+
+function vmPickSku(name) {
+  document.getElementById('vm_size').value = name;
+  document.getElementById('vmSkuDropdown').style.display = 'none';
+  VM_SELECTED_SKU = VM_SKUS.find(s => s.name === name) || null;
+  vmOnSkuChange();
+}
+
+async function vmOnSkuChange() {
+  vmUpdateAccelNet();
+  await vmFetchDiskSkus();   // updates the disk-type cap, which renderVmDiskBlocks() then uses
+  vmUpdateDiskCap();
+  await vmFetchZones();
+  vmUpdateQuota();
+}
+
+function vmUpdateAccelNet() {
+  const cb = document.getElementById('vm_accel_net'); if (!cb) return;
+  if (!VM_SELECTED_SKU) { cb.disabled = false; cb.title = ''; return; }
+  if (!VM_SELECTED_SKU.accelerated_networking) {
+    cb.checked = false; cb.disabled = true;
+    cb.title = `${VM_SELECTED_SKU.name} does not support accelerated networking.`;
+  } else {
+    cb.disabled = false; cb.title = '';
+  }
+}
+
+function vmUpdateDiskCap() {
+  const sel = document.getElementById('vmDiskCount');
+  const capMsg = document.getElementById('vmDiskCapMsg');
+  const cap = VM_SELECTED_SKU ? Math.max(0, Math.min(4, VM_SELECTED_SKU.max_data_disks || 0)) : 4;
+  const cur = Math.min(parseInt(sel.value, 10) || 0, cap);
+  sel.innerHTML = Array.from({ length: cap + 1 }, (_, n) => `<option value="${n}">${n} disk${n === 1 ? '' : 's'}</option>`).join('');
+  sel.value = cur;
+  capMsg.textContent = VM_SELECTED_SKU ? `${VM_SELECTED_SKU.name} supports up to ${VM_SELECTED_SKU.max_data_disks} data disk(s) total.` : '';
+  renderVmDiskBlocks();
+}
+
+async function vmFetchDiskSkus() {
+  if (!VM_SELECTED_SKU) { VM_DATA_DISK_TYPES_LIVE = null; return; }
+  const region = document.getElementById('vm_region').value.trim();
+  try {
+    const r = await fetch(`/api/azure/disk-skus?region=${encodeURIComponent(region)}&premium_io=${VM_SELECTED_SKU.premium_io}`);
+    const d = await r.json();
+    if (d.ok) {
+      VM_DATA_DISK_TYPES_LIVE = d.data.data_disk_types;
+      const osSel = document.querySelector('#section-vm_create [data-detail="os_disk_type"]');
+      const cur = osSel.value;
+      osSel.innerHTML = d.data.os_disk_types.map(t => `<option value="${t}">${t}</option>`).join('');
+      osSel.value = d.data.os_disk_types.includes(cur) ? cur : d.data.os_disk_types[0];
+    }
+  } catch (e) { /* keep the static list — degrades silently like the other lookups */ }
+}
+
+// null = not yet fetched (zones field stays free text); [] = SKU has no zones
+// (hide the field, submit sends zones:null); [...] = pick from these.
+let VM_SKU_ZONES = null;
+
+async function vmFetchZones() {
+  const wrap = document.getElementById('vmZonesWrap');
+  if (!VM_SELECTED_SKU) { VM_SKU_ZONES = null; wrap.style.display = ''; document.getElementById('vmZoneChecks').innerHTML = ''; return; }
+  const sub = document.getElementById('vm_subscription').value.trim();
+  const region = document.getElementById('vm_region').value.trim();
+  if (!sub) { VM_SKU_ZONES = null; return; }
+  try {
+    const r = await fetch(`/api/azure/vm-zones?subscription=${encodeURIComponent(sub)}&region=${encodeURIComponent(region)}&sku=${encodeURIComponent(VM_SELECTED_SKU.name)}`);
+    const d = await r.json();
+    if (!d.ok) { VM_SKU_ZONES = null; return; }
+    VM_SKU_ZONES = d.data.zones || [];
+    if (!VM_SKU_ZONES.length) {
+      wrap.style.display = 'none';
+      document.getElementById('vm_zones_text').value = '';
+      document.getElementById('vmZoneChecks').innerHTML = '';
+    } else {
+      wrap.style.display = '';
+      document.getElementById('vmZoneChecks').innerHTML = VM_SKU_ZONES.map(z =>
+        `<label style="margin-right:12px;font-size:12px;color:rgba(255,255,255,.7);"><input type="checkbox" class="vm-zone-check" value="${z}" onchange="vmZonesChanged()" style="margin-right:3px;">Zone ${z}</label>`).join('');
+    }
+  } catch (e) { VM_SKU_ZONES = null; }
+}
+
+function vmZonesChanged() {
+  const checked = [...document.querySelectorAll('.vm-zone-check:checked')].map(c => c.value);
+  document.getElementById('vm_zones_text').value = checked.join(',');
+}
+
+async function vmUpdateQuota() {
+  const box = document.getElementById('vmQuotaBox');
+  if (!VM_SELECTED_SKU) { box.style.display = 'none'; return; }
+  const sub = document.getElementById('vm_subscription').value.trim();
+  const region = document.getElementById('vm_region').value.trim();
+  const count = document.querySelector('#section-vm_create [data-detail="vm_count"]').value || '1';
+  if (!sub) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  box.style.color = 'var(--text-muted)'; box.style.borderColor = 'var(--border)';
+  box.textContent = 'Checking quota…';
+  try {
+    const r = await fetch(`/api/azure/vm-quota?subscription=${encodeURIComponent(sub)}&region=${encodeURIComponent(region)}&sku=${encodeURIComponent(VM_SELECTED_SKU.name)}&count=${encodeURIComponent(count)}`);
+    const d = await r.json();
+    if (!d.ok) { box.style.color = '#f59e0b'; box.textContent = 'Could not check quota: ' + (d.error || 'unknown error'); return; }
+    const req = d.data.requested_vcpus;
+    const avail = d.data.checks && d.data.checks.length ? Math.min(...d.data.checks.map(c => c.available)) : '?';
+    box.style.color = d.data.fits ? '#7edb56' : '#f59e0b';
+    box.style.borderColor = d.data.fits ? 'rgba(126,219,86,.35)' : 'rgba(245,158,11,.35)';
+    box.innerHTML = `<i class="bi bi-speedometer2 me-1"></i>Requested ${req} vCPU / available ${avail} vCPU` +
+      (d.data.fits ? '' : ' — <strong>exceeds current quota</strong>. You can still submit; the admin will need more headroom before deploying.');
+  } catch (e) { box.style.color = '#f59e0b'; box.textContent = 'Could not check quota.'; }
+}
+
+// ── VNet/subnet picker (same pattern as the AKS one, onto the VM fields) ──
+let VM_VNETS = [];
+async function vmFetchVnets(btn) {
+  const sub = document.getElementById('vm_subscription').value.trim();
+  const msg = document.getElementById('vmVnetMsg');
+  const row = document.getElementById('vmVnetPickerRow');
+  if (!sub) { row.style.display = ''; msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Fetching…';
+  row.style.display = ''; msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure…';
+  try {
+    const d = await (await fetch(`/api/azure/vnets?subscription=${encodeURIComponent(sub)}`)).json();
+    if (d.error || !d.success) { msg.style.color = '#f87171'; msg.textContent = d.error || d.message || 'Failed.'; }
+    else {
+      VM_VNETS = d.vnets || [];
+      const sel = document.getElementById('vmVnetSelect');
+      sel.innerHTML = '<option value="">— select a VNet —</option>' +
+        VM_VNETS.map((v, i) => `<option value="${i}">${v.name} · ${v.resource_group} · ${v.location} · ${v.address_space || ''}</option>`).join('');
+      document.getElementById('vmSubnetSelect').innerHTML = '<option value="">— pick a VNet first —</option>';
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${VM_VNETS.length} VNet(s) found — pick one, then its subnet.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+async function vmVnetPicked() {
+  const idx = document.getElementById('vmVnetSelect').value;
+  if (idx === '') return;
+  const v = VM_VNETS[idx];
+  document.getElementById('vm_vnet_name').value = v.name;
+  document.getElementById('vm_vnet_rg').value = v.resource_group;
+  const msg = document.getElementById('vmVnetMsg');
+  const sub = document.getElementById('vm_subscription').value.trim();
+  msg.style.color = 'var(--text-muted)'; msg.textContent = `Loading subnets of ${v.name}…`;
+  const sSel = document.getElementById('vmSubnetSelect');
+  try {
+    const d = await (await fetch(`/api/azure/subnets?subscription=${encodeURIComponent(sub)}&resource_group=${encodeURIComponent(v.resource_group)}&vnet=${encodeURIComponent(v.name)}`)).json();
+    if (d.error || !d.success) { msg.style.color = '#f87171'; msg.textContent = d.error || d.message || 'Failed.'; }
+    else {
+      sSel.innerHTML = '<option value="">— select a subnet —</option>' +
+        (d.subnets || []).map(s => `<option value="${s.name}">${s.name} · ${s.address_prefix}${s.used != null ? ' · ' + s.used + ' in use' : ''}</option>`).join('');
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${(d.subnets || []).length} subnet(s) — pick one.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not load subnets.'; }
+}
+
+function vmSubnetPicked() {
+  const name = document.getElementById('vmSubnetSelect').value;
+  if (name) document.getElementById('vm_subnet_name').value = name;
+}
+
+// ── Image picker: resolve the curated list to real latest versions ──
+// ── OS Image picker: "Recommended Images" (curated, resolved on demand)
+// first, "Marketplace Images" (hand-picked common OS families, loaded only on
+// click) appended after. Grouped by publisher; friendly names with the exact
+// publisher:offer:sku shown via a hover title and a muted detail line — the
+// submitted value is always the fully-resolved publisher:offer:sku:version. ──
+let VM_RECOMMENDED_IMAGES = {{ vm_defaults.images | tojson }}.map(ref => {
+  const parts = ref.split(':');
+  return { publisher: parts[0] || '', offer: parts[1] || '', sku: parts[2] || '',
+          name: ref, reference: null };   // reference fills in once resolved
+});
+let VM_MARKETPLACE_IMAGES = [];
+
+function vmImageOption(i, group) {
+  const ref = i.reference || `${i.publisher}:${i.offer}:${i.sku}`;
+  const detail = `${i.publisher}:${i.offer}:${i.sku}`;
+  return `<div class="vm-sku-option" title="${detail}" onmousedown="vmPickImage('${ref.replace(/'/g, "\\'")}')">
+    <span class="vm-sku-name">${i.name}</span>
+    <span class="vm-sku-specs">${i.reference ? '' : '(unresolved) '}${detail}</span>
+  </div>`;
+}
+
+function vmFilterImages() {
+  const dd = document.getElementById('vmImageDropdown');
+  const q = document.getElementById('vm_os_image').value.trim().toLowerCase();
+  const matchesText = i => !q || [i.name, i.publisher, i.offer, i.sku].join(' ').toLowerCase().includes(q);
+  const rec = VM_RECOMMENDED_IMAGES.filter(matchesText);
+  const mkt = VM_MARKETPLACE_IMAGES.filter(matchesText);
+  if (!rec.length && !mkt.length) { dd.style.display = 'none'; return; }
+  let html = '';
+  if (rec.length) {
+    const byPub = {};
+    rec.forEach(i => { (byPub[i.publisher] = byPub[i.publisher] || []).push(i); });
+    html += '<div class="vm-sku-group" style="color:#7edb56;">Recommended Images</div>';
+    Object.keys(byPub).sort().forEach(pub => {
+      html += byPub[pub].map(i => vmImageOption(i)).join('');
+    });
+  }
+  if (mkt.length) {
+    const byPub = {};
+    mkt.forEach(i => { (byPub[i.publisher] = byPub[i.publisher] || []).push(i); });
+    html += '<div class="vm-sku-group">Marketplace Images</div>';
+    Object.keys(byPub).sort().forEach(pub => {
+      html += `<div class="vm-sku-group" style="background:none;color:var(--text-muted);font-size:9.5px;padding-top:0;">${pub}</div>`;
+      html += byPub[pub].map(i => vmImageOption(i)).join('');
+    });
+  }
+  dd.innerHTML = html;
+  dd.style.display = '';
+}
+
+function vmPickImage(reference) {
+  document.getElementById('vm_os_image').value = reference;
+  document.getElementById('vmImageDropdown').style.display = 'none';
+}
+
+async function vmFetchImages(btn) {
+  const sub = document.getElementById('vm_subscription').value.trim();
+  const region = document.getElementById('vm_region').value.trim();
+  const msg = document.getElementById('vmImageMsg');
+  if (!sub) { msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  msg.style.color = 'var(--text-muted)'; msg.textContent = 'Resolving latest versions…';
+  try {
+    const r = await fetch(`/api/azure/vm-images?subscription=${encodeURIComponent(sub)}&region=${encodeURIComponent(region)}`);
+    const d = await r.json();
+    if (!d.ok) { msg.style.color = '#f87171'; msg.textContent = d.error || 'Failed — recommended images stay unresolved (still usable).'; }
+    else {
+      VM_RECOMMENDED_IMAGES = d.data.images || [];
+      msg.style.color = '#7edb56';
+      msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>Resolved ${VM_RECOMMENDED_IMAGES.length} recommended image(s) to their latest version in ${region}.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure — recommended images stay unresolved (still usable).'; }
+  btn.disabled = false; btn.innerHTML = orig;
+  vmFilterImages();
+}
+
+async function vmFetchMarketplaceImages(btn) {
+  const sub = document.getElementById('vm_subscription').value.trim();
+  const region = document.getElementById('vm_region').value.trim();
+  const msg = document.getElementById('vmImageMsg');
+  if (!sub) { msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Loading…';
+  msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure Marketplace…';
+  try {
+    const r = await fetch(`/api/azure/vm-marketplace-images?subscription=${encodeURIComponent(sub)}&region=${encodeURIComponent(region)}`);
+    const d = await r.json();
+    if (!d.ok) {
+      // Marketplace failure never touches Recommended Images or blocks submission.
+      msg.style.color = '#f59e0b'; msg.textContent = (d.error || 'Marketplace load failed') + ' — Recommended Images are still available.';
+    } else {
+      VM_MARKETPLACE_IMAGES = d.data.images || [];
+      msg.style.color = '#7edb56';
+      msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>Loaded ${VM_MARKETPLACE_IMAGES.length} marketplace image(s) in ${region}.`;
+    }
+  } catch (e) {
+    msg.style.color = '#f59e0b'; msg.textContent = 'Could not reach Azure Marketplace — Recommended Images are still available.';
+  }
+  btn.disabled = false; btn.innerHTML = orig;
+  vmFilterImages();
+}
+
 function backToPicker() {
   currentType = null;
   document.getElementById('typePicker').style.display = '';
@@ -1555,12 +2165,80 @@ async function submitServiceRequest() {
         'A justification is required to deploy outside the standard region (UAE North).'));
     }
   }
+  if (currentType === 'vm_create') {
+    for (const [k, lbl] of [['vm_base_name','VM Base Name'],['vm_count','VM Count'],
+                            ['resource_group','Resource Group'],['subscription_id','Subscription ID'],
+                            ['vnet_name','VNET Name'],['subnet_name','Subnet Name'],
+                            ['vm_size','VM Size / SKU'],['os_disk_type','OS Disk Type'],
+                            ['auth_mode','Authentication'],
+                            ['project','Project'],['owner_email','Owner email'],
+                            ['env','Environment'],['criticality','Criticality']]) {
+      if (!details[k]) return showResult('newReqResult', resultBox('error', `${lbl} is required.`));
+    }
+    if (!(parseInt(details.vm_count, 10) >= 1)) {
+      return showResult('newReqResult', resultBox('error', 'VM Count must be at least 1.'));
+    }
+    // Base (resource) name must leave room for the -NNN suffix, up to Azure's
+    // 64-char resource-name limit. The separate, stricter Windows computer-name
+    // limit (15 chars) is derived once an image tells us the OS (stage 2/3) —
+    // not validated here (mirrors the server guard).
+    const suffixWidth = {{ vm_defaults.suffix_digits | int }};
+    const baseMax = 64 - (1 + suffixWidth);
+    if (!/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/.test(details.vm_base_name || '')) {
+      return showResult('newReqResult', resultBox('error',
+        'VM base name must be letters, digits or \'-\', starting and ending with a letter or digit.'));
+    }
+    if ((details.vm_base_name || '').length > baseMax) {
+      return showResult('newReqResult', resultBox('error',
+        `VM base name must be at most ${baseMax} characters — this reserves room for the '-${'0'.repeat(suffixWidth)}' suffix.`));
+    }
+    if (details.auth_mode === 'ssh_key') {
+      const key = (details.ssh_public_key || '').trim();
+      if (!key) return showResult('newReqResult', resultBox('error', 'An SSH public key is required for SSH key authentication.'));
+      if (/[\r\n]/.test(key)) {
+        return showResult('newReqResult', resultBox('error',
+          'SSH public key must be a single line — paste just the key, not a file with extra lines.'));
+      }
+      if (!/^(ssh-rsa|ssh-ed25519|ecdsa-sha2-\S+)\s+\S+/.test(key)) {
+        return showResult('newReqResult', resultBox('error',
+          'SSH public key must start with ssh-rsa, ssh-ed25519 or ecdsa-sha2-* followed by the key data.'));
+      }
+    }
+    if ((details.region || VM_STANDARD_REGION) !== VM_STANDARD_REGION && !(details.region_justification || '').trim()) {
+      return showResult('newReqResult', resultBox('error',
+        'A justification is required to deploy outside the standard region.'));
+    }
+    // Data disks are a repeated block, not a single [data-detail] field — collect
+    // them into one JSON string (same idea as the firewall/DNS special-casing above).
+    const diskRows = [...document.querySelectorAll('#vmDiskBlocks .vm-disk-size')].map((el, i) => ({
+      size_gb: parseInt(el.value, 10) || 0,
+      disk_type: document.querySelectorAll('#vmDiskBlocks .vm-disk-type')[i].value,
+    }));
+    if (diskRows.length) details.data_disks = JSON.stringify(diskRows);
+    // VM_SKU_ZONES === [] means the chosen SKU genuinely has no zone support —
+    // send an explicit null so the server can tell that apart from "requester
+    // just didn't fill this in" (which simply omits the key).
+    if (VM_SKU_ZONES !== null && VM_SKU_ZONES.length === 0) details.zones = null;
+  }
 
+  // VM submissions run several live Azure checks server-side (SKU/VNet/subnet/
+  // image) and can take a few seconds — disable + spin the button so a slow
+  // submit reads as "working," not "broken."
+  const btn = document.getElementById('submitReqBtn');
+  const btnOrig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Submitting…';
   showResult('newReqResult', resultBox('info', 'Submitting...'));
-  const d = await apiPost('/api/requester/new-request', {
-    request_type: currentType, requester_name: name, requester_email: email,
-    purpose, details,
-  });
+  let d;
+  try {
+    d = await apiPost('/api/requester/new-request', {
+      request_type: currentType, requester_name: name, requester_email: email,
+      purpose, details,
+    });
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = btnOrig;
+  }
   if (d.success) {
     addLocalReqId(d.request_id);
     document.getElementById('g_purpose').value = '';

@@ -60,7 +60,17 @@ hub's own definition.
 | Gateway / ZPA route | `add_route_to_table` | Route in a hub route table (next hop: firewall IP) |
 | Spoke route table | `create_route_table` + `add_route_to_table` + `assign_route_table_to_subnet` | New UDR with default routes, associated to chosen subnets |
 | Decommission | `delete_hub_spoke_peerings`, `remove_routes_by_prefix`, `remove_firewall_rule`, `delete_spoke_vnet` | Deletes in dependency-safe order |
+| Deploy VM(s) | `create_vm`, looped once per VM in the request | Resource group, one NIC (no public IP), one VM per loop iteration with named OS/data disks declared inline |
+| VM revert | `delete_vm` | The VM — its NIC and disks were tagged `delete_option=Delete` at creation, so Azure cascades their removal |
 | Cancel/Reject revert | the matching `delete_*`/`remove_*` functions | Undoes exactly what the audit trail says was deployed |
+
+VM(s) is the one exception to "one click, one Azure call": deploying N VMs
+loops `create_vm` N times, stopping at the first failure without rolling back
+the VMs that already succeeded — so a single click can leave a partial,
+resumable result, and the change ledger gets one independent, revertable
+entry per VM rather than one entry for the click. See CLAUDE.md's "VM(s)
+request" section for the full model (naming/collision resolution, the
+`vm_plan` persistence, quota gating, password handling).
 
 All mutating functions share three behaviors:
 
@@ -101,7 +111,10 @@ by reading the hub VNET (read-only, works even in dry-run).
    duplicate rule.
 4. **Status moves itself** — statuses advance from completed portal actions
    (never manually); a manual-completion escape hatch exists for work done
-   outside the portal, with a mandatory note.
+   outside the portal, with a mandatory note. VM(s) requests are the one
+   exception: completion is read off the per-VM `vm_plan` (every VM must be
+   `created`), not off a single completed action, since one request can need
+   several deploy attempts to finish.
 5. **Close or revert** — completion notifies the requester (Teams + email).
    Cancel/Reject shows every deployed change and automatically reverts them
    in dependency order.

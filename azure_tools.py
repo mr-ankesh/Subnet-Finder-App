@@ -13,13 +13,20 @@ from naming import render_name
 log = logging.getLogger(__name__)
 
 
+_GUARD_SECRET_KWARGS = ("password", "secret", "key", "token", "credential")
+
+
 def _guard(fn):
     """When AZURE_DRY_RUN is on, simulate the call — never touch Azure."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         if cfg.AZURE_DRY_RUN:
+            # Never echo a secret-shaped kwarg (admin_password, ssh_public_key, ...) into the
+            # dry-run log line or the returned message — the message flows straight into the
+            # audit trail's `data` column via _audit_azure().
             detail = ", ".join(f"{k}={v}" for k, v in kwargs.items()
-                               if v not in (None, "") and isinstance(v, (str, int, bool)))
+                               if v not in (None, "") and isinstance(v, (str, int, bool))
+                               and not any(s in k.lower() for s in _GUARD_SECRET_KWARGS))
             log.info("[dry-run] %s skipped (AZURE_DRY_RUN on) %s", fn.__name__, detail)
             return {"success": True, "dry_run": True,
                     "message": f"[dry-run] {fn.__name__} simulated — no Azure changes made."
@@ -2811,6 +2818,659 @@ def list_subnets(subscription_id: str, resource_group: str, vnet_name: str) -> d
         return {"success": True, "subnets": subnets}
     except Exception as exc:
         log.error("list_subnets failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+# ── VM live option lookups (read-only — run for real even in dry-run) ───────
+# Same idea as the AKS lookups above: subscription/region-scoped, no module-
+# level caching (three replicas in prod would each hold a different view — see
+# CLAUDE.md), fail soft with a clear message so the form degrades to free text.
+
+def list_vm_skus(subscription_id: str, location: str) -> dict:
+    """VM SKUs available in a region for THIS subscription — vCPUs, memory, max
+    data disks, PremiumIO / accelerated-networking capability, and the zones
+    actually available (after subscription/zone restrictions). Excludes SKUs
+    Azure reports as fully unavailable to this subscription in this region
+    (restriction type 'Location', e.g. reasonCode NotAvailableForSubscription).
+    Confirmed against the live resourceSkus API — capability/restriction field
+    names below are not guessed."""
+    if not subscription_id or not location:
+        return {"success": False, "message": "Subscription ID and region are required."}
+    try:
+        client = _compute_client(subscription_id)
+        allow = [f.strip().lower() for f in (cfg.VM_ALLOWED_SKU_FAMILIES or "").split(",") if f.strip()]
+        skus = []
+        for s in client.resource_skus.list(filter=f"location eq '{location}'"):
+            if s.resource_type != "virtualMachines":
+                continue
+            if location.lower() not in [l.lower() for l in (s.locations or [])]:
+                continue
+            restrictions = s.restrictions or []
+            if any(r.type == "Location" for r in restrictions):
+                continue   # fully unavailable to this subscription in this region
+            family = s.family or ""
+            if allow and not any(family.lower().startswith(a) or s.name.lower().startswith(a) for a in allow):
+                continue
+            zone_restricted = set()
+            for r in restrictions:
+                if r.type == "Zone" and r.restriction_info and r.restriction_info.zones:
+                    zone_restricted.update(r.restriction_info.zones)
+            zones = []
+            for li in (s.location_info or []):
+                if (li.location or "").lower() == location.lower():
+                    zones = sorted(set(li.zones or []) - zone_restricted)
+                    break
+            caps = {c.name: c.value for c in (s.capabilities or [])}
+
+            def _capint(key):
+                try:
+                    return int(caps.get(key))
+                except (TypeError, ValueError):
+                    return None
+
+            skus.append({
+                "name": s.name, "family": family,
+                "vcpus": _capint("vCPUs"), "memory_gb": _capint("MemoryGB"),
+                "max_data_disks": _capint("MaxDataDiskCount"),
+                "premium_io": (caps.get("PremiumIO") or "").lower() == "true",
+                "accelerated_networking": (caps.get("AcceleratedNetworkingEnabled") or "").lower() == "true",
+                "zones": zones,
+            })
+        skus.sort(key=lambda x: (x["family"], x["vcpus"] or 0, x["name"]))
+        return {"success": True, "skus": skus, "total": len(skus)}
+    except Exception as exc:
+        log.error("list_vm_skus failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def _vm_sku_lookup(subscription_id: str, location: str, sku_name: str) -> dict:
+    """One VM SKU's vCPU count + family in a region (used by the quota check —
+    a targeted scan of the same resourceSkus list list_vm_skus uses)."""
+    client = _compute_client(subscription_id)
+    for s in client.resource_skus.list(filter=f"location eq '{location}'"):
+        if s.resource_type == "virtualMachines" and s.name == sku_name:
+            caps = {c.name: c.value for c in (s.capabilities or [])}
+            try:
+                vcpus = int(caps.get("vCPUs"))
+            except (TypeError, ValueError):
+                vcpus = None
+            return {"vcpus": vcpus, "family": s.family or ""}
+    return None
+
+
+def list_vm_zones(subscription_id: str, location: str, sku: str) -> dict:
+    """Zones actually available for one SKU in a region (subset of list_vm_skus'
+    per-SKU zone list — a separate lookup so the zone picker doesn't need the
+    full SKU list re-fetched after the requester changes size)."""
+    if not all([subscription_id, location, sku]):
+        return {"success": False, "message": "Subscription, region and SKU are required."}
+    res = list_vm_skus(subscription_id, location)
+    if not res.get("success"):
+        return res
+    for s in res.get("skus", []):
+        if s["name"] == sku:
+            return {"success": True, "zones": s["zones"]}
+    return {"success": False, "message": f"SKU '{sku}' not found (or unavailable) in {location}."}
+
+
+def resolve_vm_image(subscription_id: str, location: str, image_ref: str) -> dict:
+    """Resolve 'publisher:offer:sku' (-> latest version in this region) or an
+    explicit 'publisher:offer:sku:version' to a concrete reference + OS family.
+    Used both by list_vm_images (curated picks) and the submit-time guard (to
+    decide whether Windows computerName rules apply to whatever the requester
+    actually typed, curated or not)."""
+    parts = (image_ref or "").split(":")
+    if len(parts) not in (3, 4) or not all(parts):
+        return {"success": False, "message": "Image must be 'publisher:offer:sku' or "
+                                              "'publisher:offer:sku:version'."}
+    publisher, offer, sku = parts[0], parts[1], parts[2]
+    version = parts[3] if len(parts) == 4 else None
+    try:
+        client = _compute_client(subscription_id)
+        if not version:
+            versions = list(client.virtual_machine_images.list(location, publisher, offer, sku))
+            if not versions:
+                return {"success": False,
+                        "message": f"No versions found for {publisher}:{offer}:{sku} in {location}."}
+            version = max(versions, key=lambda v: _ver_key(v.name)).name
+        img = client.virtual_machine_images.get(location, publisher, offer, sku, version)
+        # OperatingSystemTypes is a str-subclass enum — str(...) gives the repr
+        # ('OperatingSystemTypes.WINDOWS'), not the value. Use .value explicitly.
+        os_type = None
+        if img.os_disk_image and img.os_disk_image.operating_system:
+            os_type = img.os_disk_image.operating_system.value
+        return {"success": True, "reference": f"{publisher}:{offer}:{sku}:{version}",
+               "publisher": publisher, "offer": offer, "sku": sku, "version": version,
+               "os_type": os_type}
+    except Exception as exc:
+        log.error("resolve_vm_image failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def _marketplace_friendly_name(publisher: str, offer: str, sku: str) -> str:
+    """Best-effort human label for an image — DISPLAY ONLY. The value actually
+    stored and submitted is always the exact publisher:offer:sku(:version);
+    getting this wrong never corrupts a request, it just shows an uglier name."""
+    m = re.match(r"ubuntu-(\d\d)_(\d\d)-lts", offer, re.I)
+    if m:
+        return f"Ubuntu {m.group(1)}.{m.group(2)} LTS"
+    if re.match(r"0001-com-ubuntu-server-\w+", offer, re.I):
+        vm = re.match(r"(\d\d)_(\d\d)-lts", sku, re.I)
+        if vm:
+            return f"Ubuntu {vm.group(1)}.{vm.group(2)} LTS"
+    if publisher == "MicrosoftWindowsServer":
+        m = re.match(r"(\d{4})-datacenter", sku, re.I)
+        if m:
+            edition = " (Azure Edition)" if "azure-edition" in sku.lower() else ""
+            return f"Windows Server {m.group(1)}{edition}"
+    if publisher == "RedHat" and offer.upper() == "RHEL":
+        m = re.match(r"(\d+)-lvm", sku, re.I)
+        if m:
+            return f"RHEL {m.group(1)}"
+    m = re.match(r"sles-(\d+)-sp(\d+)", offer, re.I)
+    if m:
+        return f"SUSE Linux Enterprise {m.group(1)} SP{m.group(2)}"
+    m = re.match(r"debian-(\d+)$", offer, re.I)
+    if m:
+        return f"Debian {m.group(1)}"
+    return f"{publisher} {offer} {sku}"
+
+
+def list_vm_images(subscription_id: str, location: str) -> dict:
+    """Resolve the curated image list (Settings → VM Defaults) to their latest
+    version in this region — the 'Recommended Images' section of the image
+    picker, shown immediately without waiting on 'Load Marketplace Images'. An
+    explicit 'publisher:offer:sku:version' override in the form field bypasses
+    this list entirely and is resolved on its own via resolve_vm_image() at
+    submit time."""
+    if not subscription_id or not location:
+        return {"success": False, "message": "Subscription ID and region are required."}
+    curated = [ln.strip() for ln in (cfg.VM_DEFAULT_IMAGES or "").replace(",", "\n").splitlines()
+              if ln.strip()]
+    images = []
+    for entry in curated:
+        res = resolve_vm_image(subscription_id, location, entry)
+        publisher, offer, sku = (entry.split(":") + ["", "", ""])[:3]
+        name = _marketplace_friendly_name(publisher, offer, sku)
+        if res.get("success"):
+            images.append({"publisher": publisher, "offer": offer, "sku": sku, "name": name,
+                           "version": res["version"], "reference": res["reference"],
+                           "os_type": res.get("os_type")})
+        else:
+            images.append({"publisher": publisher, "offer": offer, "sku": sku, "name": name,
+                           "version": None, "error": res.get("message")})
+    return {"success": True, "images": images}
+
+
+# Curated (publisher, offer, sku allow-pattern) catalog for the on-demand
+# 'Load Marketplace Images' picker — NOT the full Azure Marketplace (that's
+# thousands of entries, almost all irrelevant to a VM request); a hand-picked
+# set of common OS families, each queried live for its ACTUAL available SKUs
+# in the chosen region. A sku allow-pattern (regex) is given for offers whose
+# raw SKU list is a messy mix of legacy/daily/regional variants (RHEL,
+# WindowsServer) so only the clean, currently-recommended SKUs surface; None
+# means "apply the generic noise filter instead" (clean, small SKU lists).
+_MARKETPLACE_CATALOG = [
+    ("Canonical", "ubuntu-24_04-lts", None),
+    ("Canonical", "0001-com-ubuntu-server-jammy", None),
+    ("MicrosoftWindowsServer", "WindowsServer", r"^\d{4}-datacenter(-azure-edition)?(-g2)?$"),
+    ("RedHat", "RHEL", r"^\d+-lvm(-gen2)?$"),
+    ("SUSE", "sles-15-sp5", None),
+    ("Debian", "debian-12", None),
+    ("Debian", "debian-11", None),
+]
+
+_MARKETPLACE_NOISE = re.compile(
+    r"arm64|daily|byos|hpc|fips|cvm|confidential|minimal|test|sap|core|smalldisk|"
+    r"hotpatch|chost|hardened|basic|preview|edge|backports", re.I)
+
+
+def list_marketplace_images(subscription_id: str, location: str) -> dict:
+    """On-demand ('Load Marketplace Images') browse of a hand-picked set of
+    common OS publishers/offers — queries each offer's actual available SKUs
+    live for the region, resolves each surviving one to its latest version,
+    and derives a friendly display name. Read-only; runs for real even in
+    dry-run. Never raises on one offer's failure — that offer is silently
+    skipped so a single bad lookup doesn't blank the whole picker (the caller
+    decides what 'the whole thing failed' means, e.g. zero images returned)."""
+    if not subscription_id or not location:
+        return {"success": False, "message": "Subscription ID and region are required."}
+    try:
+        client = _compute_client(subscription_id)
+        images = []
+        offer_failures = []
+        for publisher, offer, allow_pattern in _MARKETPLACE_CATALOG:
+            try:
+                skus = [s.name for s in client.virtual_machine_images.list_skus(location, publisher, offer)]
+            except Exception as exc:
+                log.error("list_marketplace_images: list_skus failed for %s:%s — %s", publisher, offer, exc)
+                offer_failures.append(str(exc)[:150])
+                continue
+            # Prefer gen2 variants so a dedup-by-name keeps the modern SKU.
+            skus.sort(key=lambda s: (0 if re.search(r"gen2|-g2$", s, re.I) else 1, s))
+            seen_names = set()
+            for sku in skus:
+                if allow_pattern:
+                    if not re.match(allow_pattern, sku, re.I):
+                        continue
+                elif _MARKETPLACE_NOISE.search(sku):
+                    continue
+                name = _marketplace_friendly_name(publisher, offer, sku)
+                if name in seen_names:
+                    continue
+                try:
+                    versions = list(client.virtual_machine_images.list(location, publisher, offer, sku))
+                    if not versions:
+                        continue
+                    latest = max(versions, key=lambda v: _ver_key(v.name)).name
+                except Exception as exc:
+                    log.error("list_marketplace_images: version list failed for %s:%s:%s — %s",
+                             publisher, offer, sku, exc)
+                    continue
+                seen_names.add(name)
+                images.append({"publisher": publisher, "offer": offer, "sku": sku, "name": name,
+                               "version": latest, "reference": f"{publisher}:{offer}:{sku}:{latest}"})
+        images.sort(key=lambda i: (i["publisher"], i["name"]))
+        if not images and offer_failures:
+            # Every catalog entry failed the SAME way (bad subscription, no
+            # access, etc.) — a genuine total failure, not "nothing matched
+            # the filters." Report it clearly instead of an empty success.
+            return {"success": False, "message": offer_failures[0]}
+        return {"success": True, "images": images}
+    except Exception as exc:
+        log.error("list_marketplace_images failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+_WINDOWS_COMPUTERNAME_TOKENS = ("vm", "prs", "aen")
+
+
+def derive_windows_computer_name(full_resource_name: str, suffix_width: int) -> dict:
+    """Windows osProfile.computerName from a resolved VM RESOURCE name (base +
+    -NNN suffix) — independent of, and much tighter than, the 64-char resource
+    name. Strips the org's fixed convention tokens (vm-/prs/aen — identical on
+    every VM, so blind-truncation would keep the useless tokens and risk
+    cross-project collisions) before truncating, keeps <project><env> joined
+    without hyphens to save characters, and always preserves -NNN. Only
+    truncates the leftmost remaining token (the project name, in the standard
+    convention) from the right, and only if still over budget.
+    e.g. vm-g100-dev-prs-aen-001 -> g100dev-001.
+    Returns {name, truncated, error}. Validated against Azure's documented
+    computerName rules (not a hand-rolled list): <=15 chars, letters/digits/
+    hyphens only, not all-numeric, no trailing hyphen or period."""
+    m = re.match(r"^(.*)-(\d{%d})$" % suffix_width, full_resource_name)
+    if not m:
+        return {"name": None, "truncated": False,
+                "error": f"'{full_resource_name}' doesn't end in the expected -{'0' * suffix_width} suffix."}
+    stem, suffix = m.group(1), m.group(2)
+    tokens = [t for t in stem.split("-") if t and t.lower() not in _WINDOWS_COMPUTERNAME_TOKENS]
+    if not tokens:
+        tokens = [stem]   # nothing recognizable to strip — fall back to the whole stem
+    name = "".join(tokens) + "-" + suffix
+    truncated = False
+    if len(name) > 15:
+        overflow = len(name) - 15
+        if len(tokens[0]) <= overflow:
+            return {"name": None, "truncated": False,
+                    "error": f"Computer name '{name}' is {len(name)} characters — even removing "
+                             f"the project token entirely doesn't fit Windows' 15-character limit "
+                             f"with this suffix width."}
+        tokens[0] = tokens[0][:len(tokens[0]) - overflow]
+        name = "".join(tokens) + "-" + suffix
+        truncated = True
+    if not re.match(r"^[A-Za-z0-9-]+$", name):
+        return {"name": None, "truncated": truncated,
+                "error": f"Computer name '{name}' contains characters Windows disallows "
+                         f"(letters, digits and hyphens only)."}
+    if name.replace("-", "").isdigit():
+        return {"name": None, "truncated": truncated,
+                "error": f"Computer name '{name}' cannot consist entirely of numbers."}
+    if name.endswith("-") or name.endswith("."):
+        return {"name": None, "truncated": truncated,
+                "error": f"Computer name '{name}' cannot end with a hyphen or period."}
+    return {"name": name, "truncated": truncated, "error": None}
+
+
+# ── Multi-VM naming, collision resolution, and the read-only deploy preview ──
+# All read-only except the resource-group scan (VM/NIC/disk list — also
+# read-only, runs for real even in dry-run). No creates happen anywhere here.
+
+def resolve_vm_names(base: str, count: int, suffix_width: int, start_at: int = 1) -> list:
+    """<base>-001, <base>-002 ... zero-padded to suffix_width, starting at
+    start_at. ALWAYS suffixed, even when count == 1, so a later request against
+    the same base is never ambiguous about which VM is which."""
+    return [f"{base}-{str(i).zfill(suffix_width)}" for i in range(start_at, start_at + count)]
+
+
+def derive_vm_resource_names(vm_name: str) -> dict:
+    """NIC/OS-disk names for one resolved VM name (data disk names are numbered
+    per-VM separately, since the count varies per VM plan entry)."""
+    return {"nic_name": f"nic-{vm_name}", "os_disk_name": f"osdisk-{vm_name}"}
+
+
+def _extract_taken_indexes(names: list, base: str, suffix_width: int) -> set:
+    """Pure matching logic (no Azure calls) — which VM ordinals a list of
+    existing resource names (VMs, NICs, disks) already occupies for this base.
+    Kept separate from list_existing_vm_indexes() so the matching logic itself
+    is testable with synthetic name lists, independent of live Azure access."""
+    esc = re.escape(base)
+    patterns = [
+        re.compile(rf"^{esc}-(\d{{{suffix_width}}})$"),               # vm-<base>-NNN
+        re.compile(rf"^nic-{esc}-(\d{{{suffix_width}}})$"),           # nic-<base>-NNN
+        re.compile(rf"^osdisk-{esc}-(\d{{{suffix_width}}})$"),        # osdisk-<base>-NNN
+        re.compile(rf"^datadisk-{esc}-(\d{{{suffix_width}}})-\d+$"),  # datadisk-<base>-NNN-01..
+    ]
+    taken = set()
+    for name in names:
+        for rx in patterns:
+            m = rx.match(name)
+            if m:
+                taken.add(int(m.group(1)))
+                break
+    return taken
+
+
+def list_existing_vm_indexes(subscription_id: str, resource_group: str,
+                             base: str, suffix_width: int) -> dict:
+    """Which VM ordinals for this base are already taken in the target RG —
+    scans VM, NIC AND disk names, not just VMs: a previously failed deploy can
+    leave an orphan NIC or disk with no VM behind it, and the next create would
+    collide on that name alone. Read-only; runs for real even in dry-run."""
+    try:
+        compute = _compute_client(subscription_id)
+        network = _network_client(subscription_id)
+        names = []
+        names += [v.name for v in compute.virtual_machines.list(resource_group)]
+        names += [d.name for d in compute.disks.list_by_resource_group(resource_group)]
+        names += [n.name for n in network.network_interfaces.list(resource_group)]
+        return {"success": True, "taken": sorted(_extract_taken_indexes(names, base, suffix_width))}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "taken": []}   # RG doesn't exist yet — nothing taken
+        log.error("list_existing_vm_indexes failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def assign_vm_zones(zones, indexes: list) -> list:
+    """Round-robin zone assignment keyed by each VM's ACTUAL -NNN index, not its
+    position within this batch — so a given ordinal always maps to the same
+    zone regardless of which request/collision-offset created it (index 1 ->
+    first zone, index 2 -> second, wrapping). zones is the parsed list from
+    the request: falsy (None/empty) = no zone pinning; one zone = every VM in
+    that zone."""
+    if not zones:
+        return [None] * len(indexes)
+    return [zones[(idx - 1) % len(zones)] for idx in indexes]
+
+
+def build_vm_plan(subscription_id: str, resource_group: str, base: str, count: int,
+                  suffix_width: int, zones, os_type: str, data_disk_count: int = 0) -> dict:
+    """Resolve the full per-VM deploy plan for a request: names (skipping past
+    every index already taken in the target RG — VM, NIC or disk), zones
+    (round-robin), and — for Windows only — the derived, truncated, validated
+    computer name (Linux uses the resource name as-is; its 64-char budget
+    already covers it). No Azure writes. This is exactly what the admin
+    preview shows before any create call, and what stage 4 persists as
+    details['vm_plan'] with a per-VM status."""
+    idx_res = list_existing_vm_indexes(subscription_id, resource_group, base, suffix_width)
+    if not idx_res.get("success"):
+        return {"success": False,
+                "message": "Could not scan the resource group for existing names — "
+                           + idx_res.get("message", "")}
+    taken = set(idx_res.get("taken") or [])
+    names, indexes, i = [], [], 1
+    max_index = 10 ** suffix_width - 1
+    while len(names) < count:
+        if i > max_index:
+            return {"success": False,
+                    "message": f"Ran out of available -NNN indexes for base '{base}' "
+                               f"({suffix_width}-digit suffix) — too many existing resources "
+                               f"share this base name."}
+        if i not in taken:
+            names.append(f"{base}-{str(i).zfill(suffix_width)}")
+            indexes.append(i)
+        i += 1
+
+    # Zones are keyed to each VM's ACTUAL index (see assign_vm_zones), so the
+    # mapping stays stable across collision offsets, not just batch position.
+    zone_list = assign_vm_zones(zones, indexes)
+    plan = []
+    for name, zone in zip(names, zone_list):
+        res_names = derive_vm_resource_names(name)
+        computer_name = name
+        if os_type == "Windows":
+            cn = derive_windows_computer_name(name, suffix_width)
+            if cn.get("error"):
+                return {"success": False, "message": f"{name}: {cn['error']}"}
+            computer_name = cn["name"]
+        data_disks = [f"datadisk-{name}-{str(j + 1).zfill(2)}" for j in range(data_disk_count)]
+        plan.append({"name": name, "computer_name": computer_name, "zone": zone,
+                    "nic": res_names["nic_name"], "os_disk": res_names["os_disk_name"],
+                    "data_disks": data_disks, "status": "pending"})
+    return {"success": True, "plan": plan}
+
+
+@_guard
+def create_vm(
+    subscription_id: str,
+    resource_group: str,
+    vm_name: str,
+    location: str,
+    subnet_id: str,
+    size: str,
+    image_reference: str,          # already resolved: "publisher:offer:sku:version"
+    os_disk_name: str,
+    os_disk_type: str,
+    os_disk_size_gb,
+    nic_name: str,
+    computer_name: str = None,
+    data_disks: list = None,       # [{"name", "disk_type", "size_gb"}, ...]
+    zone: str = None,
+    os_type: str = "Linux",
+    auth_mode: str = "ssh_key",
+    ssh_public_key: str = None,
+    admin_password: str = None,    # used ONLY for this one call — never logged/returned/retained
+    admin_username: str = "azureuser",
+    accelerated_networking: bool = False,
+    tags: dict = None,
+) -> dict:
+    """RG (ensure) -> NIC (no public IP, ever; no NSG created — the subnet's own
+    applies) -> the VM itself, one create_or_update call. The OS disk and every
+    data disk are declared BY NAME inside the VM's own storage profile
+    (create_option FromImage/Empty) rather than pre-created as standalone Disk
+    resources and then Attach-ed: a disk that's merely Attach-ed never goes
+    through Azure's guest-OS provisioning agent, so computer name / admin
+    creds / SSH key would silently never land — declaring them inline is the
+    only way to get both custom names AND correct provisioning. NIC and every
+    disk are tagged delete_option=Delete, so deleting the VM (this op's
+    revert) cascades to remove all of them without touching the subnet, its
+    NSG, or anything else this portal didn't create.
+    Windows VMs need admin_password (Azure requirement) — ssh_key-only auth on
+    a Windows image is rejected here rather than sent to Azure malformed."""
+    if os_type == "Windows" and auth_mode != "password":
+        return {"success": False, "message": "Windows VMs require password authentication — "
+                                              "this portal doesn't support SSH-key-only auth "
+                                              "for Windows images."}
+    try:
+        rg_res = ensure_resource_group(subscription_id, resource_group, location)
+        if not rg_res.get("success"):
+            return {"success": False, "message": f"Resource group: {rg_res.get('message')}"}
+
+        compute = _compute_client(subscription_id)
+
+        # No silent overwrite: a VM with this name already existing means a
+        # prior partial deploy or a name collision the plan should have caught.
+        try:
+            existing = compute.virtual_machines.get(resource_group, vm_name)
+            return {"success": False, "conflict": True,
+                    "message": f"VM '{vm_name}' already exists in {resource_group} "
+                               f"({existing.provisioning_state}) — not overwriting."}
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
+
+        from azure.mgmt.network.models import NetworkInterface, NetworkInterfaceIPConfiguration
+        from azure.mgmt.network.models import Subnet as _NetSubnet
+        from azure.mgmt.compute.models import (
+            VirtualMachine, HardwareProfile, StorageProfile, ImageReference, OSDisk, DataDisk,
+            ManagedDiskParameters, NetworkProfile, NetworkInterfaceReference,
+            NetworkInterfaceReferenceProperties, OSProfile, LinuxConfiguration, SshConfiguration,
+            SshPublicKey)
+
+        network = _network_client(subscription_id)
+        log.info("Creating NIC '%s' for VM '%s' in %s/%s", nic_name, vm_name, resource_group, location)
+        nic = network.network_interfaces.begin_create_or_update(
+            resource_group, nic_name,
+            NetworkInterface(
+                location=location,
+                ip_configurations=[NetworkInterfaceIPConfiguration(
+                    name="ipconfig1", subnet=_NetSubnet(id=subnet_id),
+                    private_ip_allocation_method="Dynamic")],   # no public_ip_address — none, ever
+                enable_accelerated_networking=bool(accelerated_networking),
+                tags=_tags(tags),
+            )).result()
+
+        parts = (image_reference or "").split(":")
+        if len(parts) != 4:
+            return {"success": False,
+                    "message": f"Image reference '{image_reference}' must be fully resolved "
+                               f"to publisher:offer:sku:version before deploy."}
+        img_ref = ImageReference(publisher=parts[0], offer=parts[1], sku=parts[2], version=parts[3])
+
+        os_disk = OSDisk(
+            name=os_disk_name, create_option="FromImage",
+            managed_disk=ManagedDiskParameters(storage_account_type=os_disk_type),
+            disk_size_gb=int(os_disk_size_gb) if os_disk_size_gb else None,
+            delete_option="Delete")
+        data_disk_objs = [
+            DataDisk(lun=i, name=d["name"], create_option="Empty",
+                    disk_size_gb=int(d["size_gb"]),
+                    managed_disk=ManagedDiskParameters(storage_account_type=d["disk_type"]),
+                    delete_option="Delete")
+            for i, d in enumerate(data_disks or [])
+        ]
+
+        os_profile_kwargs = {"computer_name": (computer_name or vm_name)[:64],
+                             "admin_username": admin_username}
+        if auth_mode == "ssh_key":
+            os_profile_kwargs["linux_configuration"] = LinuxConfiguration(
+                disable_password_authentication=True,
+                ssh=SshConfiguration(public_keys=[SshPublicKey(
+                    path=f"/home/{admin_username}/.ssh/authorized_keys", key_data=ssh_public_key)]))
+        else:
+            os_profile_kwargs["admin_password"] = admin_password
+
+        vm_params = dict(
+            location=location, tags=_tags(tags),
+            hardware_profile=HardwareProfile(vm_size=size),
+            storage_profile=StorageProfile(image_reference=img_ref, os_disk=os_disk,
+                                           data_disks=data_disk_objs or None),
+            os_profile=OSProfile(**os_profile_kwargs),
+            network_profile=NetworkProfile(network_interfaces=[NetworkInterfaceReference(
+                id=nic.id, properties=NetworkInterfaceReferenceProperties(
+                    primary=True, delete_option="Delete"))]),
+        )
+        if zone:
+            vm_params["zones"] = [str(zone)]
+
+        log.info("Creating VM '%s' (%s, %s) in %s/%s — auth_mode=%s",
+                 vm_name, size, image_reference, resource_group, location, auth_mode)
+        compute.virtual_machines.begin_create_or_update(
+            resource_group, vm_name, VirtualMachine(**vm_params)).result()
+
+        msg = f"VM '{vm_name}' created ({size}, zone {zone or 'none'})."
+        if rg_res.get("created"):
+            msg = f"RG '{resource_group}' created. " + msg
+        change = {
+            "target": f"VM {vm_name} @ {resource_group}",
+            "before": None,
+            "after": {"name": vm_name, "size": size, "zone": zone, "nic": nic_name,
+                     "os_disk": os_disk_name, "data_disks": [d["name"] for d in (data_disks or [])]},
+            "revert_op": "delete_vm",
+            "revert_params": {"sub": subscription_id, "rg": resource_group, "vm": vm_name},
+        }
+        vm_id = (f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
+                f"/providers/Microsoft.Compute/virtualMachines/{vm_name}")
+        return {"success": True, "change": change,
+                "resource_ids": {"vm": vm_id, "nic": nic.id}, "message": msg}
+    except Exception as exc:
+        # admin_password never appears in exception text we construct ourselves, but be
+        # defensive about SDK error strings too — Azure error bodies don't echo request
+        # payload secrets, only field-validation messages, so this is safe as written.
+        log.error("create_vm failed for '%s': %s", vm_name, exc)
+        return {"success": False, "message": str(exc)[:300]}
+
+
+@_guard
+def delete_vm(subscription_id: str, resource_group: str, vm_name: str) -> dict:
+    """Delete a VM this portal created (revert op). Its NIC and disks were
+    tagged delete_option=Delete at creation time, so this single call cascades
+    to remove them too — never the subnet, its NSG, or anything else. Same
+    idempotent-on-404 pattern as the other revert ops in this module."""
+    try:
+        client = _compute_client(subscription_id)
+        client.virtual_machines.begin_delete(resource_group, vm_name).result()
+        return {"success": True,
+                "message": f"VM '{vm_name}' (and its NIC/disks) deleted from {resource_group}."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "message": f"VM '{vm_name}' already absent."}
+        log.error("delete_vm failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def list_disk_skus(location: str, vm_sku_caps: dict = None) -> dict:
+    """Managed-disk SKUs, filtered to what the chosen VM SKU actually supports.
+    No live Azure call needed — the disk-type list itself is fixed; the only
+    per-SKU variable is whether Premium options apply, which list_vm_skus
+    already told the caller via 'premium_io'. Kept here (not a static JS list)
+    so PremiumV2/UltraSSD zone/region caveats have one server-side place to grow."""
+    from config import VM_OS_DISK_TYPES, VM_DATA_DISK_TYPES
+    premium_io = bool((vm_sku_caps or {}).get("premium_io"))
+    os_types = list(VM_OS_DISK_TYPES) if premium_io else [t for t in VM_OS_DISK_TYPES if "Premium" not in t]
+    data_types = list(VM_DATA_DISK_TYPES) if premium_io else [t for t in VM_DATA_DISK_TYPES if "Premium" not in t]
+    return {"success": True, "os_disk_types": os_types, "data_disk_types": data_types}
+
+
+def check_vm_quota(subscription_id: str, location: str, sku: str, count) -> dict:
+    """Compare regional + SKU-family vCPU quota against vcpus_per_vm * count.
+    Read-only; runs for real even in dry-run. Call again immediately before the
+    deploy loop (not only at submit) — headroom moves while a request sits."""
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = 0
+    if not all([subscription_id, location, sku]) or count < 1:
+        return {"success": False, "message": "Subscription, region, SKU and a count ≥ 1 are required."}
+    try:
+        info = _vm_sku_lookup(subscription_id, location, sku)
+        if not info or not info.get("vcpus"):
+            return {"success": False,
+                    "message": f"Could not determine vCPU count for SKU '{sku}' in {location} "
+                               f"(unknown SKU, or unavailable to this subscription)."}
+        vcpus_per_vm = info["vcpus"]
+        requested = vcpus_per_vm * count
+        client = _compute_client(subscription_id)
+        usage_by_name = {u.name.value: u for u in client.usage.list(location)}
+        checks = []
+        for key, label in (("cores", "Regional vCPUs"),
+                           (info["family"], f"{info['family']} vCPUs")):
+            u = usage_by_name.get(key)
+            if not u:
+                continue
+            available = int(u.limit) - int(u.current_value)
+            checks.append({"name": label, "current": int(u.current_value), "limit": int(u.limit),
+                           "available": available, "requested": requested,
+                           "fits": available >= requested})
+        fits = bool(checks) and all(c["fits"] for c in checks)
+        return {"success": True, "fits": fits, "vcpus_per_vm": vcpus_per_vm,
+                "requested_vcpus": requested, "checks": checks,
+                "message": ("Fits within quota." if fits else
+                            "Requested vCPUs exceed available quota — " +
+                            "; ".join(f"{c['name']}: requested {c['requested']}, available {c['available']}"
+                                     for c in checks if not c["fits"]))}
+    except Exception as exc:
+        log.error("check_vm_quota failed: %s", exc)
         return {"success": False, "message": str(exc)[:200]}
 
 

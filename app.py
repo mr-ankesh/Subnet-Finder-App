@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, g
 from functools import wraps
 import ipaddress
 import logging
@@ -13,7 +13,8 @@ import changes
 import search
 import settings_store
 from config import (cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view,
-                    AKS_FALLBACK_VERSIONS, AKS_FALLBACK_SIZES, AKS_STANDARD_REGION)
+                    AKS_FALLBACK_VERSIONS, AKS_FALLBACK_SIZES, AKS_STANDARD_REGION,
+                    VM_OS_DISK_TYPES, VM_DATA_DISK_TYPES)
 from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus, RequestType, FwCollection
 from naming import render_name
 import notifications
@@ -395,6 +396,20 @@ def inject_globals():
                              "service_cidr": cfg.AKS_SERVICE_CIDR, "dns_ip": cfg.AKS_DNS_SERVICE_IP,
                              "private": cfg.AKS_PRIVATE_CLUSTER, "outbound": cfg.AKS_OUTBOUND_TYPE,
                              "upgrade": cfg.AKS_UPGRADE_CHANNEL, "node_os": cfg.AKS_NODE_OS_UPGRADE_CHANNEL},
+            # VM request form: fixed disk-type options (SKUs/images/zones are
+            # fetched live from Azure — see azure_tools.list_vm_skus etc., stage 2)
+            # + the defaults applied to anything the requester doesn't pick.
+            "vm_os_disk_types":  list(VM_OS_DISK_TYPES),
+            "vm_data_disk_types": list(VM_DATA_DISK_TYPES),
+            "vm_defaults": {"region": cfg.VM_DEFAULT_REGION or AKS_STANDARD_REGION,
+                            "max_count": cfg.VM_MAX_PER_REQUEST,
+                            "os_disk_type": cfg.VM_DEFAULT_OS_DISK_TYPE,
+                            "os_disk_size_gb": cfg.VM_DEFAULT_OS_DISK_SIZE_GB,
+                            "suffix_digits": cfg.VM_NAME_SUFFIX_DIGITS,
+                            "always_suffixed": cfg.VM_NAME_ALWAYS_SUFFIXED,
+                            "require_ssh_key": cfg.VM_REQUIRE_SSH_KEY,
+                            "images": [ln.strip() for ln in (cfg.VM_DEFAULT_IMAGES or "").replace(",", "\n").splitlines()
+                                      if ln.strip()]},
             **_approvals_nav_ctx()}
 
 
@@ -664,6 +679,14 @@ def _validate_setting(key: str, spec: dict, value: str):
             return "Must be a valid IP address."
     if key.startswith("TPL_") and not value:
         return "Naming template cannot be empty."
+    if key == "VM_DEFAULT_IMAGES" and value:
+        for entry in (ln.strip() for ln in value.replace(",", "\n").splitlines()):
+            if not entry:
+                continue
+            parts = entry.split(":")
+            if len(parts) not in (3, 4) or not all(parts):
+                return (f"'{entry}' is not a valid image reference — use "
+                        f"publisher:offer:sku or publisher:offer:sku:version.")
     return None
 
 
@@ -1905,6 +1928,125 @@ def azure_subnets():
     return jsonify(res), (200 if res.get("success") else 400)
 
 
+# ── VM live option lookups (requester-accessible — needed pre-submit) ──────
+# {ok, data, error} throughout, never a 500 to the browser: an Azure failure
+# (bad creds, throttling, invalid SKU...) is a normal, expected outcome the
+# form needs to degrade to free-text on, not a server error. Subscription/
+# region come from the request only — never fall back to a configured hub/
+# spoke subscription, so a requester can't enumerate Azure resources without
+# explicitly typing the subscription they want looked up.
+
+def _vm_lookup_response(result: dict, data_keys: list):
+    if result.get("success"):
+        return jsonify({"ok": True, "data": {k: result.get(k) for k in data_keys}, "error": None})
+    return jsonify({"ok": False, "data": None, "error": result.get("message") or "Lookup failed."})
+
+
+@app.route("/api/azure/vm-skus")
+@require_login
+def azure_vm_skus():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    region = request.args.get("region", "").strip()
+    if not sub or not region:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID and region are required."})
+    try:
+        res = azure_tools.list_vm_skus(sub, region)
+    except Exception as exc:
+        log.error("azure_vm_skus failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["skus", "total"])
+
+
+@app.route("/api/azure/vm-images")
+@require_login
+def azure_vm_images():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    region = request.args.get("region", "").strip()
+    if not sub or not region:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID and region are required."})
+    try:
+        res = azure_tools.list_vm_images(sub, region)
+    except Exception as exc:
+        log.error("azure_vm_images failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["images"])
+
+
+@app.route("/api/azure/vm-marketplace-images")
+@require_login
+def azure_vm_marketplace_images():
+    """On-demand ('Load Marketplace Images') — a hand-picked set of common OS
+    publishers/offers, not loaded until the requester asks for it. A failure
+    here never affects the curated 'Recommended Images' list (a separate
+    route/call) or request submission — it only means this section stays
+    empty and the requester keeps using Recommended or free text."""
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    region = request.args.get("region", "").strip()
+    if not sub or not region:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID and region are required."})
+    try:
+        res = azure_tools.list_marketplace_images(sub, region)
+    except Exception as exc:
+        log.error("azure_vm_marketplace_images failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["images"])
+
+
+@app.route("/api/azure/disk-skus")
+@require_login
+def azure_disk_skus():
+    import azure_tools
+    region = request.args.get("region", "").strip()
+    if not region:
+        return jsonify({"ok": False, "data": None, "error": "Region is required."})
+    premium_io = request.args.get("premium_io", "").strip().lower() in ("1", "true", "yes")
+    try:
+        res = azure_tools.list_disk_skus(region, {"premium_io": premium_io})
+    except Exception as exc:
+        log.error("azure_disk_skus failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["os_disk_types", "data_disk_types"])
+
+
+@app.route("/api/azure/vm-zones")
+@require_login
+def azure_vm_zones():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    region = request.args.get("region", "").strip()
+    sku = request.args.get("sku", "").strip()
+    if not sub or not region or not sku:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID, region and SKU are required."})
+    try:
+        res = azure_tools.list_vm_zones(sub, region, sku)
+    except Exception as exc:
+        log.error("azure_vm_zones failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["zones"])
+
+
+@app.route("/api/azure/vm-quota")
+@require_login
+def azure_vm_quota():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    region = request.args.get("region", "").strip()
+    sku = request.args.get("sku", "").strip()
+    count = request.args.get("count", "").strip()
+    if not sub or not region or not sku or not count:
+        return jsonify({"ok": False, "data": None,
+                        "error": "Subscription ID, region, SKU and count are required."})
+    try:
+        res = azure_tools.check_vm_quota(sub, region, sku, count)
+    except Exception as exc:
+        log.error("azure_vm_quota failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["fits", "vcpus_per_vm", "requested_vcpus", "checks", "message"])
+
+
 @app.route("/requester")
 @require_login
 def requester_page():
@@ -1936,9 +2078,29 @@ TYPE_REQUIRED_DETAILS = {
     RequestType.AKS_CLUSTER:       ["cluster_name", "resource_group", "subscription_id",
                                     "vnet_name", "subnet_name", "node_pool_name", "tier",
                                     "zpa_rnd_access"],
+    RequestType.VM_CREATE:         ["vm_base_name", "vm_count", "resource_group", "subscription_id",
+                                    "vnet_name", "subnet_name", "vm_size", "os_disk_type",
+                                    "auth_mode"],
     RequestType.NETWORK_ISSUE:     ["issue", "source", "destination"],
     RequestType.OTHER:             ["description"],
 }
+
+
+def _cached_vm_skus(subscription_id: str, location: str) -> dict:
+    """Request-scoped memoization of list_vm_skus (a 1000+ entry resourceSkus
+    scan) — Flask's `g` is thread-local and cleared after every request, so
+    this only avoids re-scanning when the SAME incoming request needs SKU data
+    more than once (e.g. the submit guard and, in stage 3+, the preview
+    endpoint). It is NOT a module-level cache: nothing here persists between
+    requests or is shared across the 3 prod replicas."""
+    import azure_tools
+    key = (subscription_id, location)
+    cache = getattr(g, "_vm_skus_cache", None)
+    if cache is None:
+        cache = g._vm_skus_cache = {}
+    if key not in cache:
+        cache[key] = azure_tools.list_vm_skus(subscription_id, location)
+    return cache[key]
 
 
 def _apply_submission_gate(req):
@@ -2034,7 +2196,13 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
     if not purpose or not requester_name:
         return {"error": "Name and a short summary/purpose are required."}, 400
 
+    # zones:null is a deliberate signal (the chosen SKU has no zone support) that
+    # the generic None-stripping below would otherwise erase into indistinguishable
+    # omission — capture it before stripping so it survives as an auditable record.
+    _zones_explicit_null = "zones" in (details or {}) and (details or {}).get("zones") is None
     details = {k: v for k, v in (details or {}).items() if v not in (None, "")}
+    if _zones_explicit_null:
+        details["zones"] = None
     # Business justification is mandatory for every request type, portal-wide.
     if not str(details.get("justification") or "").strip():
         return {"error": "A business justification is required."}, 400
@@ -2127,6 +2295,156 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
                 return {"error": "Node count must be a whole number."}, 400
             if nc < 1:
                 return {"error": "Node count must be at least 1."}, 400
+
+    # VM guard: base name, count, region, disk type and auth mode at submission
+    # time. SKU/image/zone existence and quota are re-verified live at deploy
+    # (stage 2+) — this only catches malformed input the picker UI wouldn't send.
+    if request_type == RequestType.VM_CREATE:
+        import re as _re_vm
+        base = details.get("vm_base_name", "")
+        suffix_width = int(cfg.VM_NAME_SUFFIX_DIGITS or 3)
+        # The requester types a BASE name; deploy always appends -NNN (used for the
+        # RESOURCE name — RG, tags, cost, change ledger — up to Azure's 64-char
+        # limit). That's independent of osProfile.computerName (15 Windows / 64
+        # Linux), which is a SEPARATE, derived, truncated value handled once the
+        # image tells us the OS (stage 2) and shown per VM in the deploy preview
+        # (stage 3) — not validated here.
+        base_max = 64 - (1 + suffix_width)
+        if base_max < 1:
+            return {"error": f"VM name suffix digits ({suffix_width}) leaves no room for a base "
+                             f"name — reduce it in Settings → VM Defaults."}, 400
+        if not _re_vm.match(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$", base):
+            return {"error": "VM base name must be letters, digits or '-', starting and ending "
+                             "with a letter or digit."}, 400
+        if len(base) > base_max:
+            return {"error": f"VM base name must be at most {base_max} characters — this reserves "
+                             f"room for the '-{'0' * suffix_width}' suffix (Azure's 64-character "
+                             f"resource-name limit)."}, 400
+        try:
+            vm_count = int(details.get("vm_count") or 0)
+        except ValueError:
+            return {"error": "VM count must be a whole number."}, 400
+        vm_max = int(cfg.VM_MAX_PER_REQUEST or 10)
+        if vm_count < 1 or vm_count > vm_max:
+            return {"error": f"VM count must be between 1 and {vm_max} (Settings → VM Defaults)."}, 400
+        vm_region = (details.get("region") or cfg.VM_DEFAULT_REGION or AKS_STANDARD_REGION).strip()
+        default_region = cfg.VM_DEFAULT_REGION or AKS_STANDARD_REGION
+        if vm_region != default_region and not (details.get("region_justification") or "").strip():
+            return {"error": f"A justification is required to deploy outside the standard "
+                             f"region ({default_region})."}, 400
+        if details.get("os_disk_type") not in VM_OS_DISK_TYPES:
+            return {"error": "Pick a valid OS disk type: " + ", ".join(VM_OS_DISK_TYPES) + "."}, 400
+        auth_mode = details.get("auth_mode")
+        if auth_mode not in ("ssh_key", "password"):
+            return {"error": "Pick an authentication mode: SSH public key or password."}, 400
+        if auth_mode == "password" and cfg.VM_REQUIRE_SSH_KEY:
+            return {"error": "Password authentication is disabled (Settings → VM Defaults) — "
+                             "use an SSH public key."}, 400
+        if auth_mode == "ssh_key":
+            ssh_key = (details.get("ssh_public_key") or "").strip()
+            if not ssh_key:
+                return {"error": "An SSH public key is required for SSH key authentication."}, 400
+            if "\n" in ssh_key or "\r" in ssh_key:
+                return {"error": "SSH public key must be a single line — paste just the key, "
+                                 "not a file with extra lines."}, 400
+            if not _re_vm.match(r"^(ssh-rsa|ssh-ed25519|ecdsa-sha2-\S+)\s+\S+", ssh_key):
+                return {"error": "SSH public key must start with ssh-rsa, ssh-ed25519 or "
+                                 "ecdsa-sha2-* followed by the key data."}, 400
+        # Password auth: the requester never supplies a password — the admin sets
+        # it once at deploy time (stage 4). Strip anything a client might still send.
+        details.pop("admin_password", None)
+        disks = []
+        if details.get("data_disks"):
+            import json as _json_vm
+            try:
+                disks = _json_vm.loads(details["data_disks"])
+                if not isinstance(disks, list):
+                    raise ValueError
+                for d in disks:
+                    if int(d.get("size_gb") or 0) < 4:
+                        return {"error": "Each data disk needs a size of at least 4 GB."}, 400
+                    if d.get("disk_type") not in VM_DATA_DISK_TYPES:
+                        return {"error": "Pick a valid data disk type: " + ", ".join(VM_DATA_DISK_TYPES) + "."}, 400
+            except (ValueError, TypeError, KeyError):
+                return {"error": "Data disks are malformed — re-add them from the form."}, 400
+
+        # Live Azure checks below — the picker degrades to free text on fetch
+        # failure, so nothing here can assume the client already validated it.
+        # (No quota check here: quota is a live-headroom warning in the form and
+        # a hard block at deploy — see azure_tools.check_vm_quota — not a submit gate.)
+        import azure_tools as _az_vm
+        sku_res = _cached_vm_skus(details.get("subscription_id", ""), vm_region)
+        if not sku_res.get("success"):
+            return {"error": "Could not verify the VM size against Azure — " + sku_res.get("message", "")}, 400
+        sku_match = next((s for s in sku_res.get("skus", []) if s["name"] == details.get("vm_size")), None)
+        if not sku_match:
+            return {"error": f"'{details.get('vm_size')}' is not a valid VM size for this "
+                             f"subscription/region (or excluded by the allowed SKU families in "
+                             f"Settings → VM Defaults)."}, 400
+        if "Premium" in details["os_disk_type"] and not sku_match["premium_io"]:
+            return {"error": f"'{details['vm_size']}' does not support Premium storage — "
+                             f"pick a non-Premium OS disk type."}, 400
+        for d in disks:
+            if "Premium" in d.get("disk_type", "") and not sku_match["premium_io"]:
+                return {"error": f"'{details['vm_size']}' does not support Premium storage — "
+                                 f"pick a non-Premium data disk type."}, 400
+        if len(disks) > (sku_match["max_data_disks"] or 0):
+            return {"error": f"'{details['vm_size']}' supports at most "
+                             f"{sku_match['max_data_disks']} data disk(s) — {len(disks)} requested."}, 400
+        if details.get("zones"):
+            req_zones = [z.strip() for z in str(details["zones"]).split(",") if z.strip()]
+            bad_zones = [z for z in req_zones if z not in sku_match["zones"]]
+            if bad_zones:
+                return {"error": f"'{details['vm_size']}' is not available in zone(s) "
+                                 + ", ".join(bad_zones) + f" in {vm_region} — available: "
+                                 + (", ".join(sku_match["zones"]) or "none") + "."}, 400
+        if details.get("accelerated_networking") and not sku_match["accelerated_networking"]:
+            return {"error": f"'{details['vm_size']}' does not support accelerated networking."}, 400
+
+        vnet_rg = details.get("vnet_resource_group") or details.get("resource_group")
+        vnets_res = _az_vm.list_vnets(details.get("subscription_id", ""))
+        if not vnets_res.get("success"):
+            return {"error": "Could not verify the VNet against Azure — " + vnets_res.get("message", "")}, 400
+        vnet_match = next((v for v in vnets_res.get("vnets", [])
+                           if v["name"] == details.get("vnet_name")
+                           and v["resource_group"].lower() == (vnet_rg or "").lower()), None)
+        if not vnet_match:
+            return {"error": f"VNet '{details.get('vnet_name')}' was not found in resource group "
+                             f"'{vnet_rg}' in this subscription."}, 400
+        if vnet_match["location"].lower() != vm_region.lower():
+            return {"error": f"VNet '{details.get('vnet_name')}' is in {vnet_match['location']}, "
+                             f"not {vm_region} — a VM's NIC must be in the same region as its VNet."}, 400
+        subnets_res = _az_vm.list_subnets(details.get("subscription_id", ""), vnet_rg, details.get("vnet_name"))
+        if not subnets_res.get("success"):
+            return {"error": "Could not verify the subnet against Azure — " + subnets_res.get("message", "")}, 400
+        if not any(s["name"] == details.get("subnet_name") for s in subnets_res.get("subnets", [])):
+            return {"error": f"Subnet '{details.get('subnet_name')}' was not found in VNet "
+                             f"'{details.get('vnet_name')}'."}, 400
+
+        # Image resolution + the Windows computerName validation deferred from
+        # stage 1 (Linux has no such limit — the 64-char resource name already
+        # covers it). Every planned VM's computer name is checked now, since the
+        # base name and count are both already known.
+        image_ref = details.get("os_image") or ""
+        if not image_ref:
+            curated = [ln.strip() for ln in (cfg.VM_DEFAULT_IMAGES or "").replace(",", "\n").splitlines()
+                      if ln.strip()]
+            image_ref = curated[0] if curated else ""
+        if not image_ref:
+            return {"error": "No image specified, and no default image is configured "
+                             "(Settings → VM Defaults)."}, 400
+        img_res = _az_vm.resolve_vm_image(details.get("subscription_id", ""), vm_region, image_ref)
+        if not img_res.get("success"):
+            return {"error": f"Image '{image_ref}' could not be resolved — " + img_res.get("message", "")}, 400
+        details["os_image"] = img_res["reference"]   # pin the resolved version for deploy
+        if img_res.get("os_type"):
+            details["os_type"] = img_res["os_type"]  # Windows/Linux — stage 3 preview reads this
+        if img_res.get("os_type") == "Windows":
+            for i in range(1, vm_count + 1):
+                full_name = f"{base}-{str(i).zfill(suffix_width)}"
+                cn = _az_vm.derive_windows_computer_name(full_name, suffix_width)
+                if cn.get("error"):
+                    return {"error": f"VM #{i} ({full_name}): {cn['error']}"}, 400
 
     # Decommission guard: manual changes made outside the portal must be removed
     # by the requester before the admin will decommission the VNET.
@@ -2793,6 +3111,73 @@ def _fqdn_errors(dests: list) -> list:
     return bad
 
 
+def _vm_preview(req) -> dict:
+    """Read-only: resolve (and persist) the per-VM deploy plan — names, zones,
+    NIC/disk names, Windows computer names — without creating anything in
+    Azure. Idempotent: once details['vm_plan'] exists, it's returned as-is
+    rather than re-resolved, so re-opening the preview never reshuffles names
+    or zones already committed to the plan; only the quota delta is live.
+    Shared by the dedicated preview route and the vm_check dispatcher action."""
+    import azure_tools
+    if req.request_type != RequestType.VM_CREATE:
+        return {"error": "Not a VM request."}
+    details = req.get_details()
+    sub = details.get("subscription_id", "")
+    region = details.get("region") or cfg.VM_DEFAULT_REGION or AKS_STANDARD_REGION
+    rg = details.get("resource_group", "")
+    base = details.get("vm_base_name", "")
+    suffix_width = int(cfg.VM_NAME_SUFFIX_DIGITS or 3)
+    os_type = details.get("os_type") or "Linux"
+
+    plan = details.get("vm_plan")
+    if not plan:
+        try:
+            vm_count = int(details.get("vm_count") or 0)
+        except (TypeError, ValueError):
+            return {"error": "Request has an invalid VM count."}
+        zones_raw = details.get("zones")
+        zones = [z.strip() for z in str(zones_raw).split(",") if z.strip()] if zones_raw else None
+        data_disk_count = 0
+        if details.get("data_disks"):
+            import json as _json_preview
+            try:
+                data_disk_count = len(_json_preview.loads(details["data_disks"]))
+            except Exception:
+                data_disk_count = 0
+        res = azure_tools.build_vm_plan(sub, rg, base, vm_count, suffix_width, zones,
+                                        os_type, data_disk_count=data_disk_count)
+        if not res.get("success"):
+            return {"error": res.get("message", "Could not resolve the deploy plan.")}
+        plan = res["plan"]
+        details["vm_plan"] = plan
+        req.set_details(details)
+        req.updated_at = datetime.utcnow()
+        db.session.commit()
+        audit.record("vm_plan_resolved", actor=current_actor(), actor_role="admin", request_id=req.id,
+                     summary=f"VM deploy plan resolved: {', '.join(p['name'] for p in plan)}",
+                     data={"count": len(plan)})
+
+    # Quota delta is live (headroom moves), and only for VMs not already
+    # created — a re-opened preview after a partial deploy shouldn't ask for
+    # quota the already-created VMs don't need again.
+    pending = [p for p in plan if p.get("status") != "created"]
+    quota = None
+    if pending and details.get("vm_size"):
+        q = azure_tools.check_vm_quota(sub, region, details["vm_size"], len(pending))
+        if q.get("success"):
+            quota = q
+
+    return {"plan": plan, "quota": quota, "pending_count": len(pending), "total_count": len(plan)}
+
+
+@app.route("/api/admin/vm/preview/<int:req_id>", methods=["POST"])
+@require_admin
+def admin_vm_preview(req_id):
+    req = SpokeRequest.query.get_or_404(req_id)
+    res = _vm_preview(req)
+    return jsonify(res), (400 if "error" in res else 200)
+
+
 @app.route("/api/admin/azure-action/<int:req_id>", methods=["POST"])
 @require_admin
 def admin_azure_action(req_id):
@@ -3233,6 +3618,106 @@ def admin_azure_action(req_id):
         _auto_advance(req)
         return jsonify(res), (200 if res.get("success") else 207)
 
+    # ── VM(s) actions — read-only plan/quota refresh, and the deploy loop ──
+    if action in ("vm_check", "vm_deploy"):
+        if action == "vm_check":
+            res = _vm_preview(req)
+            return jsonify(res), (400 if "error" in res else 200)
+
+        # vm_deploy — resumable: skip anything already status=created, retry
+        # only pending/failed. Stop on first failure; do NOT roll back
+        # successful VMs (per-VM ledger entries make each one independently
+        # revertable instead).
+        preview = _vm_preview(req)
+        if "error" in preview:
+            return jsonify({"error": preview["error"]}), 400
+        plan = preview["plan"]
+        pending = [p for p in plan if p.get("status") != "created"]
+        if not pending:
+            return jsonify({"success": True, "message": "All VMs in this request are already created.",
+                            "plan": plan, "steps": []}), 200
+
+        sub = details.get("subscription_id", "")
+        region = details.get("region") or cfg.VM_DEFAULT_REGION or AKS_STANDARD_REGION
+        vm_size = details.get("vm_size", "")
+
+        # Hard quota block right before the loop, scoped to pending/failed VMs
+        # only (not the whole original count) — headroom moves while a
+        # request sits, and already-created VMs don't need re-checking.
+        quota = azure_tools.check_vm_quota(sub, region, vm_size, len(pending))
+        if not quota.get("success"):
+            return jsonify({"error": "Could not verify quota before deploy — "
+                            + quota.get("message", "")}), 400
+        if not quota.get("fits"):
+            return jsonify({"error": "Deploy blocked — " + quota.get("message", "")}), 409
+
+        vnet_rg = details.get("vnet_resource_group") or details.get("resource_group")
+        subnet_id = (f"/subscriptions/{sub}/resourceGroups/{vnet_rg}"
+                    f"/providers/Microsoft.Network/virtualNetworks/{details.get('vnet_name')}"
+                    f"/subnets/{details.get('subnet_name')}")
+        # Password auth: entered by the admin in THIS request only — never
+        # read from, or written back to, the stored request details.
+        admin_password = payload.get("admin_password")
+        auth_mode = details.get("auth_mode", "ssh_key")
+        try:
+            os_disk_size_gb = int(details.get("os_disk_size_gb") or 128)
+        except (TypeError, ValueError):
+            os_disk_size_gb = 128
+        parsed_data_disks = []
+        if details.get("data_disks"):
+            import json as _json_deploy
+            try:
+                parsed_data_disks = _json_deploy.loads(details["data_disks"])
+            except Exception:
+                parsed_data_disks = []
+
+        steps = []
+        for p in pending:
+            per_vm_disks = [{"name": nm, "disk_type": d.get("disk_type"), "size_gb": d.get("size_gb")}
+                            for nm, d in zip(p.get("data_disks", []), parsed_data_disks)]
+            res = azure_tools.create_vm(
+                subscription_id=sub, resource_group=details.get("resource_group"),
+                vm_name=p["name"], location=region, subnet_id=subnet_id,
+                size=vm_size, image_reference=details.get("os_image", ""),
+                os_disk_name=p["os_disk"], os_disk_type=details.get("os_disk_type"),
+                os_disk_size_gb=os_disk_size_gb, nic_name=p["nic"],
+                computer_name=p.get("computer_name"), data_disks=per_vm_disks,
+                zone=p.get("zone"), os_type=details.get("os_type") or "Linux",
+                auth_mode=auth_mode, ssh_public_key=details.get("ssh_public_key"),
+                admin_password=admin_password,
+                accelerated_networking=bool(details.get("accelerated_networking")),
+                tags=_deploy_tags(req),
+            )
+            _record_change(res, act="vm_deploy")
+            ok = bool(res.get("success"))
+            p["status"] = "created" if ok else "failed"
+            p["error"] = None if ok else str(res.get("message", ""))[:300]
+            if ok:
+                p["resource_ids"] = res.get("resource_ids")
+            steps.append({"name": p["name"], "success": ok, "dry_run": bool(res.get("dry_run")),
+                         "message": str(res.get("message", ""))})
+            # Persist per-VM progress as we go, not just at the end — a crash
+            # mid-loop still leaves the plan showing what actually succeeded.
+            details["vm_plan"] = plan
+            req.set_details(details)
+            req.updated_at = datetime.utcnow()
+            db.session.commit()
+            audit.record("azure_action", actor=current_actor(), actor_role="admin", request_id=req.id,
+                         summary=f"VM deploy '{p['name']}' — "
+                                 f"{'dry-run' if res.get('dry_run') else ('ok' if ok else 'FAILED')}",
+                         data={"action": "vm_deploy", "vm": p["name"], "success": ok,
+                              "dry_run": bool(res.get("dry_run")),
+                              "message": str(res.get("message", ""))[:300]})
+            if not ok:
+                break   # stop on first failure — do not roll back what already succeeded
+
+        _auto_advance(req)
+        all_created = all(x.get("status") == "created" for x in plan)
+        return jsonify({"success": all_created, "steps": steps, "plan": plan,
+                        "message": ("All VMs deployed." if all_created else
+                                   "Deploy stopped after a failure — re-run to retry "
+                                   "only the pending/failed VMs.")}), (200 if all_created else 207)
+
     # ── VNET decommission actions — driven by request details ──
     if action in ("decom_check", "decom_execute", "decom_release"):
         vnet_name = details.get("vnet_name", "")
@@ -3632,6 +4117,8 @@ def _required_actions(req) -> set:
         if str(d.get("zpa_rnd_access") or "").lower() == "yes":
             req_set.add("aks_link_dns")     # link the private DNS zone to the hub
         return req_set
+    if t == RequestType.VM_CREATE:
+        return {"vm_deploy"}
     return set()
 
 
@@ -3698,6 +4185,17 @@ def _auto_advance(req):
         # in the aks_check action once provisioningState is Succeeded.
         if "aks_deploy" in done:
             new = RequestStatus.AKS_DEPLOYED
+    elif t == RequestType.VM_CREATE:
+        # Per-VM granularity doesn't fit the generic done/required set compare
+        # (multiple independent successes of the SAME 'vm_deploy' action) — read
+        # the plan directly. Completes only when EVERY planned VM is created;
+        # a partial deploy (some created, some pending/failed) stays visibly
+        # incomplete rather than silently stalling at SUBMITTED.
+        plan = req.get_details().get("vm_plan") or []
+        if plan and all(p.get("status") == "created" for p in plan):
+            new = RequestStatus.COMPLETED
+        elif any(p.get("status") == "created" for p in plan):
+            new = RequestStatus.VM_DEPLOYED
     # Only ever move forward within the workflow
     if (not new or new == req.status or new not in wf
             or (req.status in wf and wf.index(new) <= wf.index(req.status))):
