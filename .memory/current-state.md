@@ -36,8 +36,8 @@ items noted below. `main` is the only branch; commits go straight to it.
 - SQLite ↔ Postgres portability layer (`db_backend.py`) + migration script
   covering all raw-SQL tables (subinventory, budget_alert_state, agent_chats)
 - VM(s) deployment (`RequestType.VM_CREATE`) — committed 2026-08-01 (commit
-  `65df6b9`); see `architecture-decisions.md`. Partial verification only
-  (see "Verification Notes" below) — full live-Azure check still pending.
+  `65df6b9`); see `architecture-decisions.md`. **Fully verified against real
+  Azure 2026-08-01** — see "Verification Notes" below.
 
 ## Features In Progress
 
@@ -117,43 +117,78 @@ feature, cosmetic/infra, not part of Storage or VM):
 
 ## Pending Work
 
-- Commit the Storage Account feature (currently only in working tree)
 - Confirm the `helm/subnet-manager/values.yaml` secret-name change
   (`almadar-db`) is intentional and matches the actual K8s secret in the
   target cluster before this ships
 - Decide whether `static/page-bg-original.jpg` (untracked) should be removed,
   kept as a backup, or was left over accidentally
-- Run a full live-Azure verification of both VM_CREATE and
-  STORAGE_ACCOUNT_CREATE against a real subscription before either reaches
-  prod — both currently only partially verified locally (see below)
+- Delete the leftover empty `rg-claude-e2e-qa-test` resource group in the
+  `845e564b-31a3-44b0-b030-226798b31574` ("Sandbox Connectivity") sandbox
+  subscription — created for the 2026-08-01 real E2E test, now empty
+  (storage account + VM successfully reverted); resource-group deletion
+  itself was blocked by the auto-mode permission classifier, so it was left
+  for the user to remove.
 
-## Verification Notes (2026-08-01, both VM and Storage)
+## Verification Notes
 
-This sandbox has no real Azure Service Principal credentials configured
-(`.env`'s `AZURE_CLIENT_ID`/`SECRET`/`TENANT_ID` are blank — a standing,
-sandbox-wide gap, not specific to either feature). Both features were
-verified in-browser against the running local instance by driving the
-actual routes with `curl` (login, submit, admin preview/deploy):
-- Submission gates, offline validation, and error handling all confirmed
-  correct — no 500s/tracebacks anywhere, including when live-Azure calls
-  fail (they degrade to clean `{"ok": false, "error": "..."}` /
-  `{"error": "..."}` responses, confirmed against real Azure endpoints
-  returning real errors like `SubscriptionNotFound`/`InvalidSubscriptionId`).
-- Storage's dry-run deploy (`AZURE_DRY_RUN=true`, the local default) was
-  verified end-to-end: preview renders correctly, deploy short-circuits via
-  `_guard` with a clean simulated response, status advances
-  `SUBMITTED → STORAGE_DEPLOYED` (correctly **not** `COMPLETED`, since
-  `all_steps_ok` is never set for a dry-run — the function body never runs).
-- **Not verified for either feature**: a real (non-dry-run) deploy against
-  live Azure, since that needs real reachable credentials this sandbox
-  doesn't have. Live-Azure-dependent discovery-route *data accuracy* is
-  likewise unverified beyond "it degrades gracefully."
+**2026-08-01, full real Azure E2E pass (both VM and Storage) — both
+features fully confirmed working, independently of the app's own
+reporting.** Real SP credentials were configured (`AZURE_AUTH_MODE=service_principal`)
+and `AZURE_DRY_RUN` was flipped off (both done by the user, not this
+session) against subscription `845e564b-31a3-44b0-b030-226798b31574`
+("Sandbox Connectivity"). Ran the full lifecycle for both request types:
+
+- **Preview**: Storage's `_storage_preview` (no Azure call needed) and VM's
+  `build_vm_plan`/quota check (genuinely live) both resolved correctly
+  against real Azure — first time VM's live plan resolution succeeded in
+  this repo's history of local testing (previously blocked by having no
+  real subscription).
+- **Deploy**: both created real resources successfully
+  (`rg-claude-e2e-qa-test`, region `uaenorth`) — a `StorageV2`/`Standard_LRS`
+  account with a container, and a `Standard_B1s` VM attached to an existing
+  sandbox VNet/subnet (`vnet-spoke1-sand-conn-prd-prs-aen-001` /
+  `snet-spoke1-sand-conn-prd-prs-aen-001`, in a different resource group,
+  confirming cross-RG VNet attach works).
+- **Verify Azure resources**: independently confirmed via `az` CLI (a
+  separate identity/tool from the app, not just trusting the app's success
+  response) — `az storage account show` confirmed every security default
+  landed exactly as coded (TLS1_2, HTTPS-only, shared-key access disabled,
+  blob public access disabled, infra encryption on, network default Deny,
+  public network access Disabled, SystemAssigned identity); the container
+  was confirmed via the ARM control-plane API (data-plane `az storage
+  container list` was itself blocked by the account's own network rules —
+  good independent proof the Deny-by-default posture is real, not just a
+  reported property); `az vm show` confirmed the VM (`provisioningState:
+  Succeeded`, correct size/image/OS disk) and `az network nic show`
+  confirmed **no public IP** or the correct cross-RG subnet attachment.
+  Azure also auto-created a `Microsoft.EventGrid/systemTopics` resource
+  alongside the storage account — a normal Azure platform behavior tied to
+  the account's lifecycle, not something this app's code requested.
+- **Revert**: both reverted cleanly via the Change Ledger
+  (`/api/admin/changes/<id>/revert`) — `delete_storage_account` and
+  `delete_vm` both succeeded, ledger entries flipped from `active` to
+  `reverted`, and a revert note was correctly appended to each request.
+- **Verify cleanup**: `az resource list` on the resource group came back
+  **empty** — independently confirmed the storage account (and its
+  EventGrid system topic) and the VM (with its NIC/OS disk, cascade-deleted
+  via `delete_option=Delete`) were all genuinely gone.
+
+This closes out the one gap noted after initial implementation (real-Azure
+verification) — both `VM_CREATE` and `STORAGE_ACCOUNT_CREATE` are now
+verified end-to-end for the happy path against a real subscription. Not
+covered by this pass: failure/partial-failure paths (e.g. a mid-loop VM
+failure, a container-creation failure after the account exists), replication/
+private-endpoint best-effort steps, and CMK/user-assigned-identity paths —
+none of those were exercised against real Azure, only their offline logic
+and dry-run behavior (see the Phase 1–4 implementation notes in this
+session's daily log).
 
 ## Active Priorities
 
-1. Commit the Storage Account feature
-2. Full live-Azure verification of VM_CREATE and STORAGE_ACCOUNT_CREATE
-   (needs real credentials — see `next-actions.md`)
+1. Delete the leftover sandbox resource group (`rg-claude-e2e-qa-test`) —
+   needs the user, blocked for this session by the permission classifier.
+2. No other blockers — both recent features are now real-Azure verified for
+   their primary flow.
 
 ## Current Blockers
 
