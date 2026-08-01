@@ -5,9 +5,9 @@
 
 ## Development Status
 
-Active development. Working tree has an **uncommitted** Storage Account
-feature on top of `main` — see "Features In Progress" below. `main` is the
-only branch; commits go straight to it.
+Active development. Storage Account feature committed (`8ef4ef2`,
+2026-08-01). Remaining uncommitted changes are the unrelated cosmetic/infra
+items noted below. `main` is the only branch; commits go straight to it.
 
 ## Features Completed (committed, on `main`)
 
@@ -39,11 +39,15 @@ only branch; commits go straight to it.
   `65df6b9`); see `architecture-decisions.md`. Partial verification only
   (see "Verification Notes" below) — full live-Azure check still pending.
 
-## Features In Progress (uncommitted — working tree only)
+## Features In Progress
 
-**Storage Account Request & Deploy (`RequestType.STORAGE_ACCOUNT_CREATE`)** —
-implemented end-to-end 2026-08-01, matching the AKS/VM architecture exactly
-(see `CLAUDE.md` → "Storage Account request" for the full design). Delivered
+None currently — see "Pending Work" for what's left before either of the
+two most recent features (VM, Storage) is prod-ready.
+
+### Storage Account Request & Deploy — committed 2026-08-01 (`8ef4ef2`)
+
+Implemented end-to-end, matching the AKS/VM architecture exactly (see
+`CLAUDE.md` → "Storage Account request" for the full design). Delivered
 in 4 phases, each verified in-browser against the running local instance
 before moving to the next:
 
