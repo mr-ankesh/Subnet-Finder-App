@@ -31,6 +31,7 @@ class RequestStatus:
     CIDR_RELEASED     = "CIDR_RELEASED"
     AKS_DEPLOYED      = "AKS_DEPLOYED"
     VM_DEPLOYED       = "VM_DEPLOYED"
+    STORAGE_DEPLOYED  = "STORAGE_DEPLOYED"
     COMPLETED         = "COMPLETED"
     REJECTED          = "REJECTED"
     # Approval flow: request held until the requester's line manager approves.
@@ -69,6 +70,7 @@ class RequestStatus:
         CIDR_RELEASED:               "CIDR Released",
         AKS_DEPLOYED:                "Cluster Deployed",
         VM_DEPLOYED:                 "VM(s) Deployed",
+        STORAGE_DEPLOYED:            "Storage Account Deployed",
         COMPLETED:                   "Completed",
         REJECTED:                    "Rejected",
         PENDING_APPROVAL:            "Pending Approval",
@@ -95,6 +97,7 @@ class RequestStatus:
         CIDR_RELEASED:               "primary",
         AKS_DEPLOYED:                "primary",
         VM_DEPLOYED:                 "primary",
+        STORAGE_DEPLOYED:            "primary",
         COMPLETED:                   "success",
         REJECTED:                    "danger",
         PENDING_APPROVAL:            "warning",
@@ -122,12 +125,14 @@ class RequestType:
     DNS               = "dns"
     AKS_CLUSTER       = "aks_cluster"
     VM_CREATE         = "vm_create"
+    STORAGE_ACCOUNT_CREATE = "storage_account_create"
     NETWORK_ISSUE     = "network_issue"
     OTHER             = "other"
 
     ALL = [VNET_NEW, FIREWALL_POLICY, HUB_INTEGRATION, ZPA_RND_ROUTING,
            ZPA_OTHER_ROUTING, ZPA_NMO_ROUTING, SUBNET_ADDITIONAL,
-           VNET_DECOMMISSION, DNS, AKS_CLUSTER, VM_CREATE, NETWORK_ISSUE, OTHER]
+           VNET_DECOMMISSION, DNS, AKS_CLUSTER, VM_CREATE,
+           STORAGE_ACCOUNT_CREATE, NETWORK_ISSUE, OTHER]
 
     _LABELS = {
         VNET_NEW:          "New VNET",
@@ -141,6 +146,7 @@ class RequestType:
         DNS:               "DNS / Private DNS Link",
         AKS_CLUSTER:       "AKS Cluster",
         VM_CREATE:         "Virtual Machine(s)",
+        STORAGE_ACCOUNT_CREATE: "Storage Account",
         NETWORK_ISSUE:     "Report Network Issue",
         OTHER:             "Other Request",
     }
@@ -157,6 +163,8 @@ class RequestType:
         DNS:               "DNS record or Private DNS zone link for your spoke.",
         AKS_CLUSTER:       "Deploy a managed Kubernetes (AKS) cluster into your spoke subnet.",
         VM_CREATE:         "Deploy one or more virtual machines into your spoke subnet.",
+        STORAGE_ACCOUNT_CREATE: "Request an Azure Storage Account — networking, identity, "
+                                "encryption, containers and replication configured up front.",
         NETWORK_ISSUE:     "Report a connectivity problem — the network team diagnoses the path (routing, DNS, firewall).",
         OTHER:             "Anything that doesn't fit the categories above.",
     }
@@ -173,6 +181,7 @@ class RequestType:
         DNS:               "globe2",
         AKS_CLUSTER:       "boxes",
         VM_CREATE:         "pc-display",
+        STORAGE_ACCOUNT_CREATE: "hdd-stack",
         NETWORK_ISSUE:     "wifi-off",
         OTHER:             "chat-square-text",
     }
@@ -200,6 +209,8 @@ class RequestType:
         AKS_CLUSTER:       [RequestStatus.SUBMITTED, RequestStatus.AKS_DEPLOYED,
                             RequestStatus.COMPLETED],
         VM_CREATE:         [RequestStatus.SUBMITTED, RequestStatus.VM_DEPLOYED,
+                            RequestStatus.COMPLETED],
+        STORAGE_ACCOUNT_CREATE: [RequestStatus.SUBMITTED, RequestStatus.STORAGE_DEPLOYED,
                             RequestStatus.COMPLETED],
         NETWORK_ISSUE:     [RequestStatus.SUBMITTED, RequestStatus.IN_PROGRESS,
                             RequestStatus.COMPLETED],

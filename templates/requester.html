@@ -1132,6 +1132,299 @@
                   </div>
                 </div>
 
+                <!-- ── Storage Account ── -->
+                <div class="col-12 type-section" id="section-storage_account_create" style="display:none;">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-info-circle me-1"></i> Basic Information
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Storage Account Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="storage_account_name" maxlength="24" placeholder="e.g. stg100devprsaen001">
+                      <div class="field-help">3–24 characters, lowercase letters and digits only (Azure's global naming rule — checked for availability live once you fill in a subscription).</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Subscription ID *</label>
+                      <input type="text" class="form-input-custom" data-detail="subscription_id" id="stg_subscription" placeholder="00000000-0000-0000-0000-000000000000">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Resource Group *</label>
+                      <input type="text" class="form-input-custom" data-detail="resource_group" placeholder="rg-g100-dev-prs-aen-001">
+                      <div class="field-help">Created automatically if it doesn't exist.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Region *</label>
+                      <select class="form-input-custom" data-detail="region" id="stg_region" onchange="onStorageRegionChange()">
+                        <option value="{{ storage_defaults.region }}" selected>{{ storage_defaults.region }} (standard)</option>
+                        <option value="uaecentral">UAE Central</option>
+                        <option value="westeurope">West Europe</option>
+                        <option value="northeurope">North Europe</option>
+                        <option value="eastus">East US</option>
+                      </select>
+                    </div>
+                    <div class="col-12" id="stgRegionJustifyWrap" style="display:none;">
+                      <label class="form-label-custom">Justification for non-standard region *</label>
+                      <input type="text" class="form-input-custom" data-detail="region_justification" placeholder="Why is a region other than the standard one needed?">
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Environment *</label>
+                      <select class="form-input-custom" data-detail="env">
+                        <option value="">— select —</option>
+                        <option>Dev</option><option>UAT</option><option>Prod</option>
+                      </select>
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-hdd-stack me-1"></i> Storage Configuration
+                      </div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Storage Kind *</label>
+                      <select class="form-input-custom" data-detail="storage_kind">
+                        <option value="StorageV2" selected>StorageV2 (general purpose v2)</option>
+                        <option value="BlobStorage">BlobStorage</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">SKU (Replication) *</label>
+                      <select class="form-input-custom" data-detail="sku">
+                        <option value="Standard_LRS" selected>Standard_LRS</option>
+                        <option value="Standard_GRS">Standard_GRS</option>
+                        <option value="Standard_ZRS">Standard_ZRS</option>
+                        <option value="Standard_RAGRS">Standard_RAGRS</option>
+                        <option value="Premium_LRS">Premium_LRS</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Access Tier *</label>
+                      <select class="form-input-custom" data-detail="access_tier">
+                        <option value="Hot" selected>Hot</option>
+                        <option value="Cool">Cool</option>
+                      </select>
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-shield-lock me-1"></i> Networking
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Public Network Access</label>
+                      <select class="form-input-custom" data-detail="public_network_access" id="stg_public_access" onchange="onStoragePublicAccessChange()">
+                        <option value="Disabled" selected>Disabled (recommended — use a Private Endpoint)</option>
+                        <option value="Enabled">Enabled</option>
+                      </select>
+                    </div>
+                    <div class="col-12" id="stgPrivateEndpointNudge" style="display:none;">
+                      <div style="border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.08);border-radius:10px;padding:10px 12px;font-size:11.5px;color:var(--text-dim);line-height:1.6;">
+                        <i class="bi bi-info-circle-fill me-1" style="color:#f59e0b;"></i>
+                        A Private Endpoint is the recommended access path. If public access is genuinely required, restrict it with the allowed IPs / VNet rules below — the network default is Deny.
+                      </div>
+                    </div>
+                    <div class="col-12" id="stgNetworkRulesWrap" style="display:none;">
+                      <div class="row g-3">
+                        <div class="col-md-6">
+                          <label class="form-label-custom">Allowed IPs</label>
+                          <textarea class="form-input-custom" data-detail="allowed_ips" rows="2" placeholder="one per line, or comma-separated, e.g. 20.1.2.3, 10.0.0.0/24"></textarea>
+                          <div class="field-help">Only used when Public Network Access is Enabled — the storage account's network default is still Deny.</div>
+                        </div>
+                        <div class="col-md-6">
+                          <div style="display:flex;align-items:center;gap:8px;">
+                            <label class="form-label-custom" style="margin:0;">Allowed VNet / Subnet</label>
+                            <button type="button" class="btn-secondary-custom" style="font-size:11px;padding:3px 9px;" onclick="stgFetchVnets(this)">
+                              <i class="bi bi-cloud-download"></i> Fetch VNets
+                            </button>
+                          </div>
+                          <div id="stgVnetPickerRow" style="display:none;margin-top:6px;">
+                            <div class="row g-2">
+                              <div class="col-md-6">
+                                <select class="form-input-custom" id="stgVnetSelect" onchange="stgVnetPicked()"></select>
+                              </div>
+                              <div class="col-md-6">
+                                <select class="form-input-custom" id="stgSubnetSelect" onchange="stgSubnetPicked()"><option value="">— fetch a VNet first —</option></select>
+                              </div>
+                            </div>
+                            <div id="stgVnetMsg" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>
+                          </div>
+                          <div class="row g-2" style="margin-top:6px;">
+                            <div class="col-6"><input type="text" class="form-input-custom" data-detail="vnet_name" id="stg_vnet_name" placeholder="VNet name"></div>
+                            <div class="col-6"><input type="text" class="form-input-custom" data-detail="subnet_name" id="stg_subnet_name" placeholder="Subnet name"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-person-badge me-1"></i> Identity
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Identity Type *</label>
+                      <select class="form-input-custom" data-detail="identity_type" id="stg_identity_type" onchange="onStorageIdentityChange()">
+                        <option value="system" selected>System Assigned</option>
+                        <option value="user">User Assigned</option>
+                      </select>
+                    </div>
+                    <div class="col-md-6" id="stgUserIdentityWrap" style="display:none;">
+                      <label class="form-label-custom">User Assigned Identity *</label>
+                      <div style="display:flex;gap:6px;">
+                        <input type="text" class="form-input-custom" data-detail="user_assigned_identity_id" id="stg_uami" placeholder="/subscriptions/.../userAssignedIdentities/...">
+                        <button type="button" class="btn-secondary-custom" style="white-space:nowrap;font-size:11px;padding:0 11px;" onclick="stgFetchIdentities(this)" title="Fetch from Azure"><i class="bi bi-cloud-download"></i></button>
+                      </div>
+                      <select class="form-input-custom" id="stgIdentitySelect" style="display:none;margin-top:6px;" onchange="stgIdentityPicked()"></select>
+                      <div class="field-help" id="stgIdentityMsg">Fetch identities from Azure (subscription + resource group), or paste the resource ID directly.</div>
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-key me-1"></i> Encryption
+                      </div>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label-custom">Encryption *</label>
+                      <select class="form-input-custom" data-detail="encryption_type" id="stg_encryption_type" onchange="onStorageEncryptionChange()">
+                        <option value="microsoft_managed" selected>Microsoft Managed Key</option>
+                        <option value="customer_managed">Customer Managed Key</option>
+                      </select>
+                    </div>
+                    <div class="col-12" id="stgCmkWrap" style="display:none;">
+                      <div class="row g-2">
+                        <div class="col-md-4">
+                          <label class="form-label-custom" style="font-size:11px;">Key Vault *</label>
+                          <div style="display:flex;gap:6px;">
+                            <input type="text" class="form-input-custom" data-detail="cmk_keyvault_name" id="stg_kv" placeholder="kv-g100-dev-prs-aen">
+                            <button type="button" class="btn-secondary-custom" style="white-space:nowrap;font-size:11px;padding:0 9px;" onclick="stgFetchKeyvaults(this)" title="Fetch from Azure"><i class="bi bi-cloud-download"></i></button>
+                          </div>
+                          <select class="form-input-custom" id="stgKvSelect" style="display:none;margin-top:6px;font-size:11px;" onchange="stgKvPicked()"></select>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label-custom" style="font-size:11px;">Key *</label>
+                          <input type="text" class="form-input-custom" data-detail="cmk_key_name" id="stg_key" placeholder="key name">
+                          <select class="form-input-custom" id="stgKeySelect" style="display:none;margin-top:6px;font-size:11px;" onchange="stgKeyPicked()"></select>
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label-custom" style="font-size:11px;">Key Version</label>
+                          <input type="text" class="form-input-custom" data-detail="cmk_key_version" id="stg_key_version" placeholder="blank = latest">
+                          <select class="form-input-custom" id="stgKeyVersionSelect" style="display:none;margin-top:6px;font-size:11px;" onchange="stgKeyVersionPicked()"></select>
+                        </div>
+                        <div class="col-12 field-help" id="stgKvMsg">Fetch Key Vaults from Azure, pick one to load its keys, then pick a key to load its versions — or type the names directly.</div>
+                      </div>
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-shield-check me-1"></i> Blob Protection
+                      </div>
+                    </div>
+                    <div class="col-md-3">
+                      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;">
+                        <input type="checkbox" data-detail="blob_versioning" checked> Blob versioning
+                      </label>
+                    </div>
+                    <div class="col-md-3">
+                      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;">
+                        <input type="checkbox" data-detail="change_feed"> Change feed
+                      </label>
+                    </div>
+                    <div class="col-md-3">
+                      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;">
+                        <input type="checkbox" data-detail="soft_delete" checked> Soft delete
+                      </label>
+                    </div>
+                    <div class="col-md-3">
+                      <label class="form-label-custom">Retention (days)</label>
+                      <input type="number" class="form-input-custom" data-detail="blob_retention_days" min="1" max="365" value="{{ storage_defaults.soft_delete_days }}">
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-folder me-1"></i> Container Options
+                      </div>
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label-custom">Container Names</label>
+                      <textarea class="form-input-custom" id="stg_containers_raw" rows="2" placeholder="one per line, or comma-separated, e.g. raw-data, curated, logs"></textarea>
+                      <div class="field-help">3–63 characters, lowercase letters/digits/hyphens. Created with public access disabled. Up to {{ storage_defaults.max_containers }} per request.</div>
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;">
+                        <input type="checkbox" id="stg_replication_enabled" onchange="onStorageReplicationChange()"> Enable Object Replication (optional)
+                      </label>
+                    </div>
+                    <div class="col-12" id="stgReplicationWrap" style="display:none;">
+                      <div class="row g-2">
+                        <div class="col-md-4">
+                          <label class="form-label-custom" style="font-size:11px;">Source container *</label>
+                          <input type="text" class="form-input-custom" data-detail="replication_source_container" id="stg_repl_src" placeholder="must be one of the containers above">
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label-custom" style="font-size:11px;">Destination storage account *</label>
+                          <input type="text" class="form-input-custom" data-detail="replication_destination_account" placeholder="destination account name">
+                        </div>
+                        <div class="col-md-4">
+                          <label class="form-label-custom" style="font-size:11px;">Destination container *</label>
+                          <input type="text" class="form-input-custom" data-detail="replication_destination_container" placeholder="destination container name">
+                        </div>
+                        <div class="col-12 field-help">Best-effort at deploy — the destination account must already exist and be reachable; a replication failure doesn't block the rest of the deploy.</div>
+                      </div>
+                    </div>
+
+                    <div class="col-12" style="margin-top:6px;">
+                      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#00BCF2;">
+                        <i class="bi bi-tags me-1"></i> Tags
+                      </div>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Application Name *</label>
+                      <input type="text" class="form-input-custom" data-detail="application_name" placeholder="e.g. g100-ingestion">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Business Unit *</label>
+                      <input type="text" class="form-input-custom" data-detail="business_unit" placeholder="e.g. Data Platform">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Criticality *</label>
+                      <select class="form-input-custom" data-detail="criticality">
+                        <option value="">— select —</option><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Data Classification *</label>
+                      <select class="form-input-custom" data-detail="data_classification">
+                        <option value="">— select —</option><option>Public</option><option>Internal</option><option>Confidential</option><option>Restricted</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Owner email *</label>
+                      <input type="email" class="form-input-custom" data-detail="owner_email" placeholder="owner@presight.ai">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Approver email *</label>
+                      <input type="email" class="form-input-custom" data-detail="approver_email" placeholder="approver@presight.ai">
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Service Class *</label>
+                      <select class="form-input-custom" data-detail="service_class">
+                        <option value="">— select —</option><option>Standard</option><option>Business Critical</option><option>Mission Critical</option>
+                      </select>
+                    </div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Sovereignty *</label>
+                      <input type="text" class="form-input-custom" data-detail="sovereignty" placeholder="e.g. UAE">
+                    </div>
+                    <div class="col-12 field-help">Project (optional, below) plus these tags are applied to the deployed storage account: ApplicationName, BusinessUnit, Criticality, DataClassification, Owner, Approver, Environment, ServiceClass, Sovereignty.</div>
+                    <div class="col-md-4">
+                      <label class="form-label-custom">Project</label>
+                      <input type="text" class="form-input-custom" data-detail="project" placeholder="e.g. g100">
+                    </div>
+                  </div>
+                </div>
+
                 <!-- ── Report Network Issue ── -->
                 <div class="col-12 type-section" id="section-network_issue" style="display:none;">
                   <div class="row g-3">
@@ -1522,6 +1815,10 @@ function selectType(t) {
     }
     if (t === 'aks_cluster') { onAksTierChange(); onAksZpaChange(); onAksRegionChange(); }
     if (t === 'vm_create') { onVmRegionChange(); onVmAuthChange(); renderVmDiskBlocks(); }
+    if (t === 'storage_account_create') {
+      onStorageRegionChange(); onStoragePublicAccessChange();
+      onStorageIdentityChange(); onStorageEncryptionChange(); onStorageReplicationChange();
+    }
     if (t === 'network_issue') onNiSrcKind();
     if (t === 'firewall_policy') onFwActionChange();
   }
@@ -1751,6 +2048,181 @@ function onVmAuthChange() {
   const isSsh = el.value !== 'password';
   document.getElementById('vmSshKeyWrap').style.display = isSsh ? '' : 'none';
   document.getElementById('vmPasswordNoteWrap').style.display = isSsh ? 'none' : '';
+}
+
+// ── Storage Account form toggles. Live Key Vault/identity/VNet pickers land
+// with the discovery-APIs stage of this feature — for now these fields are
+// plain text, same "type it directly, picker comes later" approach VM used
+// before its own live lookups existed. ──
+const STORAGE_STANDARD_REGION = {{ (storage_defaults.region or 'uaenorth') | tojson }};
+
+function onStorageRegionChange() {
+  const el = document.getElementById('stg_region'); if (!el) return;
+  document.getElementById('stgRegionJustifyWrap').style.display = (el.value !== STORAGE_STANDARD_REGION) ? '' : 'none';
+}
+
+function onStoragePublicAccessChange() {
+  const el = document.getElementById('stg_public_access'); if (!el) return;
+  const enabled = el.value === 'Enabled';
+  document.getElementById('stgPrivateEndpointNudge').style.display = enabled ? '' : 'none';
+  document.getElementById('stgNetworkRulesWrap').style.display = enabled ? '' : 'none';
+}
+
+function onStorageIdentityChange() {
+  const el = document.getElementById('stg_identity_type'); if (!el) return;
+  document.getElementById('stgUserIdentityWrap').style.display = (el.value === 'user') ? '' : 'none';
+}
+
+function onStorageEncryptionChange() {
+  const el = document.getElementById('stg_encryption_type'); if (!el) return;
+  document.getElementById('stgCmkWrap').style.display = (el.value === 'customer_managed') ? '' : 'none';
+}
+
+function onStorageReplicationChange() {
+  const el = document.getElementById('stg_replication_enabled'); if (!el) return;
+  document.getElementById('stgReplicationWrap').style.display = el.checked ? '' : 'none';
+}
+
+// ── Storage Account live Azure lookups. Every one of these degrades to
+// free-text (the input stays editable) on fetch failure — nothing here
+// blocks the form, same rule VM's live pickers follow. ──
+let STG_VNETS = [];
+let STG_KV_KEYS = [];
+
+async function stgFetchVnets(btn) {
+  const sub = document.getElementById('stg_subscription').value.trim();
+  const msg = document.getElementById('stgVnetMsg');
+  const row = document.getElementById('stgVnetPickerRow');
+  if (!sub) { row.style.display = ''; msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Fetching…';
+  row.style.display = ''; msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure…';
+  try {
+    const d = await (await fetch(`/api/azure/vnets?subscription=${encodeURIComponent(sub)}`)).json();
+    if (d.error || !d.success) { msg.style.color = '#f87171'; msg.textContent = d.error || d.message || 'Failed.'; }
+    else {
+      STG_VNETS = d.vnets || [];
+      const sel = document.getElementById('stgVnetSelect');
+      sel.innerHTML = '<option value="">— select a VNet —</option>' +
+        STG_VNETS.map((v, i) => `<option value="${i}">${v.name} · ${v.resource_group} · ${v.location}</option>`).join('');
+      document.getElementById('stgSubnetSelect').innerHTML = '<option value="">— pick a VNet first —</option>';
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${STG_VNETS.length} VNet(s) found.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+async function stgVnetPicked() {
+  const idx = document.getElementById('stgVnetSelect').value;
+  if (idx === '') return;
+  const v = STG_VNETS[idx];
+  document.getElementById('stg_vnet_name').value = v.name;
+  const msg = document.getElementById('stgVnetMsg');
+  const sub = document.getElementById('stg_subscription').value.trim();
+  const sSel = document.getElementById('stgSubnetSelect');
+  msg.style.color = 'var(--text-muted)'; msg.textContent = `Loading subnets of ${v.name}…`;
+  try {
+    const d = await (await fetch(`/api/azure/subnets?subscription=${encodeURIComponent(sub)}&resource_group=${encodeURIComponent(v.resource_group)}&vnet=${encodeURIComponent(v.name)}`)).json();
+    if (d.error || !d.success) { msg.style.color = '#f87171'; msg.textContent = d.error || d.message || 'Failed.'; }
+    else {
+      sSel.innerHTML = '<option value="">— select a subnet —</option>' +
+        (d.subnets || []).map(s => `<option value="${s.name}">${s.name} · ${s.address_prefix}</option>`).join('');
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${(d.subnets || []).length} subnet(s) — pick one.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not load subnets.'; }
+}
+
+function stgSubnetPicked() {
+  const name = document.getElementById('stgSubnetSelect').value;
+  if (name) document.getElementById('stg_subnet_name').value = name;
+}
+
+async function stgFetchIdentities(btn) {
+  const sub = document.getElementById('stg_subscription').value.trim();
+  const rg = document.querySelector('#section-storage_account_create [data-detail="resource_group"]').value.trim();
+  const msg = document.getElementById('stgIdentityMsg');
+  const sel = document.getElementById('stgIdentitySelect');
+  if (!sub) { msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure…';
+  try {
+    const url = `/api/azure/storage-identities?subscription=${encodeURIComponent(sub)}` + (rg ? `&resource_group=${encodeURIComponent(rg)}` : '');
+    const d = await (await fetch(url)).json();
+    if (!d.ok) { msg.style.color = '#f87171'; msg.textContent = d.error || 'Failed.'; }
+    else {
+      const identities = d.data.identities || [];
+      sel.style.display = '';
+      sel.innerHTML = '<option value="">— select an identity —</option>' +
+        identities.map((i, idx) => `<option value="${idx}">${i.name} · ${i.resource_group}</option>`).join('');
+      sel.dataset.items = JSON.stringify(identities);
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${identities.length} identity(ies) found.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+function stgIdentityPicked() {
+  const sel = document.getElementById('stgIdentitySelect');
+  if (sel.value === '') return;
+  const items = JSON.parse(sel.dataset.items || '[]');
+  document.getElementById('stg_uami').value = items[sel.value].id;
+}
+
+async function stgFetchKeyvaults(btn) {
+  const sub = document.getElementById('stg_subscription').value.trim();
+  const msg = document.getElementById('stgKvMsg');
+  const sel = document.getElementById('stgKvSelect');
+  if (!sub) { msg.style.color = '#f87171'; msg.textContent = 'Enter the Subscription ID first.'; return; }
+  const orig = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+  msg.style.color = 'var(--text-muted)'; msg.textContent = 'Querying Azure…';
+  try {
+    const d = await (await fetch(`/api/azure/storage-keyvaults?subscription=${encodeURIComponent(sub)}`)).json();
+    if (!d.ok) { msg.style.color = '#f87171'; msg.textContent = d.error || 'Failed.'; }
+    else {
+      const vaults = d.data.vaults || [];
+      sel.style.display = '';
+      sel.innerHTML = '<option value="">— select a Key Vault —</option>' +
+        vaults.map(v => `<option value="${v.name}">${v.name} · ${v.resource_group}</option>`).join('');
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${vaults.length} Key Vault(s) found — pick one to load its keys.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not reach Azure.'; }
+  btn.disabled = false; btn.innerHTML = orig;
+}
+
+async function stgKvPicked() {
+  const vault = document.getElementById('stgKvSelect').value;
+  if (!vault) return;
+  document.getElementById('stg_kv').value = vault;
+  const sub = document.getElementById('stg_subscription').value.trim();
+  const msg = document.getElementById('stgKvMsg');
+  const keySel = document.getElementById('stgKeySelect');
+  msg.style.color = 'var(--text-muted)'; msg.textContent = `Loading keys in ${vault}…`;
+  try {
+    const d = await (await fetch(`/api/azure/storage-keys?subscription=${encodeURIComponent(sub)}&vault=${encodeURIComponent(vault)}`)).json();
+    if (!d.ok) { msg.style.color = '#f87171'; msg.textContent = d.error || 'Failed.'; }
+    else {
+      STG_KV_KEYS = d.data.keys || [];
+      keySel.style.display = '';
+      keySel.innerHTML = '<option value="">— select a key —</option>' +
+        STG_KV_KEYS.map((k, i) => `<option value="${i}">${k.name} (${k.versions.length} version(s))</option>`).join('');
+      document.getElementById('stgKeyVersionSelect').innerHTML = '';
+      msg.style.color = '#7edb56'; msg.innerHTML = `<i class="bi bi-check-circle me-1"></i>${STG_KV_KEYS.length} key(s) — pick one to load its versions.`;
+    }
+  } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Could not load keys.'; }
+}
+
+function stgKeyPicked() {
+  const idx = document.getElementById('stgKeySelect').value;
+  if (idx === '') return;
+  const k = STG_KV_KEYS[idx];
+  document.getElementById('stg_key').value = k.name;
+  const verSel = document.getElementById('stgKeyVersionSelect');
+  verSel.style.display = k.versions.length ? '' : 'none';
+  verSel.innerHTML = '<option value="">— latest —</option>' +
+    k.versions.map(v => `<option value="${v}">${v}</option>`).join('');
+}
+
+function stgKeyVersionPicked() {
+  document.getElementById('stg_key_version').value = document.getElementById('stgKeyVersionSelect').value;
 }
 
 // null = not yet fetched (fall back to the static server-rendered list);
@@ -2219,6 +2691,56 @@ async function submitServiceRequest() {
     // send an explicit null so the server can tell that apart from "requester
     // just didn't fill this in" (which simply omits the key).
     if (VM_SKU_ZONES !== null && VM_SKU_ZONES.length === 0) details.zones = null;
+  }
+  if (currentType === 'storage_account_create') {
+    for (const [k, lbl] of [['storage_account_name','Storage Account Name'],['resource_group','Resource Group'],
+                            ['subscription_id','Subscription ID'],['region','Region'],['env','Environment'],
+                            ['storage_kind','Storage Kind'],['sku','SKU'],['access_tier','Access Tier'],
+                            ['identity_type','Identity Type'],['encryption_type','Encryption'],
+                            ['application_name','Application Name'],['business_unit','Business Unit'],
+                            ['criticality','Criticality'],['data_classification','Data Classification'],
+                            ['owner_email','Owner email'],['approver_email','Approver email'],
+                            ['service_class','Service Class'],['sovereignty','Sovereignty']]) {
+      if (!details[k]) return showResult('newReqResult', resultBox('error', `${lbl} is required.`));
+    }
+    if (!/^[a-z0-9]{3,24}$/.test(details.storage_account_name || '')) {
+      return showResult('newReqResult', resultBox('error',
+        'Storage account name must be 3–24 characters, lowercase letters and digits only.'));
+    }
+    if ((details.region || STORAGE_STANDARD_REGION) !== STORAGE_STANDARD_REGION && !(details.region_justification || '').trim()) {
+      return showResult('newReqResult', resultBox('error',
+        'A justification is required to deploy outside the standard region.'));
+    }
+    if (details.identity_type === 'user' && !(details.user_assigned_identity_id || '').trim()) {
+      return showResult('newReqResult', resultBox('error', 'A User Assigned identity must be selected.'));
+    }
+    if (details.encryption_type === 'customer_managed'
+        && (!(details.cmk_keyvault_name || '').trim() || !(details.cmk_key_name || '').trim())) {
+      return showResult('newReqResult', resultBox('error',
+        'A Key Vault and key must be selected for customer-managed-key encryption.'));
+    }
+    // Container names and allowed IPs are free-text lists (one per line or
+    // comma-separated) — collect into the JSON/comma-string shapes the server
+    // expects, same idea as VM's data-disks collection above.
+    const containerNames = (document.getElementById('stg_containers_raw').value || '')
+      .split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+    if (containerNames.length) details.containers = JSON.stringify(containerNames);
+    if (details.allowed_ips) {
+      details.allowed_ips = details.allowed_ips.split(/[\n,]/).map(s => s.trim()).filter(Boolean).join(',');
+    }
+    const replEl = document.getElementById('stg_replication_enabled');
+    if (replEl && replEl.checked) {
+      details.replication_enabled = 'true';
+      for (const [k, lbl] of [['replication_source_container','Source container'],
+                              ['replication_destination_account','Destination storage account'],
+                              ['replication_destination_container','Destination container']]) {
+        if (!details[k]) return showResult('newReqResult', resultBox('error', `${lbl} is required for Object Replication.`));
+      }
+      if (containerNames.length && !containerNames.includes(details.replication_source_container)) {
+        return showResult('newReqResult', resultBox('error',
+          "Object replication's source container must be one of this request's own containers."));
+      }
+    }
   }
 
   // VM submissions run several live Azure checks server-side (SKU/VNet/subnet/

@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Network Copilot** (repo name: Subnet-Finder-App) — a Flask portal for day-2
 Azure network operations: subnet/VNET allocation, hub-spoke peering, firewall
-rules, UDR/routing, ZPA routing, AKS cluster deployment, DNS, cost dashboard,
-resource optimizer, and network-issue diagnosis. Originally subnet-only; brand
+rules, UDR/routing, ZPA routing, AKS cluster deployment, VM(s) deployment,
+Storage Account deployment, DNS, cost dashboard, resource optimizer, and
+network-issue diagnosis. Originally subnet-only; brand
 and scope have broadened to general cloud operations (see `docs/BRANDING.md`
 and recent `chore(brand)` commits) — don't assume "network" in an old
 identifier means the feature is network-scoped only.
@@ -237,7 +238,7 @@ from agent code. `chats.py` persists conversations across sessions/devices.
 `models.py` defines `RequestType` (`vnet_new`, `firewall_policy`,
 `hub_integration`, `zpa_rnd_routing`, `zpa_other_routing`, `zpa_nmo_routing`,
 `subnet_additional`, `vnet_decommission`, `dns`, `aks_cluster`, `vm_create`,
-`network_issue`, `other`) and `RequestStatus` (VNET-specific states like
+`storage_account_create`, `network_issue`, `other`) and `RequestStatus` (VNET-specific states like
 `CIDR_ASSIGNED`/`HUB_INTEGRATED` plus generic per-type states like
 `IN_REVIEW`/`RULE_IMPLEMENTED`/`FW_RULES_UPDATED`). Status advances only from
 completed portal actions (never manually), except a manual-completion escape
@@ -333,6 +334,102 @@ the app:
   simulated response — a real leak path caught before it shipped: without
   this, a dry-run deploy would have echoed the admin's password straight into
   the audit trail's `data` column via `_audit_azure()`.
+
+### Storage Account request: one resource, several sequential sub-steps
+
+`storage_account_create` deploys a single Azure Storage Account, but unlike
+every other single-resource type (AKS, VNET) its deploy is a sequence of
+several Azure calls against that one resource rather than one call — closer
+in spirit to VM(s)' multi-step nature, but for one resource instead of N.
+
+- **Architecture reused wholesale from AKS/VM**: same `RequestType`/
+  `RequestStatus` pattern (`STORAGE_ACCOUNT_CREATE` → `STORAGE_DEPLOYED` →
+  `COMPLETED`), same `admin_azure_action()` dispatcher (`storage_check`/
+  `storage_deploy` actions, no parallel endpoint), same `_vm_lookup_response`
+  `{ok,data,error}` shape for requester-facing discovery routes, same
+  `_deploy_tags()`-derived tagging, same `changes.py` revert-op registration
+  (`delete_storage_account`), same approval-flow integration (just adding the
+  type to `RequestType.ALL` gives it a Settings → Approvals row for free —
+  `approvals.py` iterates `RequestType.ALL` generically).
+- **Reused discovery routes, not duplicated ones**: the VNet/subnet picker
+  reuses the existing generic `/api/azure/vnets` and `/api/azure/subnets`
+  routes — the same ones AKS and VM already share — rather than adding
+  `storage-vnets`/`storage-subnets`. New routes exist only for what didn't
+  already have a generic equivalent: `storage-skus`, `storage-identities`,
+  `storage-keyvaults`, `storage-keys` (the last one returns each key's
+  version list inline, covering both the "Key Picker" and "Key Version"
+  picker in one call — no separate versions route).
+- **`azure_tools.create_storage_account()`** runs sequentially: resource
+  group → the account itself (network rules, identity, encryption all
+  applied in that single create call) → blob service properties (versioning,
+  change feed, soft delete) → file service properties (share soft delete) →
+  each requested container, skipping any that already exist (the same
+  resumability spirit as VM's per-item loop, but within one account rather
+  than across N). Object replication and a Private Endpoint, if requested,
+  are separate, best-effort calls (`create_object_replication_policy`,
+  `create_storage_private_endpoint`) run after the main deploy succeeds —
+  their failure surfaces as a warning but never fails the deploy, the same
+  relationship `aks_link_dns` has to `create_aks_cluster` (a distinct,
+  optional post-deploy step, not baked into the main call). A Private
+  Endpoint here does **not** link a private DNS zone — that's a separate
+  `RequestType.DNS` request, reusing the existing DNS request type rather
+  than reimplementing zone-linking inside the storage deploy.
+- **Security defaults are hardcoded in `create_storage_account`, not
+  settings-editable**: TLS 1.2, HTTPS-only, shared-key access disabled, blob
+  public access disabled, infrastructure encryption enabled, network default
+  action Deny. `public_network_access` and the allow-lists only ever narrow
+  access from that baseline — Settings → Storage Defaults controls SKU/kind/
+  region/container-cap guard rails, never these security floors (contrast
+  with AKS's `AKS_CMK_ENCRYPTION` etc., which genuinely are
+  settings-adjustable guard rails, not security floors).
+- **"success" for the change ledger means "the account was created", not
+  "every sub-step succeeded"** — a container or blob-properties failure after
+  the account exists must not suppress the change-ledger entry (`_guard`-
+  wrapped functions only get their `changes.record()` fired when
+  `res["success"]` is true), or a real, billable Azure resource would exist
+  with no revert path. Sub-step results travel separately via `res["steps"]`
+  and `res["all_steps_ok"]`, plumbed into the `azure_action` audit entry's
+  `data.all_steps_ok` (a field that's `None` for every other action). Rollback
+  is delete-only — Azure has no account-level "restore previous config";
+  blob soft-delete/versioning (on by default) is the only recovery path for
+  what was inside it, and only within their configured retention window.
+- **Completion is a bespoke `_auto_advance()` branch**, not the generic
+  done/required-set comparison, for the same reason VM_CREATE has one:
+  `"storage_deploy" in done` alone can't distinguish "account created, one
+  sub-step still failing" from "everything succeeded" — it reads the latest
+  `storage_deploy` audit entry's `data.all_steps_ok` directly to decide
+  `STORAGE_DEPLOYED` vs. `COMPLETED`. A dry-run deploy correctly stops at
+  `STORAGE_DEPLOYED` (never `COMPLETED`) since `_guard` short-circuits before
+  the function body runs, so `all_steps_ok` is never set.
+- **No dedicated plan-resolution stage** the way VM has (`_vm_preview`/
+  `build_vm_plan`): the account name and full config are already fixed by the
+  requester at submission (no auto-numbering/collision-avoidance need), so
+  `_storage_preview()` just reshapes `details` for the admin panel — nothing
+  is computed or persisted at preview time. "Dry Run" for the real deploy
+  needs no bespoke flag either: `AZURE_DRY_RUN` + `create_storage_account`'s
+  `@_guard` decorator already provide it, same as every other mutating call.
+- **Tag schema extended, not replaced**: `_deploy_tags()` gained a second set
+  of governance tags (`ApplicationName`, `BusinessUnit`, `Criticality`,
+  `DataClassification`, `Owner`, `Approver`, `Environment`, `ServiceClass`,
+  `Sovereignty`) alongside its original lowercase set (`owner`, `env`,
+  `criticality`, `project`, `requester`, `creator`). Both coexist because
+  Azure tags are case-preserving on write — the two casings are genuinely
+  different tag keys, not a rename. Existing request types keep tagging
+  exactly as before (the new fields just come back empty/omitted for them);
+  Storage (and any future type) can adopt the fuller schema without touching
+  what AKS/VM/VNET already write to Azure.
+- **Validation is layered like VM's**: offline checks (name/container/IP-rule
+  format, option membership, region justification, required-tags presence
+  via `TYPE_REQUIRED_DETAILS`) run first in `_validate_storage_request()`,
+  then live-Azure checks (real name-availability via
+  `check_name_availability`, VNet/subnet existence, Key Vault/key/version
+  reachability, replication destination existence) — same staging as VM's
+  stage-1 field validation followed by stage-3 live SKU/VNet/image checks.
+  `scripts/test_storage_validation.py` covers the offline + live-check logic
+  with `azure_tools` stubbed via `unittest.mock`, consistent with this
+  repo's no-test-framework convention (see
+  `scripts/preview_notification_email.py` for the same import-a-module-
+  directly pattern).
 
 ### Budget alerts: forecast-gated, not raw-threshold
 

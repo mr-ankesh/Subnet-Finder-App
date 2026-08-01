@@ -62,6 +62,8 @@ hub's own definition.
 | Decommission | `delete_hub_spoke_peerings`, `remove_routes_by_prefix`, `remove_firewall_rule`, `delete_spoke_vnet` | Deletes in dependency-safe order |
 | Deploy VM(s) | `create_vm`, looped once per VM in the request | Resource group, one NIC (no public IP), one VM per loop iteration with named OS/data disks declared inline |
 | VM revert | `delete_vm` | The VM — its NIC and disks were tagged `delete_option=Delete` at creation, so Azure cascades their removal |
+| Deploy Storage Account | `create_storage_account` | Resource group, storage account (network rules/identity/encryption applied inline), blob/file service properties, then each requested container |
+| Storage revert | `delete_storage_account` | The storage account — delete-only, no account-level restore exists in Azure |
 | Cancel/Reject revert | the matching `delete_*`/`remove_*` functions | Undoes exactly what the audit trail says was deployed |
 
 VM(s) is the one exception to "one click, one Azure call": deploying N VMs
@@ -71,6 +73,19 @@ resumable result, and the change ledger gets one independent, revertable
 entry per VM rather than one entry for the click. See CLAUDE.md's "VM(s)
 request" section for the full model (naming/collision resolution, the
 `vm_plan` persistence, quota gating, password handling).
+
+Storage Account deploy is a single click mapping to several sequential Azure
+calls (account → blob/file service properties → each container), but unlike
+VM(s) it's still one resource, not N independent ones: the "change" recorded
+to the ledger covers the storage account itself the moment it's created, even
+if a later sub-step (a container, blob properties) fails — otherwise a real,
+billable Azure resource could exist with no revert path. A sub-step failure
+is instead surfaced via `all_steps_ok` on the audit entry, which gates
+`STORAGE_DEPLOYED → COMPLETED` (re-running Deploy retries only what's left —
+containers already created are skipped). Object replication and a private
+endpoint, if requested, are separate best-effort steps after the main deploy;
+their failure never fails the deploy itself. See CLAUDE.md's "Storage
+Account request" section for the full model.
 
 All mutating functions share three behaviors:
 

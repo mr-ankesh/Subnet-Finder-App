@@ -32,6 +32,11 @@ AKS_STANDARD_REGION = "uaenorth"
 VM_OS_DISK_TYPES = ["Standard_LRS", "StandardSSD_LRS", "Premium_LRS"]
 VM_DATA_DISK_TYPES = VM_OS_DISK_TYPES + ["PremiumV2_LRS", "UltraSSD_LRS"]
 
+# Storage account kind/SKU/access-tier option sets (fixed by Azure, not fetched live).
+STORAGE_KINDS = ["StorageV2", "BlobStorage"]
+STORAGE_SKUS = ["Standard_LRS", "Standard_GRS", "Standard_ZRS", "Standard_RAGRS", "Premium_LRS"]
+STORAGE_ACCESS_TIERS = ["Hot", "Cool"]
+
 
 # ── UI categories (tab order) ───────────────────────────────────────────────
 
@@ -49,6 +54,7 @@ CATEGORIES = {
     "notifications": {"title": "Notifications",       "desc": "Teams and email notifications for request lifecycle events."},
     "aks":           {"title": "AKS Defaults",         "desc": "Defaults applied to 'AKS Cluster' deployment requests. The requester only chooses VNET/subnet, Kubernetes version and node pool sizing — everything else (network profile, CIDRs, security, upgrade channels) comes from here and can be tuned per environment."},
     "vm":            {"title": "VM Defaults",          "desc": "Defaults and guard rails applied to 'Virtual Machine(s)' deployment requests — max VMs per request, curated image list, disk/naming defaults, and whether password auth is offered at all (SSH keys are the default and recommended everywhere)."},
+    "storage":       {"title": "Storage Defaults",     "desc": "Defaults and guard rails applied to 'Storage Account' deployment requests — allowed SKUs, container cap, CMK default. Security defaults (TLS 1.2, HTTPS-only, shared-key access disabled, blob public access disabled, infrastructure encryption, default-deny network rules) are NOT settings-editable — they're fixed in the deploy code, not guard rails an admin can loosen here."},
     "teams":         {"title": "Teams",                "desc": "The requester teams. A team is mandatory when raising a request, and a requester can see every ticket raised by their team."},
     "approvals":     {"title": "Approvals",            "desc": "Optional approval flow: hold selected request types until the requester's line manager approves. Approval routing relies on the manager attribute flowing from Azure Entra ID into Keycloak and out as a token claim — enabling the feature runs a dependency check and auto-disables if the prerequisites aren't met."},
     "agent":         {"title": "AI Agent / LLM",      "desc": "Provider and model used by the requester & admin chat agents. Changes apply to the next conversation turn — no restart needed."},
@@ -332,6 +338,36 @@ SETTINGS_SPEC = {
                                         "password itself is still never captured from them: the admin sets it "
                                         "once at deploy time, and it is never written to the request, the audit "
                                         "trail or the change ledger."),
+
+    # ── Storage Defaults ──
+    # Networking/identity/Key Vault options are fetched live from Azure per
+    # request (subscription/region scoped), so only guard rails and fallbacks
+    # live here. Security posture (TLS, HTTPS-only, shared-key/blob-public-access,
+    # infra encryption, default-deny network rules) is hardcoded in the deploy
+    # call, not exposed as a setting — see azure_tools.create_storage_account.
+    "STORAGE_MAX_CONTAINERS_PER_REQUEST": _f("storage", "Max containers per request", "10", type="int",
+                                   help="Upper bound on the container list in the request form."),
+    "STORAGE_DEFAULT_REGION":   _f("storage", "Default region", AKS_STANDARD_REGION,
+                                   help="Region pre-selected for new storage requests. A justification is "
+                                        "required to deploy outside this region."),
+    "STORAGE_ALLOWED_SKUS":     _f("storage", "Allowed SKUs",
+                                   default=", ".join(STORAGE_SKUS),
+                                   help="Comma-separated SKUs offered in the picker. Blank = every SKU "
+                                        "Azure supports for the chosen kind."),
+    "STORAGE_DEFAULT_KIND":     _f("storage", "Default storage kind", "StorageV2", options=STORAGE_KINDS),
+    "STORAGE_DEFAULT_SKU":      _f("storage", "Default SKU", "Standard_LRS", options=STORAGE_SKUS),
+    "STORAGE_DEFAULT_ACCESS_TIER": _f("storage", "Default access tier", "Hot", options=STORAGE_ACCESS_TIERS),
+    "STORAGE_DEFAULT_PUBLIC_NETWORK_ACCESS": _f("storage", "Default public network access", "Disabled",
+                                   options=["Disabled", "Enabled"],
+                                   help="Secure-by-default — Private Endpoint is the recommended access path. "
+                                        "Requesters can still choose Enabled with an allowed-IP/VNet list."),
+    "STORAGE_DEFAULT_CMK_ENCRYPTION": _f("storage", "Customer-managed key (CMK) by default", "false", type="bool",
+                                   help="When on, new requests default to CMK encryption (an existing Key "
+                                        "Vault/key the requester picks) instead of Microsoft-managed keys."),
+    "STORAGE_BLOB_SOFT_DELETE_DAYS": _f("storage", "Default blob soft-delete retention (days)", "30", type="int"),
+    "STORAGE_REQUIRE_PRIVATE_ENDPOINT": _f("storage", "Nudge requesters toward Private Endpoint", "true", type="bool",
+                                   help="Informational only — shows a recommendation in the form when public "
+                                        "network access is enabled. Does not block submission."),
 
     # ── AI Agent / LLM ──
     "AGENT_PROVIDER":     _f("agent", "Provider", "anthropic",

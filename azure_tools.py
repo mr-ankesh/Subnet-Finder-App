@@ -3755,3 +3755,357 @@ def list_subscriptions() -> dict:
     except Exception as exc:
         log.error("list_subscriptions failed: %s", exc)
         return {"success": False, "message": str(exc)[:200]}
+
+
+# ── Storage Account: live option lookups (read-only — same {ok,data,error}-
+# feeding {success,...} shape as the VM lookups above) + deploy/revert. ──────
+
+def _storage_client(subscription_id: str):
+    from azure.mgmt.storage import StorageManagementClient
+    return StorageManagementClient(_get_credential(), subscription_id)
+
+
+def _msi_client(subscription_id: str):
+    from azure.mgmt.msi import ManagedServiceIdentityClient
+    return ManagedServiceIdentityClient(_get_credential(), subscription_id)
+
+
+def list_storage_skus(subscription_id: str, location: str) -> dict:
+    """SKU/kind combinations Azure actually offers for storage accounts in this
+    subscription/region, via the same live resourceSkus scan list_vm_skus uses
+    (Microsoft.Storage/storageAccounts instead of virtualMachines). Restricted
+    combinations (not available to this subscription in this region) are
+    excluded, same rule as list_vm_skus."""
+    if not subscription_id or not location:
+        return {"success": False, "message": "Subscription ID and region are required."}
+    try:
+        client = _storage_client(subscription_id)
+        skus = []
+        for s in client.skus.list():
+            if s.resource_type != "storageAccounts":
+                continue
+            locs = [l.lower() for l in (s.locations or [])]
+            if location.lower() not in locs:
+                continue
+            restrictions = s.restrictions or []
+            if any(r.reason_code == "NotAvailableForSubscription" for r in restrictions):
+                continue
+            skus.append({"name": s.name, "tier": s.tier, "kind": s.kind})
+        skus.sort(key=lambda x: (x["kind"] or "", x["name"]))
+        return {"success": True, "skus": skus, "total": len(skus)}
+    except Exception as exc:
+        log.error("list_storage_skus failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def check_storage_name_availability(subscription_id: str, name: str) -> dict:
+    """Azure's real global-uniqueness check for a storage account name — the
+    same live re-verification VM's stage-3 SKU/VNet checks do, not a cached
+    or client-side guess."""
+    if not subscription_id or not name:
+        return {"success": False, "message": "Subscription ID and account name are required."}
+    try:
+        client = _storage_client(subscription_id)
+        res = client.storage_accounts.check_name_availability({
+            "name": name, "type": "Microsoft.Storage/storageAccounts"})
+        return {"success": True, "available": bool(res.name_available),
+                "reason": res.reason, "message": res.message}
+    except Exception as exc:
+        log.error("check_storage_name_availability failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def list_user_assigned_identities(subscription_id: str, resource_group: str = None) -> dict:
+    """User-assigned managed identities visible to this subscription (or scoped
+    to one resource group, if given) — for the Storage Account identity picker."""
+    if not subscription_id:
+        return {"success": False, "message": "Subscription ID is required."}
+    try:
+        client = _msi_client(subscription_id)
+        items = (client.user_assigned_identities.list_by_resource_group(resource_group)
+                 if resource_group else client.user_assigned_identities.list_by_subscription())
+        identities = [{"id": i.id, "name": i.name, "resource_group": _rg_from_id(i.id),
+                      "location": i.location, "principal_id": i.principal_id}
+                     for i in items]
+        identities.sort(key=lambda x: x["name"].lower())
+        return {"success": True, "identities": identities, "total": len(identities)}
+    except Exception as exc:
+        log.error("list_user_assigned_identities failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def list_keyvaults(subscription_id: str) -> dict:
+    """Key Vaults visible to this subscription — for the Storage Account CMK
+    Key Vault picker. Uses the same KeyVaultManagementClient as
+    create_aks_disk_encryption, listing instead of creating."""
+    if not subscription_id:
+        return {"success": False, "message": "Subscription ID is required."}
+    try:
+        from azure.mgmt.keyvault import KeyVaultManagementClient
+    except ImportError as exc:
+        return {"success": False, "message": f"Key Vault SDK not installed ({exc})."}
+    try:
+        kvm = KeyVaultManagementClient(_get_credential(), subscription_id)
+        vaults = [{"name": v.name, "resource_group": _rg_from_id(v.id), "location": v.location}
+                 for v in kvm.vaults.list()]
+        vaults.sort(key=lambda x: x["name"].lower())
+        return {"success": True, "vaults": vaults, "total": len(vaults)}
+    except Exception as exc:
+        log.error("list_keyvaults failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+def list_keyvault_keys(subscription_id: str, vault_name: str) -> dict:
+    """Keys in one Key Vault, each with its version list inline — covers both
+    the 'Key Picker' and 'Key Version' picker in a single call. Resolves the
+    vault's URI via KeyVaultManagementClient (we're only given a name, not a
+    resource group), then reads keys via the data-plane KeyClient, same as
+    create_aks_disk_encryption."""
+    if not subscription_id or not vault_name:
+        return {"success": False, "message": "Subscription ID and vault name are required."}
+    try:
+        from azure.mgmt.keyvault import KeyVaultManagementClient
+        from azure.keyvault.keys import KeyClient
+    except ImportError as exc:
+        return {"success": False, "message": f"Key Vault SDK not installed ({exc})."}
+    try:
+        cred = _get_credential()
+        kvm = KeyVaultManagementClient(cred, subscription_id)
+        vault = next((v for v in kvm.vaults.list() if v.name.lower() == vault_name.lower()), None)
+        if not vault:
+            return {"success": False, "message": f"Key Vault '{vault_name}' not found in this subscription."}
+        kc = KeyClient(vault_url=vault.properties.vault_uri, credential=cred)
+        keys = []
+        for k in kc.list_properties_of_keys():
+            if not k.enabled:
+                continue
+            versions = [v.version for v in kc.list_properties_of_key_versions(k.name) if v.enabled]
+            keys.append({"name": k.name, "versions": versions})
+        keys.sort(key=lambda x: x["name"].lower())
+        return {"success": True, "keys": keys, "total": len(keys)}
+    except Exception as exc:
+        log.error("list_keyvault_keys failed: %s", exc)
+        return {"success": False, "message": str(exc)[:200]}
+
+
+@_guard
+def create_storage_account(
+    subscription_id: str, resource_group: str, account_name: str, location: str,
+    kind: str = "StorageV2", sku: str = "Standard_LRS", access_tier: str = "Hot",
+    public_network_access: str = "Disabled",
+    allowed_ip_rules: list = None, allowed_subnet_ids: list = None,
+    identity_type: str = "system", user_assigned_identity_id: str = None,
+    cmk_keyvault_uri: str = None, cmk_key_name: str = None, cmk_key_version: str = None,
+    blob_versioning: bool = True, change_feed: bool = False, soft_delete: bool = True,
+    soft_delete_days: int = 30, containers: list = None, tags: dict = None,
+) -> dict:
+    """Deploy a Storage Account: resource group -> account (network rules,
+    identity, encryption all applied in the single create call, exactly the
+    security-default posture below regardless of what else was requested) ->
+    blob/file service properties -> containers (skipping any that already
+    exist, so a re-deploy after a partial failure doesn't error out).
+
+    Security defaults are HARDCODED here, not settings-editable (see
+    config.py's "storage" category note): TLS 1.2, HTTPS-only, shared-key
+    access disabled, blob public access disabled, infrastructure encryption
+    enabled, network default action Deny. `public_network_access` and the
+    allow-lists only ever narrow access from that secure baseline — they
+    can't loosen the defaults above.
+
+    Object replication and a private endpoint, if requested, are separate,
+    best-effort steps (create_object_replication_policy /
+    create_storage_private_endpoint) — call them after this succeeds; a
+    failure there doesn't mean the storage account itself failed to deploy.
+
+    Returns {success, message, resource_ids, steps, dry_run}."""
+    from azure.mgmt.storage.models import (
+        StorageAccountCreateParameters, Sku, NetworkRuleSet, IPRule, VirtualNetworkRule,
+        Encryption, EncryptionServices, EncryptionService, KeyVaultProperties,
+        Identity, UserAssignedIdentity, BlobServiceProperties, ChangeFeed,
+        DeleteRetentionPolicy, RestorePolicyProperties, FileServiceProperties, BlobContainer,
+    )
+
+    steps = []
+    rg_res = ensure_resource_group(subscription_id, resource_group, location)
+    steps.append({"step": "resource_group", "success": rg_res.get("success"), "message": rg_res.get("message")})
+    if not rg_res.get("success"):
+        return {"success": False, "message": f"Resource group: {rg_res.get('message')}", "steps": steps}
+
+    try:
+        client = _storage_client(subscription_id)
+
+        network_rule_set = NetworkRuleSet(
+            default_action="Deny",
+            ip_rules=[IPRule(ip_address_or_range=ip) for ip in (allowed_ip_rules or [])],
+            virtual_network_rules=[VirtualNetworkRule(virtual_network_resource_id=sid)
+                                   for sid in (allowed_subnet_ids or [])],
+        )
+
+        encryption_kwargs = {
+            "services": EncryptionServices(blob=EncryptionService(enabled=True),
+                                           file=EncryptionService(enabled=True)),
+            "key_source": "Microsoft.Storage",
+            "require_infrastructure_encryption": True,
+        }
+        if cmk_keyvault_uri and cmk_key_name:
+            encryption_kwargs["key_source"] = "Microsoft.Keyvault"
+            encryption_kwargs["key_vault_properties"] = KeyVaultProperties(
+                key_name=cmk_key_name, key_version=cmk_key_version or "", key_vault_uri=cmk_keyvault_uri)
+        encryption = Encryption(**encryption_kwargs)
+
+        if identity_type == "user" and user_assigned_identity_id:
+            identity = Identity(type="UserAssigned",
+                                user_assigned_identities={user_assigned_identity_id: UserAssignedIdentity()})
+        else:
+            identity = Identity(type="SystemAssigned")
+
+        params = StorageAccountCreateParameters(
+            sku=Sku(name=sku), kind=kind, location=location, tags=_tags(tags), identity=identity,
+            access_tier=access_tier, public_network_access=public_network_access,
+            network_rule_set=network_rule_set, encryption=encryption,
+            enable_https_traffic_only=True, minimum_tls_version="TLS1_2",
+            allow_shared_key_access=False, allow_blob_public_access=False,
+        )
+        account = client.storage_accounts.begin_create(resource_group, account_name, params).result()
+        steps.append({"step": "storage_account", "success": True, "message": f"Storage account '{account_name}' created."})
+    except Exception as exc:
+        log.error("create_storage_account failed: %s", exc)
+        steps.append({"step": "storage_account", "success": False, "message": str(exc)[:300]})
+        return {"success": False, "message": str(exc)[:300], "steps": steps}
+
+    try:
+        client.blob_services.set_service_properties(resource_group, account_name, BlobServiceProperties(
+            is_versioning_enabled=bool(blob_versioning),
+            change_feed=ChangeFeed(enabled=bool(change_feed)),
+            delete_retention_policy=DeleteRetentionPolicy(enabled=bool(soft_delete), days=int(soft_delete_days or 30)),
+            restore_policy=RestorePolicyProperties(enabled=False),
+        ))
+        steps.append({"step": "blob_service_properties", "success": True,
+                     "message": "Blob versioning/change-feed/soft-delete applied."})
+    except Exception as exc:
+        log.error("create_storage_account: blob service properties failed: %s", exc)
+        steps.append({"step": "blob_service_properties", "success": False, "message": str(exc)[:300]})
+
+    try:
+        client.file_services.set_service_properties(resource_group, account_name, FileServiceProperties(
+            share_delete_retention_policy=DeleteRetentionPolicy(enabled=bool(soft_delete), days=int(soft_delete_days or 30)),
+        ))
+        steps.append({"step": "file_service_properties", "success": True, "message": "Share soft-delete applied."})
+    except Exception as exc:
+        log.error("create_storage_account: file service properties failed: %s", exc)
+        steps.append({"step": "file_service_properties", "success": False, "message": str(exc)[:300]})
+
+    existing = set()
+    try:
+        existing = {c.name for c in client.blob_containers.list(resource_group, account_name)}
+    except Exception as exc:
+        log.error("create_storage_account: listing existing containers failed: %s", exc)
+
+    for cname in (containers or []):
+        if cname in existing:
+            steps.append({"step": f"container:{cname}", "success": True, "message": "Already exists — skipped."})
+            continue
+        try:
+            client.blob_containers.create(resource_group, account_name, cname,
+                                          BlobContainer(public_access="None"))
+            steps.append({"step": f"container:{cname}", "success": True, "message": "Created."})
+        except Exception as exc:
+            log.error("create_storage_account: container '%s' failed: %s", cname, exc)
+            steps.append({"step": f"container:{cname}", "success": False, "message": str(exc)[:300]})
+
+    # "success" reflects the storage account itself (the revertable resource) —
+    # a sub-step failure (blob props, a container) is real and surfaced via
+    # `steps`/`all_steps_ok`, but must not suppress the change-ledger entry for
+    # an account that genuinely now exists in Azure (the caller's
+    # _record_change only fires on success=True).
+    all_ok = all(s["success"] for s in steps)
+    change = {
+        "target": f"Storage account {account_name} @ {resource_group}",
+        "before": None,
+        "after": {"name": account_name, "kind": kind, "sku": sku, "access_tier": access_tier,
+                 "containers": list(containers or [])},
+        "revert_op": "delete_storage_account",
+        "revert_params": {"sub": subscription_id, "rg": resource_group, "account": account_name},
+    }
+    return {"success": True, "dry_run": False, "change": change,
+            "message": ("Storage account and all requested sub-resources deployed." if all_ok
+                       else "Storage account created, but one or more sub-resources failed — see steps."),
+            "resource_ids": {"storage_account": account.id}, "steps": steps, "all_steps_ok": all_ok}
+
+
+@_guard
+def delete_storage_account(subscription_id: str, resource_group: str, account_name: str) -> dict:
+    """Delete a storage account this portal created (revert op). Azure has no
+    account-level 'restore previous config' — this is delete-only, same model
+    as delete_vm/delete_aks_cluster. Blob-level recovery (soft delete /
+    versioning, both on by default) is the only recovery path for what was
+    inside it, and only up to their configured retention window."""
+    try:
+        client = _storage_client(subscription_id)
+        client.storage_accounts.delete(resource_group, account_name)
+        return {"success": True, "message": f"Storage account '{account_name}' deleted."}
+    except Exception as exc:
+        if _is_not_found(exc):
+            return {"success": True, "message": f"Storage account '{account_name}' already gone."}
+        log.error("delete_storage_account failed: %s", exc)
+        return {"success": False, "message": str(exc)[:300]}
+
+
+@_guard
+def create_object_replication_policy(subscription_id: str, resource_group: str,
+                                     source_account: str, source_container: str,
+                                     destination_account: str, destination_container: str) -> dict:
+    """Best-effort: set up Object Replication between this request's storage
+    account (source) and an existing destination account. Azure requires the
+    policy to be created on the DESTINATION first (to mint a policy ID), then
+    a matching policy on the SOURCE referencing that ID — both calls happen
+    here. Called as a separate step after create_storage_account succeeds;
+    a failure here does not mean the storage account itself failed."""
+    from azure.mgmt.storage.models import ObjectReplicationPolicy, ObjectReplicationPolicyRule
+    try:
+        client = _storage_client(subscription_id)
+        rule = ObjectReplicationPolicyRule(source_container=source_container,
+                                           destination_container=destination_container)
+        dest_policy = client.object_replication_policies.create_or_update(
+            resource_group, destination_account, "default",
+            ObjectReplicationPolicy(source_account=source_account,
+                                    destination_account=destination_account, rules=[rule]))
+        policy_id = dest_policy.policy_id or "default"
+        client.object_replication_policies.create_or_update(
+            resource_group, source_account, policy_id,
+            ObjectReplicationPolicy(source_account=source_account,
+                                    destination_account=destination_account, rules=[rule]))
+        return {"success": True, "message": f"Object replication policy '{policy_id}' created "
+                f"({source_container} -> {destination_account}/{destination_container})."}
+    except Exception as exc:
+        log.error("create_object_replication_policy failed: %s", exc)
+        return {"success": False, "message": str(exc)[:300]}
+
+
+@_guard
+def create_storage_private_endpoint(subscription_id: str, resource_group: str, location: str,
+                                    account_name: str, subnet_id: str, tags: dict = None) -> dict:
+    """Best-effort: create a Private Endpoint (blob sub-resource) for this
+    storage account in the given subnet, auto-approved (same subscription).
+    Does NOT link a private DNS zone — that's a separate 'DNS / Private DNS
+    Link' request in this portal (see RequestType.DNS), same reuse pattern
+    as link_aks_private_dns_to_hub being a distinct step from AKS create.
+    Called as a separate step after create_storage_account succeeds; a
+    failure here does not mean the storage account itself failed."""
+    from azure.mgmt.network.models import PrivateEndpoint, PrivateLinkServiceConnection, Subnet
+    try:
+        storage = _storage_client(subscription_id).storage_accounts.get_properties(resource_group, account_name)
+        client = _network_client(subscription_id)
+        pe_name = f"{account_name}-pe-blob"
+        pe = client.private_endpoints.begin_create_or_update(
+            resource_group, pe_name,
+            PrivateEndpoint(location=location, subnet=Subnet(id=subnet_id), tags=_tags(tags),
+                           private_link_service_connections=[PrivateLinkServiceConnection(
+                               name=f"{account_name}-plsc", private_link_service_id=storage.id,
+                               group_ids=["blob"])])).result()
+        return {"success": True, "message": f"Private Endpoint '{pe_name}' created for blob. "
+                f"Link a private DNS zone separately (raise a 'DNS / Private DNS Link' request) "
+                f"for name resolution to work from inside the VNet.", "resource_ids": {"private_endpoint": pe.id}}
+    except Exception as exc:
+        log.error("create_storage_private_endpoint failed: %s", exc)
+        return {"success": False, "message": str(exc)[:300]}

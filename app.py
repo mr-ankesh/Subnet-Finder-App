@@ -14,7 +14,8 @@ import search
 import settings_store
 from config import (cfg, CATEGORIES, SETTINGS_SPEC, resolve, settings_view,
                     AKS_FALLBACK_VERSIONS, AKS_FALLBACK_SIZES, AKS_STANDARD_REGION,
-                    VM_OS_DISK_TYPES, VM_DATA_DISK_TYPES)
+                    VM_OS_DISK_TYPES, VM_DATA_DISK_TYPES,
+                    STORAGE_KINDS, STORAGE_SKUS, STORAGE_ACCESS_TIERS)
 from models import db, SpokeRequest, VnetInfo, SubnetRecord, RequestStatus, RequestType, FwCollection
 from naming import render_name
 import notifications
@@ -410,6 +411,18 @@ def inject_globals():
                             "require_ssh_key": cfg.VM_REQUIRE_SSH_KEY,
                             "images": [ln.strip() for ln in (cfg.VM_DEFAULT_IMAGES or "").replace(",", "\n").splitlines()
                                       if ln.strip()]},
+            # Storage Account request form: fixed kind/SKU/tier options (Key
+            # Vault/identity/VNet are fetched live from Azure — stage 2 of this
+            # feature) + the defaults applied to anything the requester doesn't pick.
+            "storage_defaults": {"region": cfg.STORAGE_DEFAULT_REGION or AKS_STANDARD_REGION,
+                                 "max_containers": cfg.STORAGE_MAX_CONTAINERS_PER_REQUEST,
+                                 "soft_delete_days": cfg.STORAGE_BLOB_SOFT_DELETE_DAYS,
+                                 "default_kind": cfg.STORAGE_DEFAULT_KIND,
+                                 "default_sku": cfg.STORAGE_DEFAULT_SKU,
+                                 "default_access_tier": cfg.STORAGE_DEFAULT_ACCESS_TIER,
+                                 "default_public_network_access": cfg.STORAGE_DEFAULT_PUBLIC_NETWORK_ACCESS,
+                                 "default_cmk": cfg.STORAGE_DEFAULT_CMK_ENCRYPTION,
+                                 "require_private_endpoint_nudge": cfg.STORAGE_REQUIRE_PRIVATE_ENDPOINT},
             **_approvals_nav_ctx()}
 
 
@@ -2047,6 +2060,75 @@ def azure_vm_quota():
     return _vm_lookup_response(res, ["fits", "vcpus_per_vm", "requested_vcpus", "checks", "message"])
 
 
+# ── Storage Account live option lookups (requester-accessible, same
+# {ok,data,error}-via-_vm_lookup_response shape as the VM lookups above).
+# VNet/subnet pickers reuse /api/azure/vnets and /api/azure/subnets above —
+# no separate storage-vnets/storage-subnets routes (AKS and VM both already
+# share those two routes rather than each having their own). ──────────────
+
+@app.route("/api/azure/storage-skus")
+@require_login
+def azure_storage_skus():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    region = request.args.get("region", "").strip()
+    if not sub or not region:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID and region are required."})
+    try:
+        res = azure_tools.list_storage_skus(sub, region)
+    except Exception as exc:
+        log.error("azure_storage_skus failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["skus", "total"])
+
+
+@app.route("/api/azure/storage-identities")
+@require_login
+def azure_storage_identities():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    rg = request.args.get("resource_group", "").strip()
+    if not sub:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID is required."})
+    try:
+        res = azure_tools.list_user_assigned_identities(sub, rg or None)
+    except Exception as exc:
+        log.error("azure_storage_identities failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["identities", "total"])
+
+
+@app.route("/api/azure/storage-keyvaults")
+@require_login
+def azure_storage_keyvaults():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    if not sub:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID is required."})
+    try:
+        res = azure_tools.list_keyvaults(sub)
+    except Exception as exc:
+        log.error("azure_storage_keyvaults failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["vaults", "total"])
+
+
+@app.route("/api/azure/storage-keys")
+@require_login
+def azure_storage_keys():
+    import azure_tools
+    sub = request.args.get("subscription", "").strip()
+    vault = request.args.get("vault", "").strip()
+    if not sub or not vault:
+        return jsonify({"ok": False, "data": None, "error": "Subscription ID and vault name are required."})
+    try:
+        res = azure_tools.list_keyvault_keys(sub, vault)
+    except Exception as exc:
+        log.error("azure_storage_keys failed: %s", exc)
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:200]})
+    return _vm_lookup_response(res, ["keys", "total"])
+
+
 @app.route("/requester")
 @require_login
 def requester_page():
@@ -2081,6 +2163,14 @@ TYPE_REQUIRED_DETAILS = {
     RequestType.VM_CREATE:         ["vm_base_name", "vm_count", "resource_group", "subscription_id",
                                     "vnet_name", "subnet_name", "vm_size", "os_disk_type",
                                     "auth_mode"],
+    RequestType.STORAGE_ACCOUNT_CREATE: [
+        "storage_account_name", "resource_group", "subscription_id", "region", "env",
+        "storage_kind", "sku", "access_tier", "public_network_access",
+        "identity_type", "encryption_type",
+        # Required governance tags (reused schema — see _deploy_tags).
+        "application_name", "business_unit", "criticality", "data_classification",
+        "owner_email", "approver_email", "service_class", "sovereignty",
+    ],
     RequestType.NETWORK_ISSUE:     ["issue", "source", "destination"],
     RequestType.OTHER:             ["description"],
 }
@@ -2181,6 +2271,151 @@ def _trigger_gate_block(req, action_key):
     except Exception:
         log.exception("trigger approval gate failed for request #%s", getattr(req, "id", "?"))
         return None
+
+
+def _validate_storage_request(details: dict) -> str | None:
+    """Validation for a Storage Account request at submission time. Offline
+    checks first (name/container/IP-rule rules, kind/SKU/tier/identity/
+    encryption option membership, region justification), then live-Azure
+    checks (name availability, VNet/subnet existence, Key Vault/key
+    reachability, replication destination existence) — same staging as VM's
+    stage-1 field validation followed by stage-3 live SKU/VNet/image checks.
+    Returns an error string, or None if the request is well formed."""
+    import re, json as _json_storage
+
+    name = details.get("storage_account_name", "")
+    if not re.match(r"^[a-z0-9]{3,24}$", name):
+        return ("Storage account name must be 3–24 characters, lowercase letters "
+                "and digits only (Azure's global naming rule).")
+
+    if details.get("storage_kind") not in STORAGE_KINDS:
+        return "Pick a valid storage kind: " + ", ".join(STORAGE_KINDS) + "."
+    if details.get("sku") not in STORAGE_SKUS:
+        return "Pick a valid SKU: " + ", ".join(STORAGE_SKUS) + "."
+    if details.get("access_tier") not in STORAGE_ACCESS_TIERS:
+        return "Pick a valid access tier: " + ", ".join(STORAGE_ACCESS_TIERS) + "."
+    if details.get("public_network_access") not in ("Disabled", "Enabled"):
+        return "Public network access must be Disabled or Enabled."
+
+    region = (details.get("region") or cfg.STORAGE_DEFAULT_REGION or AKS_STANDARD_REGION).strip()
+    default_region = cfg.STORAGE_DEFAULT_REGION or AKS_STANDARD_REGION
+    if region != default_region and not (details.get("region_justification") or "").strip():
+        return (f"A justification is required to deploy outside the standard "
+                f"region ({default_region}).")
+
+    identity_type = details.get("identity_type")
+    if identity_type not in ("system", "user"):
+        return "Pick an identity type: System Assigned or User Assigned."
+    if identity_type == "user" and not (details.get("user_assigned_identity_id") or "").strip():
+        return "A User Assigned identity must be selected."
+
+    encryption_type = details.get("encryption_type")
+    if encryption_type not in ("microsoft_managed", "customer_managed"):
+        return "Pick an encryption type: Microsoft Managed Key or Customer Managed Key."
+    if encryption_type == "customer_managed":
+        if not (details.get("cmk_keyvault_name") or "").strip():
+            return "A Key Vault must be selected for customer-managed-key encryption."
+        if not (details.get("cmk_key_name") or "").strip():
+            return "A key must be selected for customer-managed-key encryption."
+
+    # Allowed IPs — comma-separated list of IPs/CIDRs, no duplicates.
+    ips_raw = details.get("allowed_ips", "")
+    if ips_raw:
+        ips = [s.strip() for s in str(ips_raw).split(",") if s.strip()]
+        seen = set()
+        for ip in ips:
+            try:
+                ipaddress.ip_network(ip, strict=False)
+            except ValueError:
+                return f"'{ip}' is not a valid IP address or CIDR range."
+            if ip in seen:
+                return f"Duplicate IP rule: '{ip}'."
+            seen.add(ip)
+
+    # Containers — JSON list of names, Azure's blob-container naming rule.
+    containers = []
+    if details.get("containers"):
+        try:
+            containers = _json_storage.loads(details["containers"])
+            if not isinstance(containers, list):
+                raise ValueError
+        except (ValueError, TypeError):
+            return "Container list is malformed — re-add them from the form."
+        max_containers = int(cfg.STORAGE_MAX_CONTAINERS_PER_REQUEST or 10)
+        if len(containers) > max_containers:
+            return (f"At most {max_containers} containers per request "
+                    f"(Settings → Storage Defaults).")
+        seen_c = set()
+        for c in containers:
+            if not re.match(r"^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$", c) or "--" in c:
+                return (f"Container name '{c}' is invalid — 3-63 characters, lowercase "
+                        f"letters, digits and single hyphens, starting/ending alphanumeric.")
+            if c in seen_c:
+                return f"Duplicate container name: '{c}'."
+            seen_c.add(c)
+
+    # Object replication — presence-only here; destination-account existence
+    # is a live check added in Phase 2.
+    if str(details.get("replication_enabled", "")).lower() in ("true", "1", "yes"):
+        missing = [k for k in ("replication_source_container", "replication_destination_account",
+                               "replication_destination_container") if not details.get(k)]
+        if missing:
+            return "Object replication needs: " + ", ".join(missing) + "."
+        if containers and details["replication_source_container"] not in containers:
+            return ("Object replication's source container must be one of this request's "
+                    "own containers.")
+
+    # Live Azure checks below — same staging as VM's stage-3 SKU/VNet/image
+    # checks: the picker degrades to free text on fetch failure, so nothing
+    # here can assume the client already validated it.
+    import azure_tools as _az_storage
+    sub = details.get("subscription_id", "")
+    avail = _az_storage.check_storage_name_availability(sub, name)
+    if not avail.get("success"):
+        return "Could not verify the storage account name against Azure — " + avail.get("message", "")
+    if not avail.get("available"):
+        return (f"Storage account name '{name}' is not available — "
+                + (avail.get("message") or avail.get("reason") or "already taken") + ".")
+
+    vnet_name = details.get("vnet_name", "")
+    subnet_name = details.get("subnet_name", "")
+    if vnet_name or subnet_name:
+        if not (vnet_name and subnet_name):
+            return "Provide both a VNet name and a subnet name, or leave both blank."
+        vnet_rg = details.get("vnet_resource_group") or details.get("resource_group")
+        vnets_res = _az_storage.list_vnets(sub)
+        if not vnets_res.get("success"):
+            return "Could not verify the VNet against Azure — " + vnets_res.get("message", "")
+        vnet_match = next((v for v in vnets_res.get("vnets", [])
+                           if v["name"] == vnet_name and v["resource_group"].lower() == (vnet_rg or "").lower()), None)
+        if not vnet_match:
+            return f"VNet '{vnet_name}' was not found in resource group '{vnet_rg}' in this subscription."
+        subnets_res = _az_storage.list_subnets(sub, vnet_rg, vnet_name)
+        if not subnets_res.get("success"):
+            return "Could not verify the subnet against Azure — " + subnets_res.get("message", "")
+        if not any(s["name"] == subnet_name for s in subnets_res.get("subnets", [])):
+            return f"Subnet '{subnet_name}' was not found in VNet '{vnet_name}'."
+
+    if encryption_type == "customer_managed":
+        keys_res = _az_storage.list_keyvault_keys(sub, details["cmk_keyvault_name"])
+        if not keys_res.get("success"):
+            return "Could not verify the Key Vault/key against Azure — " + keys_res.get("message", "")
+        key_match = next((k for k in keys_res.get("keys", []) if k["name"] == details["cmk_key_name"]), None)
+        if not key_match:
+            return f"Key '{details['cmk_key_name']}' was not found in Key Vault '{details['cmk_keyvault_name']}'."
+        version = (details.get("cmk_key_version") or "").strip()
+        if version and version not in key_match.get("versions", []):
+            return f"Key version '{version}' was not found for key '{details['cmk_key_name']}'."
+
+    if str(details.get("replication_enabled", "")).lower() in ("true", "1", "yes"):
+        dest = details["replication_destination_account"]
+        dest_avail = _az_storage.check_storage_name_availability(sub, dest)
+        if not dest_avail.get("success"):
+            return "Could not verify the replication destination account against Azure — " + dest_avail.get("message", "")
+        if dest_avail.get("available"):
+            return f"Replication destination account '{dest}' does not exist."
+
+    return None
 
 
 def _create_service_request(request_type, purpose, requester_name, requester_email, details):
@@ -2445,6 +2680,16 @@ def _create_service_request(request_type, purpose, requester_name, requester_ema
                 cn = _az_vm.derive_windows_computer_name(full_name, suffix_width)
                 if cn.get("error"):
                     return {"error": f"VM #{i} ({full_name}): {cn['error']}"}, 400
+
+    # Storage guard: offline checks (name/container/IP rules, tag presence
+    # already covered by TYPE_REQUIRED_DETAILS above) plus live-Azure checks
+    # (name availability, VNet/subnet existence, Key Vault/key reachability,
+    # replication destination existence) — same staging VM uses for its
+    # SKU/VNet/image checks.
+    if request_type == RequestType.STORAGE_ACCOUNT_CREATE:
+        err = _validate_storage_request(details)
+        if err:
+            return {"error": err}, 400
 
     # Decommission guard: manual changes made outside the portal must be removed
     # by the requester before the admin will decommission the VNET.
@@ -3178,6 +3423,63 @@ def admin_vm_preview(req_id):
     return jsonify(res), (400 if "error" in res else 200)
 
 
+def _storage_preview(req) -> dict:
+    """Read-only: show the resolved storage account config before deploying.
+    Unlike VM's plan resolution, nothing needs to be computed or persisted —
+    the account name and full config are already fixed by the requester at
+    submission, so this just reshapes `details` for the admin deploy panel.
+    'Dry Run' for the real deploy itself is inherent (AZURE_DRY_RUN + the
+    @_guard decorator on create_storage_account), not a separate flag here."""
+    if req.request_type != RequestType.STORAGE_ACCOUNT_CREATE:
+        return {"error": "Not a Storage Account request."}
+    d = req.get_details()
+    containers = []
+    if d.get("containers"):
+        import json as _json_storage_preview
+        try:
+            containers = _json_storage_preview.loads(d["containers"])
+        except Exception:
+            containers = []
+    allowed_ips = [ip.strip() for ip in str(d.get("allowed_ips") or "").split(",") if ip.strip()]
+    return {"config": {
+        "storage_account_name": d.get("storage_account_name", ""),
+        "resource_group": d.get("resource_group", ""),
+        "subscription_id": d.get("subscription_id", ""),
+        "region": d.get("region") or cfg.STORAGE_DEFAULT_REGION or AKS_STANDARD_REGION,
+        "storage_kind": d.get("storage_kind", ""), "sku": d.get("sku", ""),
+        "access_tier": d.get("access_tier", ""),
+        "public_network_access": d.get("public_network_access", "Disabled"),
+        "allowed_ips": allowed_ips,
+        "vnet_name": d.get("vnet_name", ""), "subnet_name": d.get("subnet_name", ""),
+        "identity_type": d.get("identity_type", ""),
+        "user_assigned_identity_id": d.get("user_assigned_identity_id", ""),
+        "encryption_type": d.get("encryption_type", ""),
+        "cmk_keyvault_name": d.get("cmk_keyvault_name", ""), "cmk_key_name": d.get("cmk_key_name", ""),
+        "cmk_key_version": d.get("cmk_key_version", ""),
+        "blob_versioning": bool(d.get("blob_versioning")), "change_feed": bool(d.get("change_feed")),
+        "soft_delete": bool(d.get("soft_delete")),
+        "blob_retention_days": d.get("blob_retention_days") or cfg.STORAGE_BLOB_SOFT_DELETE_DAYS,
+        "containers": containers,
+        "replication_enabled": str(d.get("replication_enabled", "")).lower() in ("true", "1", "yes"),
+        "replication_source_container": d.get("replication_source_container", ""),
+        "replication_destination_account": d.get("replication_destination_account", ""),
+        "replication_destination_container": d.get("replication_destination_container", ""),
+        # Security defaults enforced regardless of what was requested — see
+        # azure_tools.create_storage_account.
+        "security_defaults": {"tls": "TLS1_2", "https_only": True, "shared_key_access": False,
+                              "blob_public_access": False, "infrastructure_encryption": True,
+                              "network_default_action": "Deny"},
+    }}
+
+
+@app.route("/api/admin/storage/preview/<int:req_id>", methods=["POST"])
+@require_admin
+def admin_storage_preview(req_id):
+    req = SpokeRequest.query.get_or_404(req_id)
+    res = _storage_preview(req)
+    return jsonify(res), (400 if "error" in res else 200)
+
+
 @app.route("/api/admin/azure-action/<int:req_id>", methods=["POST"])
 @require_admin
 def admin_azure_action(req_id):
@@ -3223,6 +3525,9 @@ def admin_azure_action(req_id):
                      data={"action": action, "dry_run": bool(res.get("dry_run")),
                            "success": bool(res.get("success")),
                            "kept": bool(res.get("kept_existing") or res.get("replaced_existing")),
+                           # None for every action except storage_deploy, which has
+                           # per-sub-step results distinct from "was the account created".
+                           "all_steps_ok": res.get("all_steps_ok"),
                            "message": str(res.get("message", ""))[:400]})
 
     def _route_res(**kwargs):
@@ -3718,6 +4023,77 @@ def admin_azure_action(req_id):
                                    "Deploy stopped after a failure — re-run to retry "
                                    "only the pending/failed VMs.")}), (200 if all_created else 207)
 
+    # ── Storage Account actions — read-only preview, and the deploy action ──
+    # Deploy is a single call (unlike VM's per-item loop): the account name is
+    # already fixed by the requester, so there's no plan to resolve, only the
+    # already-submitted config to deploy. Object replication and a private
+    # endpoint, if requested, are separate best-effort steps after the main
+    # deploy succeeds — their failure doesn't fail the whole action.
+    if action in ("storage_check", "storage_deploy"):
+        if action == "storage_check":
+            res = _storage_preview(req)
+            return jsonify(res), (400 if "error" in res else 200)
+
+        sub = details.get("subscription_id", "")
+        rg = details.get("resource_group", "")
+        name = details.get("storage_account_name", "")
+        region = payload.get("region") or details.get("region") or cfg.STORAGE_DEFAULT_REGION or AKS_STANDARD_REGION
+        if not sub or not rg or not name:
+            return jsonify({"error": "Request details are missing the subscription/resource group/account name."}), 400
+
+        containers = []
+        if details.get("containers"):
+            import json as _json_storage_deploy
+            try:
+                containers = _json_storage_deploy.loads(details["containers"])
+            except Exception:
+                containers = []
+
+        allowed_ip_rules = [ip.strip() for ip in str(details.get("allowed_ips") or "").split(",") if ip.strip()]
+        allowed_subnet_ids = []
+        if details.get("public_network_access") == "Enabled" and details.get("vnet_name") and details.get("subnet_name"):
+            vnet_rg = details.get("vnet_resource_group") or rg
+            allowed_subnet_ids = [f"/subscriptions/{sub}/resourceGroups/{vnet_rg}"
+                                 f"/providers/Microsoft.Network/virtualNetworks/{details['vnet_name']}"
+                                 f"/subnets/{details['subnet_name']}"]
+
+        cmk_keyvault_uri = None
+        if details.get("encryption_type") == "customer_managed" and details.get("cmk_keyvault_name"):
+            kv_res = azure_tools.list_keyvaults(sub)
+            kv_match = next((v for v in kv_res.get("vaults", [])
+                            if v["name"] == details["cmk_keyvault_name"]), None)
+            if kv_match:
+                cmk_keyvault_uri = f"https://{kv_match['name']}.vault.azure.net/"
+
+        res = azure_tools.create_storage_account(
+            subscription_id=sub, resource_group=rg, account_name=name, location=region,
+            kind=details.get("storage_kind", "StorageV2"), sku=details.get("sku", "Standard_LRS"),
+            access_tier=details.get("access_tier", "Hot"),
+            public_network_access=details.get("public_network_access", "Disabled"),
+            allowed_ip_rules=allowed_ip_rules, allowed_subnet_ids=allowed_subnet_ids,
+            identity_type=details.get("identity_type", "system"),
+            user_assigned_identity_id=details.get("user_assigned_identity_id"),
+            cmk_keyvault_uri=cmk_keyvault_uri, cmk_key_name=details.get("cmk_key_name"),
+            cmk_key_version=details.get("cmk_key_version"),
+            blob_versioning=bool(details.get("blob_versioning")), change_feed=bool(details.get("change_feed")),
+            soft_delete=bool(details.get("soft_delete")),
+            soft_delete_days=int(details.get("blob_retention_days") or cfg.STORAGE_BLOB_SOFT_DELETE_DAYS or 30),
+            containers=containers, tags=_deploy_tags(req),
+        )
+        if res.get("success") and str(details.get("replication_enabled", "")).lower() in ("true", "1", "yes"):
+            repl = azure_tools.create_object_replication_policy(
+                subscription_id=sub, resource_group=rg, source_account=name,
+                source_container=details.get("replication_source_container", ""),
+                destination_account=details.get("replication_destination_account", ""),
+                destination_container=details.get("replication_destination_container", ""))
+            res["message"] = str(res.get("message", "")) + " Replication: " + repl.get("message", "")
+            res["all_steps_ok"] = bool(res.get("all_steps_ok")) and bool(repl.get("success"))
+            res.setdefault("steps", []).append({"step": "object_replication", **repl})
+
+        _audit_azure(res)
+        _auto_advance(req)
+        return jsonify(res), (200 if res.get("all_steps_ok", res.get("success")) else 207)
+
     # ── VNET decommission actions — driven by request details ──
     if action in ("decom_check", "decom_execute", "decom_release"):
         vnet_name = details.get("vnet_name", "")
@@ -4119,6 +4495,8 @@ def _required_actions(req) -> set:
         return req_set
     if t == RequestType.VM_CREATE:
         return {"vm_deploy"}
+    if t == RequestType.STORAGE_ACCOUNT_CREATE:
+        return {"storage_deploy"}
     return set()
 
 
@@ -4196,6 +4574,21 @@ def _auto_advance(req):
             new = RequestStatus.COMPLETED
         elif any(p.get("status") == "created" for p in plan):
             new = RequestStatus.VM_DEPLOYED
+    elif t == RequestType.STORAGE_ACCOUNT_CREATE:
+        # "storage_deploy" marks done as soon as the account itself is created
+        # (see create_storage_account) even if a sub-step — a container, blob
+        # properties — failed, so the change ledger still tracks the real
+        # resource. Full completion needs the LATEST attempt's sub-steps to
+        # have all succeeded too, which isn't captured by the generic done set
+        # — read it off the latest storage_deploy audit entry directly, same
+        # reason VM_CREATE reads vm_plan instead of the generic compare.
+        if "storage_deploy" in done:
+            new = RequestStatus.STORAGE_DEPLOYED
+            latest = next((e for e in reversed(audit.list_entries(request_id=req.id, limit=500))
+                          if (e.get("data") or {}).get("action") == "storage_deploy"
+                          and (e.get("data") or {}).get("success")), None)
+            if latest and (latest.get("data") or {}).get("all_steps_ok"):
+                new = RequestStatus.COMPLETED
     # Only ever move forward within the workflow
     if (not new or new == req.status or new not in wf
             or (req.status in wf and wf.index(new) <= wf.index(req.status))):

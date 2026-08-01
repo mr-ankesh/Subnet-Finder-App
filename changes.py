@@ -181,6 +181,8 @@ def _revert_dispatch(op: str, p: dict) -> dict:
         return azure_tools.delete_aks_cluster(p["sub"], p["rg"], p["cluster"])
     if op == "delete_vm":
         return azure_tools.delete_vm(p["sub"], p["rg"], p["vm"])
+    if op == "delete_storage_account":
+        return azure_tools.delete_storage_account(p["sub"], p["rg"], p["account"])
     if op == "delete_privatedns_link":
         return azure_tools.remove_privatedns_link(p["sub"], p["zone_rg"], p["zone"], p["link"])
     if op == "restore_vnet":

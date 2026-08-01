@@ -644,6 +644,97 @@
         </script>
         {% endif %}
 
+        {# ── Storage Account deploy ── #}
+        {% if rtype == 'storage_account_create' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
+        {% set sd = req.get_details() %}
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+            <span><i class="bi bi-hdd-stack"></i> Storage Account Deployment</span>
+            {% if AZURE_DRY_RUN %}<span style="background:rgba(245,158,11,.18);color:#f59e0b;border:1px solid rgba(245,158,11,.4);border-radius:6px;padding:1px 7px;font-size:9px;letter-spacing:.5px;">DRY-RUN · NO AZURE CHANGES</span>{% endif %}
+          </div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;font-family:var(--mono);line-height:1.6;">
+            {{ sd.get('storage_account_name') }} @ {{ sd.get('resource_group') }} ({{ sd.get('region') or 'uaenorth' }})<br>
+            {{ sd.get('storage_kind') }} · {{ sd.get('sku') }} · {{ sd.get('access_tier') }} tier<br>
+            Public access: {{ sd.get('public_network_access') }} · Identity: {{ sd.get('identity_type') }} ·
+            Encryption: {{ 'Customer Managed Key' if sd.get('encryption_type') == 'customer_managed' else 'Microsoft Managed Key' }}
+          </div>
+          <button class="btn btn-glass w-100 mb-2" onclick="stgCheckPreview(this)">
+            <i class="bi bi-clipboard-pulse me-2"></i>1 · Check / Refresh Preview
+          </button>
+          <div id="stgPreviewBox" style="display:none;margin-bottom:10px;"></div>
+          <button class="btn btn-glow w-100" onclick="stgDeploy(this)">
+            <i class="bi bi-rocket-takeoff me-2"></i>2 · Deploy Storage Account
+          </button>
+          <div style="margin-top:8px;font-size:11px;color:var(--text-muted);line-height:1.5;">
+            Step 1 shows the resolved config — SKU, network rules, encryption, containers to create —
+            without creating anything. Deploy runs the account, then blob/file service properties, then
+            each requested container (already-created ones are skipped on a re-run). Object replication
+            and a private endpoint, if requested, are best-effort steps that don't block the rest of the
+            deploy on failure. Revert (from the Change Ledger) deletes the storage account — Azure has no
+            account-level restore; blob soft-delete/versioning is the only recovery path for what's inside it.
+          </div>
+          <div id="actionResults" style="display:none;margin-top:10px;"></div>
+        </div>
+        <script>
+          function stgRenderPreview(d) {
+            const box = document.getElementById('stgPreviewBox');
+            box.style.display = 'block';
+            if (d.error) {
+              box.innerHTML = `<div style="border:1px solid #f8717166;background:rgba(248,113,113,.08);border-radius:10px;padding:12px 14px;font-size:13px;color:#f87171;">${d.error.replace(/</g,'&lt;')}</div>`;
+              return;
+            }
+            const c = d.config || {};
+            const containers = (c.containers || []).join(', ') || '(none requested)';
+            const ips = (c.allowed_ips || []).join(', ') || 'none';
+            const sec = c.security_defaults || {};
+            box.innerHTML = `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-family:var(--mono);font-size:11.5px;line-height:1.7;color:var(--text-dim);">
+              <div><strong>${c.storage_account_name}</strong> @ ${c.resource_group} (${c.region})</div>
+              <div>${c.storage_kind} · ${c.sku} · ${c.access_tier} tier</div>
+              <div>Public access: ${c.public_network_access}${c.public_network_access === 'Enabled' ? ` · IPs: ${ips} · VNet/subnet: ${c.vnet_name || '—'}/${c.subnet_name || '—'}` : ''}</div>
+              <div>Identity: ${c.identity_type}${c.identity_type === 'user' ? ' (' + c.user_assigned_identity_id + ')' : ''}</div>
+              <div>Encryption: ${c.encryption_type === 'customer_managed' ? `CMK — ${c.cmk_keyvault_name} / ${c.cmk_key_name} / ${c.cmk_key_version || 'latest'}` : 'Microsoft Managed Key'}</div>
+              <div>Blob: versioning=${c.blob_versioning}, change feed=${c.change_feed}, soft delete=${c.soft_delete} (${c.blob_retention_days}d)</div>
+              <div>Containers to create: ${containers}</div>
+              ${c.replication_enabled ? `<div>Object replication: ${c.replication_source_container} → ${c.replication_destination_account}/${c.replication_destination_container}</div>` : ''}
+              <div style="margin-top:6px;color:#7edb56;">Enforced regardless of the above: TLS ${sec.tls}, HTTPS-only, shared-key access disabled, blob public access disabled, infrastructure encryption on, network default ${sec.network_default_action}.</div>
+            </div>`;
+          }
+
+          async function stgCheckPreview(btn) {
+            const orig = btn ? btn.innerHTML : null;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Checking…'; }
+            try {
+              const d = await (await fetch(`/api/admin/storage/preview/${REQ_ID}`, { method: 'POST' })).json();
+              stgRenderPreview(d);
+            } catch (e) {
+              document.getElementById('stgPreviewBox').style.display = 'block';
+              document.getElementById('stgPreviewBox').innerHTML = '<div style="color:#f87171;font-size:12px;">Network error while checking.</div>';
+            }
+            if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+          }
+
+          async function stgDeploy(btn) {
+            const orig = btn.innerHTML;
+            btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>Deploying…';
+            const box = document.getElementById('actionResults');
+            box.style.display = 'block';
+            box.innerHTML = '<span style="font-size:12px;color:var(--text-muted);">Deploying…</span>';
+            try {
+              const resp = await fetch(`/api/admin/azure-action/${REQ_ID}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'storage_deploy' }) });
+              const d = await resp.json();
+              const color = d.success ? '#7edb56' : '#f59e0b';
+              box.innerHTML = `<span style="font-size:12px;color:${color};">${(d.error || d.message || '').replace(/</g,'&lt;')}</span>`;
+              if (d.success) setTimeout(() => location.reload(), 1800);
+            } catch (e) {
+              box.innerHTML = '<span style="color:var(--danger);font-size:12px;">Network error.</span>';
+            }
+            btn.disabled = false; btn.innerHTML = orig;
+          }
+        </script>
+        {% endif %}
+
         {# ── Network issue diagnosis ── #}
         {% if rtype == 'network_issue' and req.status not in terminals and req.status != RequestStatus.COMPLETED %}
         {% set ni = req.get_details() %}
