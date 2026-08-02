@@ -1,0 +1,121 @@
+kb_version: "1.0.0"
+id: storage_archive_retention
+name: Archive / Long-Term Retention Storage
+service: storage_account
+status: conditional
+condition: >
+  Only when data is rarely accessed and the workload tolerates hours-long rehydration.
+  Archive supports LRS and GRS only — not ZRS — so it is a documented deviation from the
+  Presight ZRS baseline and must be called out in the recommendation.
+summary: >
+  Standard GPv2 account with lifecycle management moving blobs to Cool and then Archive
+  for compliance or long-term retention. CMK-encrypted, private endpoint only.
+
+when_to_use:
+  - regulatory or legal retention
+  - long-term backup copies kept for years
+  - data that will almost never be read again
+  - write-once-read-many (WORM) compliance requirements
+
+not_for:
+  - anything read regularly            -> storage_blob_private_standard
+  - shared file access                 -> storage_files_private_standard
+  - active analytics                   -> storage_datalake_private
+
+match:
+  required:
+    access_frequency: [rare_archive]
+  preferred:
+    purpose: [compliance_retention, backup_copy]
+    data_shape: [unstructured_objects]
+  disqualify:
+    data_classification: [restricted_sovereign]
+    access_frequency: [frequent]
+
+design:
+  storage_kind: StorageV2
+  performance_tier: Standard
+  access_tier_initial: Cool
+  lifecycle_policy:
+    required: true
+    example: Cool after 30 days, Archive after 180 days
+    note: Tune the thresholds to the actual retention requirement, not the example.
+  replication: LRS or GRS
+  replication_deviation:
+    is_deviation: true
+    baseline: ZRS
+    reason: Archive access tier supports LRS and GRS redundancy only.
+    action: State this explicitly in the recommendation and confirm the owner accepts it.
+  immutability:
+    time_based_retention: available
+    legal_hold: available
+    note: Use WORM policies where retention is a compliance obligation, not a preference.
+  private_endpoint:
+    required: true
+    sub_resource: blob
+    dns_zone: privatelink.blob.core.windows.net
+  rehydration_warning: >
+    Archive is offline. Reading data requires rehydration to Hot or Cool, which takes
+    hours and incurs a retrieval charge. Do not use it for anything time-sensitive.
+  data_protection:
+    blob_soft_delete: enabled
+    versioning: enabled
+  backup:
+    vault_type: Backup Vault
+    scope: Azure Blobs
+  monitoring:
+    defender_for_storage: enabled
+    diagnostics_to: Operational Log Analytics Workspace
+    security_logs_to: Security Log Analytics Workspace
+
+security_floor:
+  public_network_access: Disabled
+  min_tls_version: "TLS1_2"
+  https_traffic_only: true
+  allow_shared_key_access: false
+  allow_blob_public_access: false
+  infrastructure_encryption: true
+  network_default_action: Deny
+  encryption: CMK
+  key_vault_sku: Premium
+  key_type: RSA-HSM
+  identity_type: UserAssigned
+  resource_lock: CanNotDelete
+
+required_requests:
+  - order: 1
+    type: storage_account_create
+    label: Storage Account (archive tier + lifecycle policy)
+  - order: 2
+    type: private_endpoint
+    label: Private Endpoint (blob)
+  - order: 3
+    type: dns
+    label: DNS — link privatelink.blob.core.windows.net to the spoke VNET
+
+prerequisites:
+  - An Azure subscription. If absent, request it from the HALO portal first.
+  - An onboarded spoke VNET and subnet.
+  - Key Vault Premium with RSA-HSM key and a user-assigned managed identity.
+  - A stated retention period. Archive without a defined retention window is just
+    expensive-to-read storage.
+
+diagram: storage_archive_retention.mmd
+cost_band: "$"
+
+source:
+  - doc: Presight Storage Design Document
+    section: "2.7 Storage Access Tier"
+    states: >
+      The archive access tier is designed for data that is rarely accessed and can tolerate
+      high latency; lowest storage cost, highest access and transaction costs; suitable for
+      long-term archival, compliance or legal data. The archive tier supports LRS and GRS
+      redundancy only.
+  - doc: Presight Storage Design Document
+    section: "2.2 Reliability — Supported Replication"
+    states: Standard GP Archive Tier supports LRS and GRS.
+  - doc: Presight Storage Design Document
+    section: "3.2.2 Blob Versioning and Immutable Blobs"
+    states: >
+      Immutable storage supports time-based retention policies and legal holds for WORM
+      protection against overwrites and deletes.

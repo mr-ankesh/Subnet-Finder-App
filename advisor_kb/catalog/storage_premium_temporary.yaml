@@ -1,0 +1,114 @@
+kb_version: "1.0.0"
+id: storage_premium_temporary
+name: Premium Storage (Temporary, High-IOPS Burst)
+service: storage_account
+status: conditional
+condition: >
+  Presight's decision is Standard GPv2 for all workloads. Premium is provisioned only when
+  a genuine low-latency / high-IOPS requirement cannot be met by Standard, and it is
+  provisioned TEMPORARILY — data is copied in for the duration of the workload and the
+  account is de-provisioned afterwards. A named owner must accept the de-provisioning
+  commitment before this pattern is recommended.
+summary: >
+  Premium SSD-backed storage for a bounded, high-performance workload. Not a permanent
+  home for data. ZRS where supported, CMK-encrypted, private endpoint only.
+
+when_to_use:
+  - a time-boxed job that Standard tier demonstrably cannot serve
+  - sustained IOPS above the Standard ceiling (20,000 IOPS)
+  - latency-sensitive processing where Standard has been measured and found insufficient
+
+not_for:
+  - assumed slowness without measurement      -> storage_blob_private_standard
+  - permanent primary storage                 -> storage_blob_private_standard
+  - archive or retention                      -> storage_archive_retention
+
+match:
+  required:
+    performance_requirement: [premium_justified]
+  preferred:
+    workload_duration: [temporary_bounded]
+  disqualify:
+    data_classification: [restricted_sovereign]
+    workload_duration: [permanent]
+
+design:
+  storage_kind: BlockBlobStorage or FileStorage
+  performance_tier: Premium
+  sku: Premium_ZRS
+  replication: ZRS
+  replication_note: Premium supports LRS and ZRS only. ZRS is the Presight baseline.
+  alternative_service:
+    name: Azure NetApp Files
+    when: >
+      Very high throughput file workloads with NFS 3.0/4.1 or SMB. Compare against Azure
+      Files before committing — the design documents point to a formal comparison.
+  lifecycle_commitment:
+    provision: Copy data in for the duration of the workload
+    deprovision: Remove the account once the workload completes
+    owner_accountability: required
+  private_endpoint:
+    required: true
+    sub_resource: blob or file
+    dns_zone: privatelink.blob.core.windows.net or privatelink.file.core.windows.net
+  scale_ceiling_reference:
+    standard_files_iops: 20000
+    premium_files_iops: 100000
+    premium_files_throughput: "10,340 MiB/sec"
+  monitoring:
+    defender_for_storage: enabled
+    diagnostics_to: Operational Log Analytics Workspace
+    security_logs_to: Security Log Analytics Workspace
+
+security_floor:
+  public_network_access: Disabled
+  min_tls_version: "TLS1_2"
+  https_traffic_only: true
+  allow_shared_key_access: false
+  allow_blob_public_access: false
+  infrastructure_encryption: true
+  network_default_action: Deny
+  encryption: CMK
+  key_vault_sku: Premium
+  key_type: RSA-HSM
+  identity_type: UserAssigned
+  resource_lock: CanNotDelete
+
+required_requests:
+  - order: 1
+    type: storage_account_create
+    label: Storage Account (Premium)
+  - order: 2
+    type: private_endpoint
+    label: Private Endpoint
+  - order: 3
+    type: dns
+    label: DNS — link the matching privatelink zone to the spoke VNET
+
+prerequisites:
+  - An Azure subscription. If absent, request it from the HALO portal first.
+  - An onboarded spoke VNET and subnet.
+  - Key Vault Premium with RSA-HSM key and a user-assigned managed identity.
+  - Evidence that Standard tier is insufficient — measured, not assumed.
+  - A named owner accepting the de-provisioning commitment and an expected end date.
+
+diagram: storage_premium_temporary.mmd
+cost_band: "$$$"
+
+source:
+  - doc: Presight Storage Design Document
+    section: "2.4 Cost Optimization"
+    states: >
+      Presight has taken the decision to go with Standard General Purpose V2 Standard
+      Performance tier for all workloads. For on-demand very low latency and high IOPS
+      requirements that cannot be met with Standard Tier, Presight may provision Premium
+      tier or Azure NetApp Files file share and will temporarily copy the data in this tier
+      for the duration of the workload and then deprovision it once completed.
+  - doc: Presight Storage Design Document
+    section: "2.2 Reliability — Supported Replication"
+    states: Premium supports LRS and ZRS.
+  - doc: Presight Storage Design Document
+    section: "2.6 Performance Efficiency"
+    states: >
+      FileStorage premium accounts — 100,000 IOPS, 10,340 MiB/sec, versus 20,000 IOPS for
+      Standard General Purpose.

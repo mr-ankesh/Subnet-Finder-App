@@ -1,0 +1,38 @@
+%% Pattern: storage_datalake_private
+%% Placeholders: {ENGINE} {VNET} {SUBNET} {SA_NAME} {ENV}
+flowchart LR
+    subgraph CONSUMER["Analytics"]
+        ENG["{ENGINE}<br/>Databricks / Spark / Synapse"]
+    end
+
+    subgraph SPOKE["Spoke VNET — {VNET}"]
+        SNET["Subnet — {SUBNET}"]
+        PE1["Private Endpoint<br/>sub-resource: dfs"]
+        PE2["Private Endpoint<br/>sub-resource: blob<br/>(if engine uses blob API)"]
+        SNET --- PE1
+        SNET --- PE2
+    end
+
+    subgraph HUB["Hub"]
+        DNS1["privatelink.dfs.core.windows.net"]
+        DNS2["privatelink.blob.core.windows.net"]
+    end
+
+    subgraph AZ["Azure Storage — {ENV}"]
+        SA["{SA_NAME}<br/>ADLS Gen2 · hierarchical namespace<br/>Standard · ZRS · CMK · TLS 1.2"]
+        KV["Key Vault Premium<br/>RSA-HSM key"]
+        SA -->|"encrypts with"| KV
+    end
+
+    ENG --> SNET
+    PE1 ==>|"private link"| SA
+    PE2 ==>|"private link"| SA
+    SNET -.-> DNS1
+    SNET -.-> DNS2
+    DNS1 -.-> PE1
+    DNS2 -.-> PE2
+
+    classDef sec fill:#0b3d2e,stroke:#1f9d63,color:#e8fff4
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    class SA,KV sec
+    class PE1,PE2,DNS1,DNS2,SNET net
