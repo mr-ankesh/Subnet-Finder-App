@@ -400,3 +400,43 @@ queried) that depends on the selected node won't show up. This is a real,
 disclosed limitation, not a bug to fix later — closing it properly would
 mean either removing the hop/node caps (defeating their purpose) or a
 separate "reverse-dependency sweep" feature, out of scope for this pass.
+
+---
+
+## 2026-08-02 — Fixed: empty `background-image` silently blanked the entire graph
+
+**Bug:** After the UI polish pass shipped, the user opened `/resource-graph`
+in a real browser (the first real-browser look this feature ever got — no
+headless-browser tool was available in-session) and saw resource counts in
+the stats bar but zero nodes drawn. A headless Cytoscape reproduction using
+the exact real API response proved the graph model itself was fine (correct
+node/edge counts, valid finite layout positions, no construction
+exceptions) — which was the wrong place to look, because headless mode
+never attempts to load/decode `background-image`, so it can't surface this
+class of bug. The user then reported the actual browser console error:
+`background-image:` invalid. Root cause: `TYPE_STYLE` intentionally leaves
+`icon: null` for most types (NSG, DNS zone links, containers, Managed
+Identity, NIC, Disk, etc. — only 9 of ~16 types have an icon per the
+original spec), and the node-building code did
+`icon: st.icon ? ICONS[st.icon] : ''` — an **empty string**, not `null`.
+Cytoscape's canvas renderer rejects `''` as an invalid `background-image`
+value, and that rejection appears to abort the render for the whole graph,
+not just the affected node.
+
+**Fix:** Never hand Cytoscape a `data()`-mapped value that can resolve to
+`''`. Added a `hasIcon` boolean to node data and split the stylesheet: the
+base `node` selector no longer mentions `background-image` at all; a new
+`node[?hasIcon]` selector carries `background-image`/`background-fit`/etc.,
+so nodes without an icon simply never match that rule instead of matching
+it with an invalid value.
+
+**Why this matters beyond the one fix:** this is the second time on this
+feature that a headless/mocked verification passed cleanly while the real
+browser/API surface behaved differently (see the two 2026-08-02
+"real-Azure caught it" entries above, from the base feature). The pattern
+holds here too, one layer up the stack: headless Cytoscape validates the
+*graph model*, not the *rendering pipeline* — anything involving actual
+image/asset loading needs a real (or real-headless-browser) render to
+verify, not just a model-level reproduction. Recorded so a future session
+doesn't trust "the headless repro passed" as proof the visual output is
+correct.

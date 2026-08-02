@@ -289,7 +289,7 @@ function renderGraph(d) {
       const pos = saved[n.id];
       const el = { data: {
         id: n.id, label: truncate(n.name, 22), fullLabel: n.name, type: n.type, category: n.category,
-        color: st.color, icon: st.icon ? ICONS[st.icon] : '', isRoot, isHub,
+        color: st.color, icon: st.icon ? ICONS[st.icon] : null, hasIcon: !!st.icon, isRoot, isHub,
         size: nodeSizePx(n, isHub), level: isHub ? 100 : st.level, health,
       } };
       if (pos) el.position = pos;
@@ -306,14 +306,21 @@ function renderGraph(d) {
     hideEdgesOnViewport: true, hideLabelsOnViewport: true, textureOnViewport: true, pixelRatio: 1,
     style: [
       { selector: 'node', style: {
-          'background-color': 'data(color)', 'background-image': 'data(icon)', 'background-fit': 'contain',
-          'background-width': '58%', 'background-height': '58%', 'background-clip': 'none',
+          'background-color': 'data(color)',
           'label': 'data(label)', 'color': '#e6e9ee',
           'font-size': 9, 'text-valign': 'bottom', 'text-margin-y': 5,
           'width': 'data(size)', 'height': 'data(size)',
           'border-width': 2, 'border-color': 'data(health)',
           'overlay-opacity': 0, 'overlay-color': '#3987e5', 'overlay-padding': 8,
           'text-opacity': 1 } },
+      // Only nodes that actually have an icon get a background-image rule at
+      // all — handing Cytoscape's canvas renderer an empty/null data(icon)
+      // value for iconless nodes throws "invalid background-image" and was
+      // silently aborting the whole render (caught via real-browser console,
+      // not the headless reproduction, which doesn't exercise image loading).
+      { selector: 'node[?hasIcon]', style: {
+          'background-image': 'data(icon)', 'background-fit': 'contain',
+          'background-width': '58%', 'background-height': '58%', 'background-clip': 'none' } },
       { selector: 'node[?isHub]', style: { 'border-width': 4 } },
       { selector: 'node[?isRoot]', style: { 'border-width': 4, 'border-color': '#ffffff' } },
       { selector: 'node:selected', style: { 'overlay-opacity': 0.28 } },
