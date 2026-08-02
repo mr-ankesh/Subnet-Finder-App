@@ -118,7 +118,7 @@ logic, and wiring. It imports core pieces (`config`, `models`, `audit`,
 `notifications`) at module level, but imports feature modules **lazily
 inside the route functions that use them**: `azure_tools`, `agent_admin`,
 `agent_requester`, `approvals`, `budgetalerts`, `costmgmt`, `netdiag`,
-`optimize`, `reachability`, `subinventory`, `chats`. This is deliberate — when
+`optimize`, `reachability`, `resourcegraph`, `subinventory`, `chats`. This is deliberate — when
 touching one of these features, the relevant code lives entirely in its own
 module; `app.py` is just the route surface calling into it.
 
@@ -467,9 +467,85 @@ account is intentionally unprivileged/read-only (see
 `docs/ZPA_CONNECTOR_USER.md` for the exact allow-listed commands and the
 optional forced-command SSH wrapper in `scripts/zpa-networkuser-wrapper.sh`).
 
+### Resource Relationship Graph: read-only dependency map, not a request type
+
+`resourcegraph.py` + `/resource-graph` builds an interactive node/edge graph
+of Azure resource dependencies (VNET/Subnet/NSG/Route Table/Firewall Policy/
+Private Endpoint/Private DNS Zone, VM/NIC/Disk/Availability Set, AKS/Node RG/
+Load Balancer/Public IP/Managed Identity, Storage Account/Containers, Key
+Vault/CMK) for troubleshooting and impact analysis. Unlike AKS/VM/Storage,
+this does **not** fit the `RequestType` lifecycle — there's no approval/
+deploy/revert cycle, since nothing here ever mutates Azure. Architecturally
+it's modeled on `optimize.py` instead: a standalone module, `@require_superadmin`-
+gated, with its own isolated Reader-only SP, a "not configured" gate, and no
+`@_guard`/dry-run wrapper anywhere (every call is a `list`/`get`/Resource
+Graph query, so `AZURE_DRY_RUN` doesn't apply).
+
+- **Discovery is ARG-reverse-index-backed, not pure forward SDK traversal.**
+  A pure "follow only the reference IDs this resource's own properties point
+  at" walk can't answer entry points like "start at this Route Table" or
+  "start at this Private DNS Zone" — those types don't carry a property
+  pointing back at whatever references them. So `build_graph()` runs **one**
+  Azure Resource Graph (ARG) query per request (scoped to the subscription,
+  and resource group if given), builds a forward adjacency map from the
+  declarative `REFERENCE_PATHS` dict (per-type property-path → edge-label
+  rules), inverts it into a reverse map, and BFS walks **both** directions —
+  so rooting the graph at either end of a relationship works. Typed SDK
+  clients (own credential, never `azure_tools._get_credential()`) are used
+  only to enrich nodes actually shown and to fetch sub-resources ARG doesn't
+  return as rows (blob containers, a private endpoint's DNS zone group, an
+  AKS node resource group's LB/Public IP) — see `_expand_subnets`,
+  `_expand_aks_node_rg`, `_expand_storage_containers`,
+  `_expand_pe_dns_zone_group`. Any nested ARM child resource (type has 2+
+  slashes, e.g. `privateDnsZones/virtualNetworkLinks`) also gets an implicit
+  `child_of` edge to its parent by ID-segment stripping — otherwise a row ARG
+  returns as its own resource has no way back to the parent that "contains"
+  it in the UI's sense.
+- **Two bugs real-Azure testing caught that mocked/offline testing alone
+  wouldn't have**: (1) `forward`'s edge-map keys used the resource ID's
+  original casing while `id_map`/`included`/`reverse` all used lowercase —
+  Azure doesn't return resource IDs with consistent casing across ARG vs.
+  SDK vs. a resource's own canonical `id`, so this silently broke the
+  primary forward-direction lookup in `neighbors()` (worked around this
+  session by a real deployed VM whose NIC/disk edges came back empty until
+  fixed). Fixed by funneling every edge insertion through one `_add_edge()`
+  helper that lowercases both ends — never append to `forward[...]`
+  directly. (2) ARM sub-resources embedded in an array (a NIC's
+  `ipConfigurations[]`, and by the same convention an LB's
+  `frontendIPConfigurations[]`, a firewall's `ipConfigurations[]`) wrap their
+  own fields in a **nested `properties`** the same way the top-level resource
+  does — `ipConfigurations[].subnet.id` doesn't exist on real Azure data; the
+  real path is `ipConfigurations[].properties.subnet.id`. Rather than fixing
+  every affected `REFERENCE_PATHS` entry by hand (and re-breaking on the next
+  one discovered), `_walk()`'s array-expansion step transparently falls
+  through into an item's nested `properties` when the key isn't found
+  directly. `scripts/test_resourcegraph_validation.py` has regression checks
+  for both.
+- **Deterministic, hop-level-bounded truncation.** `RESGRAPH_MAX_NODES`
+  (default 300) and `RESGRAPH_MAX_HOPS` (default 3) cap graph size. The BFS
+  completes an entire hop level before checking the node cap, and stops
+  *before* admitting a hop level that would exceed it — so which nodes
+  survive is a function of hop distance from the root, never dict/set
+  iteration order, and the response's `truncated`/`truncated_at_hop` fields
+  say exactly where it stopped.
+- **Seed resolution has three modes**, matching the form: a specific
+  resource (name, optionally narrowed by type); every resource of a given
+  type with no name (e.g. "graph every Route Table in this RG"); or the
+  whole scope. The middle case is easy to silently drop — an earlier version
+  fell through to "whole scope" whenever no name was given, discarding the
+  type filter entirely; fixed before it shipped.
+- **Frontend**: `templates/resource_graph.html`, Cytoscape.js (CDN, loaded
+  only in this template's `{% block scripts %}`, never globally) — click a
+  node for a detail panel, search/highlight, category filter chips, PNG
+  export (`cy.png()`, native) and raw JSON export. SVG export is out of
+  scope for V1 (needs the separate `cytoscape-svg` plugin). Cytoscape
+  renders to `<canvas>`, not the DOM — its style values can't be CSS
+  `var(--...)` references (caught and fixed before shipping: an edge-label
+  color was originally a CSS variable, which Cytoscape simply can't resolve).
+
 ### Separate credentials per concern
 
-Three independent service-principal configs, intentionally isolated so a
+Four independent service-principal configs, intentionally isolated so a
 credential leak or misconfiguration in one can't touch another:
 - **Network automation** (`Settings → Azure Credentials`) — Network
   Contributor, used by `azure_tools.py`.
@@ -477,6 +553,8 @@ credential leak or misconfiguration in one can't touch another:
   Reader + Reader, read-only.
 - **Resource Optimizer** (`optimize.py`) — Reader only, read-only, advisory
   findings only (never deletes anything).
+- **Resource Relationship Graph** (`RESGRAPH_*` settings, `resourcegraph.py`)
+  — Reader only, read-only, no mutations possible.
 
 ### Frontend: server-rendered, no build step
 

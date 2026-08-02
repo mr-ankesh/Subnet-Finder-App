@@ -1732,6 +1732,59 @@ def admin_settings_test_optimize():
     return jsonify(optimize.test_connection())
 
 
+# ── Resource Relationship Graph (read-only dependency map) ─────────────────
+
+@app.route("/resource-graph")
+@require_superadmin
+def resource_graph_page():
+    import resourcegraph
+    return render_template("resource_graph.html", resgraph_configured=resourcegraph.configured())
+
+
+@app.route("/api/resource-graph/subscriptions")
+@require_superadmin
+def api_resource_graph_subscriptions():
+    import resourcegraph
+    if not resourcegraph.configured():
+        return jsonify({"success": True, "configured": False, "subscriptions": []})
+    try:
+        return jsonify({"success": True, "configured": True,
+                        "subscriptions": resourcegraph.list_subscriptions()})
+    except Exception as exc:
+        log.exception("resource-graph subscriptions failed")
+        return jsonify({"success": False, "error": str(exc)[:200]}), 500
+
+
+@app.route("/api/resource-graph/query")
+@require_superadmin
+def api_resource_graph_query():
+    import resourcegraph
+    if not resourcegraph.configured():
+        return jsonify({"success": True, "configured": False,
+                        "nodes": [], "edges": [], "root": None, "truncated": False})
+    subscription_id = request.args.get("subscription_id", "").strip()
+    if not subscription_id:
+        return jsonify({"success": False, "error": "subscription_id is required"}), 400
+    try:
+        result = resourcegraph.build_graph(
+            subscription_id=subscription_id,
+            resource_group=request.args.get("resource_group", "").strip() or None,
+            resource_type=request.args.get("resource_type", "").strip() or None,
+            resource_name=request.args.get("resource_name", "").strip() or None,
+        )
+        return jsonify({"success": True, "configured": True, **result})
+    except Exception as exc:
+        log.exception("resource-graph query failed")
+        return jsonify({"success": False, "error": str(exc)[:300]}), 500
+
+
+@app.route("/api/admin/settings/test-resourcegraph", methods=["POST"])
+@require_superadmin
+def admin_settings_test_resourcegraph():
+    import resourcegraph
+    return jsonify(resourcegraph.test_connection())
+
+
 # ── Subscription inventory (Azure facts + owner/budget metadata) ───────────
 
 def _inventory_data():

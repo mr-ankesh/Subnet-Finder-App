@@ -1,13 +1,16 @@
 # Current State
 
-> Last updated: 2026-08-01. Update this file at the end of every session
+> Last updated: 2026-08-02. Update this file at the end of every session
 > (see maintenance rules in `CLAUDE.md` → "Session Memory Protocol").
 
 ## Development Status
 
 Active development. Storage Account feature committed (`8ef4ef2`,
-2026-08-01). Remaining uncommitted changes are the unrelated cosmetic/infra
-items noted below. `main` is the only branch; commits go straight to it.
+2026-08-01). Resource Relationship Graph (new module, read-only) built and
+real-Azure verified 2026-08-02, **not yet committed** — see "Features In
+Progress" below. Remaining uncommitted changes also include the unrelated
+cosmetic/infra items noted below. `main` is the only branch; commits go
+straight to it.
 
 ## Features Completed (committed, on `main`)
 
@@ -41,8 +44,50 @@ items noted below. `main` is the only branch; commits go straight to it.
 
 ## Features In Progress
 
-None currently — see "Pending Work" for what's left before either of the
-two most recent features (VM, Storage) is prod-ready.
+### Resource Relationship Graph — built + real-Azure verified 2026-08-02, uncommitted
+
+New read-only (V1, no Azure mutations) module: visual node/edge map of
+Azure resource dependencies (Network/Compute/Platform/Storage/Security) for
+troubleshooting and impact analysis. Does **not** use the `RequestType`
+lifecycle — see `CLAUDE.md` → "Resource Relationship Graph" for the full
+design (ARG-reverse-index discovery, isolated 4th Reader-only SP,
+deterministic hop-bounded truncation, Cytoscape.js frontend).
+
+- `resourcegraph.py` (new), `config.py` (`RESGRAPH_*` settings + category),
+  `app.py` (`/resource-graph`, `/api/resource-graph/subscriptions`,
+  `/api/resource-graph/query`, `/api/admin/settings/test-resourcegraph`),
+  `templates/resource_graph.html` (new), `templates/base.html` (Governance
+  nav entry), `scripts/test_resourcegraph_validation.py` (new, 32
+  assert-based checks, no Azure needed).
+- **Verified against real Azure** (subscription `845e564b-31a3-44b0-b030-226798b31574`,
+  "Sandbox Connectivity"): whole-subscription mode; VNet/Subnet/NSG/
+  RouteTable chains; Private DNS Zone rooted directly at the zone, showing
+  its `virtualNetworkLinks` → linked VNet → subnets (the exact reverse-index
+  case this design exists for); a temporary real VM deployed via the
+  existing VM_CREATE feature specifically for this test, showing the full
+  VM→NIC→Disk→Subnet→VNet/RouteTable chain, then reverted and confirmed
+  cleaned up (`az resource list` empty, matches `rg-claude-e2e-qa-test`'s
+  state before this test).
+- **Two real bugs found and fixed via this real-Azure testing** (passed a
+  32-check mocked test suite cleanly first, because the mocks shared the
+  same wrong assumptions) — see `architecture-decisions.md` 2026-08-02 entry
+  for both: (1) edge-map key casing mismatch, (2) ARM sub-resource
+  `properties` nesting not accounted for in `REFERENCE_PATHS`. Also fixed
+  before real-Azure testing: an offline-test-caught bug where "Resource Type
+  selected with no Resource Name" (a form-allowed combination) silently fell
+  back to whole-subscription mode instead of respecting the type filter.
+- **Not verified against real Azure**: AKS/Storage-Account/Key-Vault-rooted
+  graphs specifically (none currently exist in the sandbox — the earlier
+  session's test resources were reverted) — only via mocked offline tests
+  for those code paths (`_expand_aks_node_rg`, `_expand_storage_containers`,
+  `_expand_pe_dns_zone_group` are all try/except-wrapped best-effort SDK
+  calls, untested against live data). Also not visually confirmed in an
+  actual browser — no headless-browser tool was available this session;
+  verified structurally instead (page renders with no traceback, JS syntax
+  valid, manual code review caught and fixed one Cytoscape/CSS-var
+  incompatibility). See `next-actions.md`.
+- **Not yet done**: commit this feature (currently uncommitted, like Storage
+  was mid-session on 2026-08-01).
 
 ### Storage Account Request & Deploy — committed 2026-08-01 (`8ef4ef2`)
 

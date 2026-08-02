@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+{% block title %}Resource Graph | AlMadar 360{% endblock %}
+
+{% block content %}
+<div class="alloc-page-header">
+  <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
+  <div class="alloc-page-header-content">
+    <div class="p-eyebrow" style="margin-bottom:10px;">Governance · Diagnostics</div>
+    <h1 class="alloc-page-title">Resource Relationship Graph</h1>
+    <p class="alloc-page-sub">Read-only visual map of Azure resource dependencies — network, compute, platform, storage and security — for troubleshooting and impact analysis. Nothing here ever changes Azure.</p>
+  </div>
+</div>
+
+<div style="max-width:1320px;margin:0 auto;padding:26px 24px 64px;">
+
+  {% if not resgraph_configured %}
+  <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:12px;padding:18px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+    <i class="bi bi-exclamation-triangle-fill" style="color:#f59e0b;font-size:22px;"></i>
+    <div style="flex:1;min-width:280px;">
+      <div style="font-size:14px;font-weight:700;color:#f59e0b;">Resource Graph service principal not configured</div>
+      <div style="font-size:12.5px;color:var(--text-dim);margin-top:3px;">Add a separate, read-only (Reader) service principal under
+        <b>Settings → Resource Graph</b> to build dependency graphs.</div>
+    </div>
+    <a href="{{ url_for('admin_settings') }}#resourcegraph" class="btn btn-glow" style="white-space:nowrap;"><i class="bi bi-gear me-2"></i>Configure</a>
+  </div>
+  {% else %}
+
+  <div class="rg-filters">
+    <select id="rgSub" class="rg-in" style="min-width:240px;"><option value="">Loading subscriptions…</option></select>
+    <input type="text" id="rgRg" class="rg-in" placeholder="Resource group (optional)">
+    <select id="rgType" class="rg-in">
+      <option value="">Any resource type</option>
+      <optgroup label="Network">
+        <option value="microsoft.network/virtualnetworks">Virtual Network</option>
+        <option value="microsoft.network/virtualnetworks/subnets">Subnet</option>
+        <option value="microsoft.network/networksecuritygroups">Network Security Group</option>
+        <option value="microsoft.network/routetables">Route Table</option>
+        <option value="microsoft.network/firewallpolicies">Firewall Policy</option>
+        <option value="microsoft.network/privateendpoints">Private Endpoint</option>
+        <option value="microsoft.network/privatednszones">Private DNS Zone</option>
+      </optgroup>
+      <optgroup label="Compute">
+        <option value="microsoft.compute/virtualmachines">Virtual Machine</option>
+        <option value="microsoft.network/networkinterfaces">NIC</option>
+        <option value="microsoft.compute/disks">Managed Disk</option>
+        <option value="microsoft.compute/availabilitysets">Availability Set</option>
+      </optgroup>
+      <optgroup label="Platform">
+        <option value="microsoft.containerservice/managedclusters">AKS Cluster</option>
+        <option value="microsoft.network/loadbalancers">Load Balancer</option>
+        <option value="microsoft.network/publicipaddresses">Public IP</option>
+        <option value="microsoft.managedidentity/userassignedidentities">Managed Identity</option>
+      </optgroup>
+      <optgroup label="Storage">
+        <option value="microsoft.storage/storageaccounts">Storage Account</option>
+      </optgroup>
+      <optgroup label="Security">
+        <option value="microsoft.keyvault/vaults">Key Vault</option>
+      </optgroup>
+    </select>
+    <input type="text" id="rgName" class="rg-in" style="flex:1;min-width:160px;" placeholder="Resource name (optional — blank = whole scope)">
+    <button id="rgRun" class="btn btn-glow" onclick="runQuery()"><i class="bi bi-diagram-3 me-1"></i>Build graph</button>
+  </div>
+
+  <div id="rgStatus" style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;"></div>
+
+  <div id="rgBody" style="display:none;">
+    <div class="rg-toolbar">
+      <input type="search" id="rgSearch" class="rg-in" style="flex:1;min-width:160px;" placeholder="Search / highlight nodes…" oninput="onSearch()">
+      <div id="rgCatFilters" class="rg-catfilters"></div>
+      <button class="rg-in" style="cursor:pointer;" onclick="cy.fit();cy.center();"><i class="bi bi-aspect-ratio me-1"></i>Fit</button>
+      <button class="rg-in" style="cursor:pointer;" onclick="exportPng()"><i class="bi bi-image me-1"></i>Export PNG</button>
+      <button class="rg-in" style="cursor:pointer;" onclick="exportJson()"><i class="bi bi-filetype-json me-1"></i>Export JSON</button>
+    </div>
+    <div style="display:flex;gap:14px;align-items:flex-start;">
+      <div id="rgCanvas" style="flex:1;height:640px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.02);"></div>
+      <div id="rgDetail" class="rg-detail">
+        <div style="color:var(--text-muted);font-size:12.5px;">Click a node to see its details.</div>
+      </div>
+    </div>
+    <div id="rgLegend" class="rg-legend"></div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if resgraph_configured %}
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<style>
+  .rg-filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+  .rg-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .rg-in { font-size:12px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:7px 10px; }
+  .rg-in:focus { outline:none; border-color:rgba(57,135,229,.5); }
+  .rg-catfilters { display:flex; gap:6px; flex-wrap:wrap; }
+  .rg-catchip { font-size:11px; padding:5px 10px; border-radius:20px; border:1px solid var(--border); cursor:pointer; user-select:none; opacity:.5; }
+  .rg-catchip.on { opacity:1; }
+  .rg-detail { width:300px; flex-shrink:0; border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:rgba(255,255,255,.03); min-height:640px; max-height:640px; overflow-y:auto; }
+  .rg-detail h4 { font-size:13.5px; margin:0 0 4px; color:#fff; }
+  .rg-detail .rg-type { font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px; margin-bottom:10px; }
+  .rg-detail table { width:100%; font-size:12px; border-collapse:collapse; }
+  .rg-detail td { padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:top; }
+  .rg-detail td:first-child { color:var(--text-muted); width:40%; padding-right:8px; }
+  .rg-legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:12px; font-size:11px; color:var(--text-muted); }
+  .rg-legend span.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+</style>
+<script>
+const CAT_COLOR = { network:'#3987e5', compute:'#199e70', platform:'#a855f7', storage:'#f59e0b', security:'#ef4444', other:'#94a3b8' };
+let cy = null, GRAPH = null, ACTIVE_CATS = new Set(Object.keys(CAT_COLOR));
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function loadSubs() {
+  const sel = document.getElementById('rgSub');
+  try {
+    const d = await (await fetch('/api/resource-graph/subscriptions')).json();
+    if (d.success && d.subscriptions && d.subscriptions.length) {
+      sel.innerHTML = d.subscriptions.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+    } else {
+      sel.innerHTML = '<option value="">No subscriptions visible — check Reader access</option>';
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">Failed to load subscriptions</option>';
+  }
+}
+loadSubs();
+
+async function runQuery() {
+  const sub = document.getElementById('rgSub').value;
+  const status = document.getElementById('rgStatus');
+  const btn = document.getElementById('rgRun');
+  if (!sub) { status.textContent = 'Pick a subscription first.'; return; }
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Building…';
+  status.textContent = 'Querying Azure Resource Graph…';
+  document.getElementById('rgBody').style.display = 'none';
+  const params = new URLSearchParams({ subscription_id: sub });
+  const rg = document.getElementById('rgRg').value.trim(); if (rg) params.set('resource_group', rg);
+  const type = document.getElementById('rgType').value; if (type) params.set('resource_type', type);
+  const name = document.getElementById('rgName').value.trim(); if (name) params.set('resource_name', name);
+  try {
+    const d = await (await fetch('/api/resource-graph/query?' + params.toString())).json();
+    if (!d.success) { status.textContent = 'Error: ' + (d.error || 'query failed'); return; }
+    if (d.error) { status.textContent = d.error; return; }
+    GRAPH = d;
+    let msg = `${d.nodes.length} node(s), ${d.edges.length} edge(s), up to ${d.hop_limit} hop(s)`;
+    if (d.truncated) msg += ` — truncated at hop ${d.truncated_at_hop} (raise "Max nodes per graph" in Settings → Resource Graph to see more)`;
+    status.textContent = msg;
+    document.getElementById('rgBody').style.display = '';
+    renderGraph(d);
+  } catch (e) {
+    status.textContent = 'Network error building graph.';
+  } finally {
+    btn.disabled = false; btn.innerHTML = '<i class="bi bi-diagram-3 me-1"></i>Build graph';
+  }
+}
+
+function renderGraph(d) {
+  ACTIVE_CATS = new Set(Object.keys(CAT_COLOR));
+  const cats = [...new Set(d.nodes.map(n => n.category))];
+  document.getElementById('rgCatFilters').innerHTML = cats.map(c =>
+    `<span class="rg-catchip on" data-cat="${c}" style="border-color:${CAT_COLOR[c]||CAT_COLOR.other};color:${CAT_COLOR[c]||CAT_COLOR.other};" onclick="toggleCat('${c}')">${c}</span>`).join('');
+  document.getElementById('rgLegend').innerHTML = cats.map(c =>
+    `<span><span class="dot" style="background:${CAT_COLOR[c]||CAT_COLOR.other};"></span>${c}</span>`).join('');
+
+  const elements = [
+    ...d.nodes.map(n => ({ data: { id: n.id, label: n.name, type: n.type, category: n.category,
+                                    color: CAT_COLOR[n.category] || CAT_COLOR.other, isRoot: n.id === d.root } })),
+    ...d.edges.map((e, i) => ({ data: { id: 'e' + i, source: e.source, target: e.target, label: e.label } })),
+  ];
+
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: document.getElementById('rgCanvas'),
+    elements,
+    style: [
+      { selector: 'node', style: {
+          'background-color': 'data(color)', 'label': 'data(label)', 'color': '#fff',
+          'font-size': 9, 'text-valign': 'bottom', 'text-margin-y': 4,
+          'width': 26, 'height': 26, 'border-width': 2, 'border-color': 'rgba(255,255,255,.25)' } },
+      { selector: 'node[?isRoot]', style: { 'border-width': 3, 'border-color': '#fff', 'width': 34, 'height': 34 } },
+      { selector: 'edge', style: {
+          'width': 1.4, 'line-color': 'rgba(255,255,255,.25)', 'target-arrow-color': 'rgba(255,255,255,.35)',
+          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'label': 'data(label)',
+          'font-size': 7, 'color': '#9aa4b2', 'text-rotation': 'autorotate',
+          'text-background-color': '#1a1a1a', 'text-background-opacity': .7, 'text-background-padding': 1 } },
+      { selector: '.rg-dim', style: { 'opacity': 0.12 } },
+      { selector: '.rg-hidden', style: { 'display': 'none' } },
+    ],
+    layout: { name: 'cose', animate: false, nodeRepulsion: 8000, idealEdgeLength: 90 },
+  });
+
+  cy.on('tap', 'node', (evt) => showDetail(evt.target.id()));
+}
+
+function toggleCat(cat) {
+  if (ACTIVE_CATS.has(cat)) ACTIVE_CATS.delete(cat); else ACTIVE_CATS.add(cat);
+  document.querySelectorAll('.rg-catchip').forEach(el => {
+    el.classList.toggle('on', ACTIVE_CATS.has(el.dataset.cat));
+  });
+  if (!cy) return;
+  cy.nodes().forEach(n => n.toggleClass('rg-hidden', !ACTIVE_CATS.has(n.data('category'))));
+  cy.edges().forEach(e => {
+    const hide = e.source().hasClass('rg-hidden') || e.target().hasClass('rg-hidden');
+    e.toggleClass('rg-hidden', hide);
+  });
+}
+
+function onSearch() {
+  const q = document.getElementById('rgSearch').value.trim().toLowerCase();
+  if (!cy) return;
+  if (!q) { cy.elements().removeClass('rg-dim'); return; }
+  cy.nodes().forEach(n => n.toggleClass('rg-dim', !n.data('label').toLowerCase().includes(q)));
+  cy.edges().removeClass('rg-dim');
+}
+
+function showDetail(id) {
+  const node = GRAPH.nodes.find(n => n.id === id);
+  if (!node) return;
+  const props = node.properties || {};
+  const rows = Object.entries(props).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('');
+  const nbrs = GRAPH.edges.filter(e => e.source === id || e.target === id).map(e => {
+    const other = e.source === id ? e.target : e.source;
+    const on = GRAPH.nodes.find(n => n.id === other);
+    return `<div style="font-size:11.5px;padding:2px 0;"><span style="color:var(--text-muted);">${esc(e.label)}</span> → ${esc(on ? on.name : other)}</div>`;
+  }).join('');
+  document.getElementById('rgDetail').innerHTML = `
+    <h4>${esc(node.name)}</h4>
+    <div class="rg-type">${esc(node.type)}</div>
+    <table>${rows || '<tr><td colspan="2" style="color:var(--text-muted);">No extra properties</td></tr>'}</table>
+    <div style="margin-top:12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted);">Relationships</div>
+    ${nbrs || '<div style="font-size:11.5px;color:var(--text-muted);">None in this graph</div>'}
+    <div style="margin-top:12px;"><a href="https://portal.azure.com/#@/resource${node.id}/overview" target="_blank" rel="noopener" style="font-size:11.5px;color:#60a5fa;"><i class="bi bi-box-arrow-up-right me-1"></i>Open in Azure Portal</a></div>`;
+}
+
+function exportPng() {
+  if (!cy) return;
+  const a = document.createElement('a');
+  a.href = cy.png({ full: true, scale: 2, bg: '#111' });
+  a.download = 'resource-graph.png';
+  a.click();
+}
+
+function exportJson() {
+  if (!GRAPH) return;
+  const blob = new Blob([JSON.stringify(GRAPH, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'resource-graph.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+{% endif %}
+{% endblock %}

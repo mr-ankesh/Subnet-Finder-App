@@ -44,6 +44,7 @@ CATEGORIES = {
     "credentials":   {"title": "Azure Credentials",  "desc": "Identity used for all Azure operations. Needs Network Contributor on hub & spoke scopes."},
     "cost":          {"title": "Cost / Billing",      "desc": "A SEPARATE service principal used only for the subscription cost dashboard — isolated from the network-automation credentials. It needs Cost Management Reader (and Reader to list subscriptions) on the scopes you want reported."},
     "optimize":      {"title": "Resource Optimizer",  "desc": "A SEPARATE, read-only service principal used only to scan for idle / orphaned Azure resources (unattached disks, unassociated public IPs, stopped VMs, old snapshots, orphaned NSGs/route tables, empty resource groups). It needs just Reader on the scopes you want scanned — isolated from automation and cost. Findings are advisory; the platform never deletes anything."},
+    "resourcegraph": {"title": "Resource Graph",      "desc": "A SEPARATE, read-only service principal used only by the Resource Relationship Graph (visual map of resource dependencies for troubleshooting/governance). It needs just Reader on the scopes you want graphed — isolated from automation, cost and the optimizer. This module never mutates anything."},
     "hub":           {"title": "Hub & Subscriptions", "desc": "Hub VNET topology and default subscriptions/region for new spokes."},
     "firewall":      {"title": "Firewall",            "desc": "Azure Firewall policy that receives spoke egress rules."},
     "routing":       {"title": "Routing / UDRs",      "desc": "Hub route tables updated when a spoke is onboarded."},
@@ -128,6 +129,21 @@ SETTINGS_SPEC = {
     "OPT_LOW_CPU_MAX":      _f("optimize", "Low-CPU peak threshold (%)", "20", type="int",
                                help="…and only if its 30-day PEAK CPU also stayed below this (so bursty but "
                                     "mostly-idle VMs aren't wrongly flagged)."),
+
+    # ── Resource Relationship Graph (separate read-only SP) ──
+    "RESGRAPH_TENANT_ID":     _f("resourcegraph", "Resource Graph SP tenant ID",
+                               help="Entra tenant of the read-only Resource Graph service principal (may equal the main tenant)."),
+    "RESGRAPH_CLIENT_ID":     _f("resourcegraph", "Resource Graph SP client ID",
+                               help="App registration (client) GUID of the SEPARATE, read-only Resource Graph service principal."),
+    "RESGRAPH_CLIENT_SECRET": _f("resourcegraph", "Resource Graph SP client secret", secret=True,
+                               help="Stored encrypted. Leave blank on save to keep the current value."),
+    "RESGRAPH_MAX_NODES":     _f("resourcegraph", "Max nodes per graph", "300", type="int",
+                               help="Safety cap on graph size — a whole-subscription or high-fan-out query stops "
+                                    "expanding once this many nodes are included, breadth-first by hop level "
+                                    "(so which nodes are kept is deterministic, not iteration-order dependent)."),
+    "RESGRAPH_MAX_HOPS":      _f("resourcegraph", "Max hops from root", "3", type="int",
+                               help="How far the graph expands from the selected resource (or from every resource "
+                                    "in scope, if none is selected) before stopping, regardless of node count."),
 
     # ── Hub & Subscriptions ──
     "HUB_SUBSCRIPTION_ID":   _f("hub", "Hub subscription ID"),

@@ -262,3 +262,88 @@ branch reading `all_steps_ok` off the raw audit entry directly, rather than
 the generic done/required-set comparison every simpler type uses — the same
 kind of exception `VM_CREATE`'s bespoke branch (reading `vm_plan` directly)
 already established as precedent in this codebase.
+
+---
+
+## 2026-08-02 — Resource Relationship Graph: ARG reverse index, not pure forward SDK traversal
+
+**Decision:** New read-only module `resourcegraph.py` builds its dependency
+graph from **one Azure Resource Graph (ARG) query per request**, then builds
+a forward adjacency map from a declarative `REFERENCE_PATHS` dict and
+inverts it into a reverse map; the BFS walks both directions. Typed SDK
+calls (own isolated `RESGRAPH_*` Reader-only SP, never
+`azure_tools._get_credential()`) are used only to enrich shown nodes and to
+fetch the handful of sub-resources ARG doesn't return as rows (blob
+containers, a PE's DNS zone group, an AKS node RG's LB/Public IP).
+
+**Why:** The feature was originally scoped as "SDK-based rooted traversal"
+(the user's explicit choice over a pure ARG/KQL approach). But a pure
+forward walk — follow only the reference IDs a resource's own properties
+point at — can't answer roughly half the form's own entry points: starting
+the graph at a Route Table, an NSG, a Public IP, or a Private DNS Zone finds
+nothing, because none of those types carry a property pointing back at what
+references them. The Private-Endpoint-to-DNS-zone chain (one of the
+feature's five required verification checks) is exactly this case. The ARG
+reverse index closes the gap with one extra Azure call per request, not a
+change to the "SDK-rooted" approach the user approved — SDK calls still do
+all the node enrichment and the sub-resource fetches ARG can't provide.
+
+**Tradeoff:** The module now depends on ARG's `Resources` table shape
+(lowercase `type` strings, `properties` as returned by ARM) rather than only
+on typed SDK client objects — a second Azure surface to track compatibility
+with, versus a single SDK dependency. Documented in `CLAUDE.md` so a future
+session doesn't "fix" it back to pure-SDK-only and reintroduce the gap.
+
+---
+
+## 2026-08-02 — Resource Relationship Graph: separate isolated Reader-only SP (4th credential set)
+
+**Decision:** `RESGRAPH_TENANT_ID`/`CLIENT_ID`/`CLIENT_SECRET` under a new
+`Settings → Resource Graph` tab — a fourth fully independent service
+principal, alongside network automation, Cost, and Optimizer. Not reused
+from any of the other three.
+
+**Why:** User's explicit choice, matching this codebase's established
+pattern (`CLAUDE.md` → "Separate credentials per concern") — a credential
+leak or misconfiguration in a read-only diagnostic tool should never be able
+to touch the automation credential that actually mutates Azure.
+
+**Tradeoff:** A brand-new deployment needs a 4th SP provisioned (Reader
+role only) before this feature does anything — same "not configured" gate
+UX as Optimizer, no functional gap, just one more thing to set up.
+
+---
+
+## 2026-08-02 — Real-Azure testing caught two bugs offline mocked tests alone missed
+
+**Decision/finding:** Two real bugs surfaced only once `resourcegraph.py`
+was pointed at real Azure data (a temporary VM deployed via the existing
+VM_CREATE feature specifically for this verification, then reverted):
+(1) the `forward` edge map's keys used original-case resource IDs while
+`id_map`/`included`/`reverse` all used lowercase, silently breaking the
+primary forward-direction neighbor lookup (Azure doesn't return resource IDs
+with consistent casing across ARG vs. SDK vs. a resource's own canonical
+`id`); (2) ARM sub-resources embedded in an array (a NIC's
+`ipConfigurations[]`, and by the same ARM convention likely an LB's
+`frontendIPConfigurations[]`, a firewall's `ipConfigurations[]`) wrap their
+own fields in a *nested* `properties`, not flat on the array item —
+`REFERENCE_PATHS` entries written against the documented/assumed shape
+(`ipConfigurations[].subnet.id`) silently found nothing on real data.
+
+**Why this matters beyond the two fixes:** both bugs passed a 31-check
+mocked offline test suite cleanly, because the mocks were built from the
+same (wrong) assumptions as the code. Neither would have been caught without
+deploying one real, cheap resource (Standard_B1s VM) and inspecting its
+actual ARG row shape. Fixed via (1) a single `_add_edge()` helper that all
+edge insertion now goes through (lowercases both ends — never append to
+`forward[...]` directly), and (2) `_walk()` transparently falling through
+into an item's nested `properties` when a key isn't found at the top level,
+rather than special-casing every affected reference path by hand.
+
+**Tradeoff:** None — pure bug fixes, both now covered by regression checks
+in `scripts/test_resourcegraph_validation.py`. Recorded here mainly as a
+process note: for any future module doing property-path extraction against
+raw Azure API responses, budget for at least one real-resource smoke test
+before trusting the offline mocks, since the ARM API's actual JSON shape
+(nested-properties-on-sub-resources, inconsistent ID casing) is exactly the
+kind of detail that's easy to get wrong from documentation/memory alone.
