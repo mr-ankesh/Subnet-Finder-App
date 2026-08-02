@@ -1,0 +1,140 @@
+kb_version: "1.0.0"
+id: storage_blob_private_standard
+name: Private Blob Storage (Standard GPv2)
+service: storage_account
+status: approved
+summary: >
+  The default Presight pattern for unstructured object data. Standard general-purpose v2
+  account, ZRS, CMK-encrypted, reachable only over a private endpoint from the spoke VNET.
+
+when_to_use:
+  - application files and artefacts
+  - images, video, documents, telemetry, logs
+  - data landing area before processing
+  - object storage replacing G42 Cloud Object Store Service (OBS)
+  - AKS or VM workloads reading/writing objects over REST/SDK or Blobfuse2
+
+not_for:
+  - SMB or NFS file-share semantics with POSIX permissions  -> storage_files_private_standard
+  - hierarchical namespace / analytics engines              -> storage_datalake_private
+  - long-term cold retention only                           -> storage_archive_retention
+  - sub-millisecond latency or >20k IOPS sustained          -> storage_premium_temporary
+
+match:
+  required:
+    data_shape: [unstructured_objects]
+  preferred:
+    access_protocol: [rest_sdk, blobfuse]
+    consumer: [aks, vm, application]
+    access_frequency: [frequent, mixed]
+  disqualify:
+    data_classification: [restricted_sovereign]
+    protocol_hard_requirement: [smb, nfs_posix]
+
+design:
+  storage_kind: StorageV2
+  performance_tier: Standard
+  sku: Standard_ZRS
+  access_tier: Hot
+  replication: ZRS
+  hierarchical_namespace: false
+  private_endpoint:
+    required: true
+    sub_resource: blob
+    dns_zone: privatelink.blob.core.windows.net
+  linux_mount_option: Blobfuse2
+  nfs3_option:
+    available: true
+    note: >
+      NFS 3.0 on blob is supported with limitations and requires hierarchical namespace.
+      If the workload genuinely needs NFS, evaluate storage_files_private_standard or
+      Azure NetApp Files instead.
+  data_protection:
+    blob_soft_delete: enabled
+    container_soft_delete: enabled
+    versioning: enabled
+    change_feed: enabled
+    immutability_worm: optional
+  backup:
+    vault_type: Backup Vault
+    scope: Azure Blobs
+    note: One Backup Vault per subscription; policy baseline supplied by platform team.
+  monitoring:
+    defender_for_storage: enabled
+    diagnostics_to: Operational Log Analytics Workspace
+    security_logs_to: Security Log Analytics Workspace
+    sentinel_connector: Azure Storage Account connector
+
+security_floor:
+  public_network_access: Disabled
+  min_tls_version: "TLS1_2"
+  https_traffic_only: true
+  allow_shared_key_access: false
+  allow_blob_public_access: false
+  infrastructure_encryption: true
+  network_default_action: Deny
+  encryption: CMK
+  key_vault_sku: Premium
+  key_type: RSA-HSM
+  identity_type: UserAssigned
+  resource_lock: CanNotDelete
+
+required_requests:
+  - order: 1
+    type: storage_account_create
+    label: Storage Account
+    note: Creates the account, containers, data-protection settings and identity.
+  - order: 2
+    type: private_endpoint
+    label: Private Endpoint (blob)
+    note: >
+      If a dedicated Private Endpoint request type does not yet exist in AlMadar, the
+      Storage Account request's built-in private-endpoint option covers this step.
+  - order: 3
+    type: dns
+    label: DNS — link privatelink.blob.core.windows.net to the spoke VNET
+    note: Hub zone linked to your VNET. Mandatory, or clients resolve the public IP.
+  - order: 4
+    type: zpa_rnd_routing
+    label: ZPA Routing
+    condition: consumer includes end_user_zpa
+    note: Only when human users need to reach the data directly.
+
+prerequisites:
+  - An Azure subscription. If you do not have one, request it from the HALO portal first.
+  - An onboarded spoke VNET and subnet. If absent, raise New VNET or New Subnet first.
+  - A Key Vault Premium in the landing-zone subscription with soft delete and purge
+    protection, holding an RSA-HSM key, plus a user-assigned managed identity.
+
+diagram: storage_blob_private.mmd
+cost_band: "$"
+
+source:
+  - doc: Presight Storage Design Document
+    section: "2.4 Cost Optimization"
+    states: >
+      Presight has taken the decision to go with Standard General Purpose V2 Standard
+      Performance tier for all workloads.
+  - doc: Presight Storage Design Document
+    section: "2.2 Reliability / 2.4 Cost Optimization"
+    states: Presight will be configured for ZRS for all the storages.
+  - doc: Presight Storage Design Document
+    section: "2.3 Security"
+    states: BU will be encrypting all the data leveraging CMK.
+  - doc: Presight Storage Design Document
+    section: "3.1.2 Data on Transit"
+    states: TLS 1.2 recommended; configure minimum TLS version on the account.
+  - doc: Presight Storage Design Document
+    section: "3.1.4 Network Isolation / 3.2 Data loss protection"
+    states: Private endpoints for access; blob soft delete and versioning for recovery.
+  - doc: Presight Storage Design Document
+    section: "2.1 Target Platform Architecture"
+    states: Blobfuse2 recommended to connect to Azure Blob Storage.
+  - doc: G42-AzurePlatformDesign-v1.2
+    section: "2.2.4 Azure Policy Design"
+    states: >
+      Landing Zones/Corp initiatives deny PaaS services with exposed public endpoints and
+      require private endpoints to be integrated with Azure Private DNS zones.
+  - doc: G42-AzurePlatformDesign-v1.2
+    section: "2.2.1 DD-GOV-7"
+    states: Locks applied for critical resources including Storage Accounts.

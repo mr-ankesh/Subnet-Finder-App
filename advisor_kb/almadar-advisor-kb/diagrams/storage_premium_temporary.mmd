@@ -1,0 +1,42 @@
+%% Pattern: storage_premium_temporary
+%% Placeholders: {APP} {VNET} {SUBNET} {SA_NAME} {ENV} {END_DATE}
+flowchart LR
+    subgraph CONSUMER["Time-boxed workload"]
+        APP["{APP}<br/>high IOPS / low latency"]
+    end
+
+    subgraph SPOKE["Spoke VNET — {VNET}"]
+        SNET["Subnet — {SUBNET}"]
+        PE["Private Endpoint"]
+        SNET --- PE
+    end
+
+    subgraph HUB["Hub"]
+        DNS["privatelink zone<br/>(blob or file)"]
+    end
+
+    subgraph AZ["Azure Storage — {ENV}"]
+        SA["{SA_NAME}<br/>Premium · ZRS<br/>CMK · TLS 1.2 · public access disabled"]
+        KV["Key Vault Premium<br/>RSA-HSM key"]
+        SA -->|"encrypts with"| KV
+    end
+
+    subgraph LIFE["Temporary lifecycle"]
+        L1["Copy data in"]
+        L2["Run workload"]
+        L3["De-provision by {END_DATE}"]
+        L1 --> L2 --> L3
+    end
+
+    APP --> SNET
+    PE ==>|"private link"| SA
+    SNET -.-> DNS
+    DNS -.-> PE
+    SA -.-> L1
+
+    classDef sec fill:#0b3d2e,stroke:#1f9d63,color:#e8fff4
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    classDef warn fill:#4d3b0b,stroke:#bf922a,color:#fff8e8
+    class SA,KV sec
+    class PE,DNS,SNET net
+    class L3 warn
