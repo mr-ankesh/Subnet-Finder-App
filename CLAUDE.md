@@ -534,14 +534,41 @@ Graph query, so `AZURE_DRY_RUN` doesn't apply).
   whole scope. The middle case is easy to silently drop — an earlier version
   fell through to "whole scope" whenever no name was given, discarding the
   type filter entirely; fixed before it shipped.
-- **Frontend**: `templates/resource_graph.html`, Cytoscape.js (CDN, loaded
-  only in this template's `{% block scripts %}`, never globally) — click a
-  node for a detail panel, search/highlight, category filter chips, PNG
+- **Frontend**: `templates/resource_graph.html`, Cytoscape.js + the
+  `cytoscape-navigator` minimap extension (both CDN, loaded only in this
+  template's `{% block scripts %}`, never globally) — click a node for a
+  detail panel, search/highlight, category **and** exact-type filters, PNG
   export (`cy.png()`, native) and raw JSON export. SVG export is out of
   scope for V1 (needs the separate `cytoscape-svg` plugin). Cytoscape
   renders to `<canvas>`, not the DOM — its style values can't be CSS
   `var(--...)` references (caught and fixed before shipping: an edge-label
   color was originally a CSS variable, which Cytoscape simply can't resolve).
+- **Enterprise UI polish pass** (2026-08-02): per-exact-type color/icon/size
+  styling (`TYPE_STYLE`, hand-authored inline SVG icons — not Microsoft's
+  actual Azure icon assets, which aren't freely redistributable), a
+  `concentric` layout keyed off a computed importance `level` per node (hub
+  VNET centered and sized largest, down to leaf resources on the outer
+  ring) — Cytoscape core, no force-directed layout library added — with
+  manually-dragged positions persisted to `localStorage` per query scope. A
+  custom lightweight tooltip (no `cytoscape-popper`/`tippy.js`) and a
+  hover/select neighborhood highlight with an animated dashed-line active
+  path (`line-dash-offset`, natively animatable — no extra library) replace
+  always-on edge labels. The side panel gained Subscription/Tags (both new
+  backend fields, see below) and a client-side-only **Relationship
+  Analysis** block: since every edge in this graph consistently means
+  "source depends on target," direct/upstream/downstream are just outgoing/
+  incoming edge traversal over `GRAPH.edges` already fetched — "impact if
+  deleted" is the transitive downstream closure, explicitly scoped-caveated
+  to the currently-rendered graph (hop/node caps mean the true
+  environment-wide impact could be larger). A health **ring** (node
+  `border-color`) is derived from `properties.provisioningState` — real
+  signal already returned, not a faked placeholder; genuinely unknown for
+  resource types that don't expose it. Selected-node glow uses Cytoscape's
+  native `overlay-color`/`overlay-opacity` (canvas nodes have no
+  `box-shadow`). Two small, additive `build_graph()` fields power this:
+  `hub_id` (the hub VNET's resource ID, string-built once from `HUB_*`
+  settings — no extra Azure call) and `tags`/`subscriptionId` added to the
+  ARG projection and `_trim_properties()`.
 
 ### Separate credentials per concern
 

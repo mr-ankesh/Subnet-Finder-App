@@ -44,7 +44,7 @@ straight to it.
 
 ## Features In Progress
 
-### Resource Relationship Graph — built + real-Azure verified 2026-08-02, uncommitted
+### Resource Relationship Graph — base feature committed (`66824be`), UI polish pass uncommitted
 
 New read-only (V1, no Azure mutations) module: visual node/edge map of
 Azure resource dependencies (Network/Compute/Platform/Storage/Security) for
@@ -86,8 +86,40 @@ deterministic hop-bounded truncation, Cytoscape.js frontend).
   verified structurally instead (page renders with no traceback, JS syntax
   valid, manual code review caught and fixed one Cytoscape/CSS-var
   incompatibility). See `next-actions.md`.
-- **Not yet done**: commit this feature (currently uncommitted, like Storage
-  was mid-session on 2026-08-01).
+- **Base feature committed** `66824be` (2026-08-02).
+
+**UI polish pass (2026-08-02, on top of `66824be`, uncommitted)**: the
+initial version rendered every node identically with always-on edge labels
+and no hierarchy. Added per-exact-type color/icon/size styling (hand-drawn
+inline SVG icons, not Microsoft's actual Azure icon assets), a `concentric`
+layout centered on the hub VNET (importance-based ring placement, no new
+layout library) with `localStorage`-persisted manual positions, a custom
+tooltip + animated dashed-line neighborhood highlight replacing always-on
+edge labels, a client-side Relationship Analysis panel (direct/upstream/
+downstream/"impact if deleted" — all computed from already-fetched edges,
+explicitly caveated to the current graph's scope), a provisioningState-
+derived health ring, a stats bar, exact-type filtering, and a
+`cytoscape-navigator` minimap. Two small additive backend fields power
+this: `hub_id` (built from `HUB_*` settings, no extra Azure call) and
+`tags`/`subscriptionId` (added to the ARG projection). See
+`architecture-decisions.md` 2026-08-02 entries.
+- Verified: `scripts/test_resourcegraph_validation.py` now has 36 checks
+  (was 32) — the `hub_id` tests initially used env-var overrides and
+  **failed against this sandbox's real DB-configured hub settings** (DB
+  overrides win over env vars in `config.py`'s resolution order), which is
+  exactly the kind of "the mock's assumption was wrong" issue this repo has
+  hit twice before on this same feature — fixed by monkeypatching `cfg`
+  attributes directly instead. Real-Azure re-check confirmed `tags` (a
+  genuinely-tagged Route Table, cross-verified via `az resource list`),
+  `subscriptionId`, and `hub_id` (resolved to the real configured hub VNET)
+  all come back correctly shaped.
+- **Not verified**: visual rendering in an actual browser (still no
+  headless-browser tool available this session — same limitation as the
+  base feature); the `cytoscape-navigator` CSS class name used for the
+  minimap's viewport-indicator styling (`cytoscape-navigatorView`) is from
+  memory of the library, not confirmed against its actual source — if wrong
+  the minimap still functions, just without the theme-matched border color.
+- **Not yet done**: commit this polish pass.
 
 ### Storage Account Request & Deploy — committed 2026-08-01 (`8ef4ef2`)
 

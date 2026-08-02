@@ -11,7 +11,7 @@
   </div>
 </div>
 
-<div style="max-width:1320px;margin:0 auto;padding:26px 24px 64px;">
+<div style="max-width:1420px;margin:0 auto;padding:26px 24px 64px;">
 
   {% if not resgraph_configured %}
   <div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.08);border-radius:12px;padding:18px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
@@ -25,7 +25,7 @@
   </div>
   {% else %}
 
-  <div class="rg-filters">
+  <div class="rg-filters rg-glass">
     <select id="rgSub" class="rg-in" style="min-width:240px;"><option value="">Loading subscriptions…</option></select>
     <input type="text" id="rgRg" class="rg-in" placeholder="Resource group (optional)">
     <select id="rgType" class="rg-in">
@@ -62,19 +62,26 @@
     <button id="rgRun" class="btn btn-glow" onclick="runQuery()"><i class="bi bi-diagram-3 me-1"></i>Build graph</button>
   </div>
 
-  <div id="rgStatus" style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;"></div>
+  <div id="rgStatus" style="font-size:11.5px;color:var(--text-muted);margin-bottom:14px;"></div>
+
+  <div id="rgStats" class="rg-stats"></div>
 
   <div id="rgBody" style="display:none;">
-    <div class="rg-toolbar">
-      <input type="search" id="rgSearch" class="rg-in" style="flex:1;min-width:160px;" placeholder="Search / highlight nodes…" oninput="onSearch()">
+    <div class="rg-toolbar rg-glass">
+      <input type="search" id="rgSearch" class="rg-in" style="flex:1;min-width:160px;" placeholder="Search resources by name…" oninput="onSearch()">
+      <select id="rgTypeFilter" class="rg-in" onchange="onTypeFilterChange()"><option value="">All types</option></select>
       <div id="rgCatFilters" class="rg-catfilters"></div>
       <button class="rg-in" style="cursor:pointer;" onclick="cy.fit();cy.center();"><i class="bi bi-aspect-ratio me-1"></i>Fit</button>
+      <button class="rg-in" style="cursor:pointer;" onclick="resetLayout()" title="Discard manually-adjusted positions and re-run the layout"><i class="bi bi-arrow-repeat me-1"></i>Re-layout</button>
       <button class="rg-in" style="cursor:pointer;" onclick="exportPng()"><i class="bi bi-image me-1"></i>Export PNG</button>
       <button class="rg-in" style="cursor:pointer;" onclick="exportJson()"><i class="bi bi-filetype-json me-1"></i>Export JSON</button>
     </div>
     <div style="display:flex;gap:14px;align-items:flex-start;">
-      <div id="rgCanvas" style="flex:1;height:640px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.02);"></div>
-      <div id="rgDetail" class="rg-detail">
+      <div id="rgCanvasWrap" style="position:relative;flex:1;">
+        <div id="rgCanvas" class="rg-canvas"></div>
+        <div id="rgNavigator" class="rg-navigator"></div>
+      </div>
+      <div id="rgDetail" class="rg-detail rg-glass">
         <div style="color:var(--text-muted);font-size:12.5px;">Click a node to see its details.</div>
       </div>
     </div>
@@ -87,34 +94,110 @@
 {% block scripts %}
 {% if resgraph_configured %}
 <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cytoscape-navigator@2.0.1/cytoscape.js-navigator.css">
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-navigator@2.0.1/cytoscape-navigator.min.js"></script>
 <style>
-  .rg-filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
-  .rg-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .rg-glass { background:rgba(255,255,255,.04); border:1px solid var(--border); border-radius:14px;
+              box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+  .rg-filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px; margin-bottom:14px; }
+  .rg-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:10px 12px; margin-bottom:12px; }
   .rg-in { font-size:12px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:7px 10px; }
   .rg-in:focus { outline:none; border-color:rgba(57,135,229,.5); }
   .rg-catfilters { display:flex; gap:6px; flex-wrap:wrap; }
-  .rg-catchip { font-size:11px; padding:5px 10px; border-radius:20px; border:1px solid var(--border); cursor:pointer; user-select:none; opacity:.5; }
+  .rg-catchip { font-size:11px; padding:5px 10px; border-radius:20px; border:1px solid var(--border); cursor:pointer; user-select:none; opacity:.5; transition:opacity .12s; }
   .rg-catchip.on { opacity:1; }
-  .rg-detail { width:300px; flex-shrink:0; border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:rgba(255,255,255,.03); min-height:640px; max-height:640px; overflow-y:auto; }
-  .rg-detail h4 { font-size:13.5px; margin:0 0 4px; color:#fff; }
-  .rg-detail .rg-type { font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px; margin-bottom:10px; }
-  .rg-detail table { width:100%; font-size:12px; border-collapse:collapse; }
+  .rg-canvas { height:660px; border:1px solid var(--border); border-radius:14px; background:radial-gradient(ellipse at 50% 40%, rgba(57,135,229,.05), rgba(255,255,255,.015) 60%); overflow:hidden; }
+  .rg-navigator { position:absolute; right:12px; bottom:12px; width:180px; height:130px; border:1px solid var(--border); border-radius:8px; background:rgba(10,14,20,.75); overflow:hidden; z-index:5; }
+  .rg-navigator .cytoscape-navigatorView { border:1px solid #3987e5 !important; background:rgba(57,135,229,.12) !important; }
+  .rg-detail { width:320px; flex-shrink:0; padding:16px 18px; min-height:660px; max-height:660px; overflow-y:auto; }
+  .rg-detail h4 { font-size:14px; margin:0 0 2px; color:#fff; }
+  .rg-detail .rg-type { font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px; margin-bottom:12px; }
+  .rg-detail table { width:100%; font-size:12px; border-collapse:collapse; margin-bottom:4px; }
   .rg-detail td { padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:top; }
-  .rg-detail td:first-child { color:var(--text-muted); width:40%; padding-right:8px; }
+  .rg-detail td:first-child { color:var(--text-muted); width:38%; padding-right:8px; }
+  .rg-section-label { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted); margin:14px 0 8px; }
+  .rg-tag-chip { display:inline-block; font-size:10.5px; background:rgba(57,135,229,.12); border:1px solid rgba(57,135,229,.3); color:#8ec1ff; border-radius:12px; padding:2px 8px; margin:0 5px 5px 0; }
+  .rg-health-row { display:flex; align-items:center; gap:7px; font-size:12px; margin-bottom:10px; }
+  .rg-health-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .rg-impact { font-size:11.5px; padding:3px 0; }
   .rg-legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:12px; font-size:11px; color:var(--text-muted); }
   .rg-legend span.dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+  .rg-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:16px; }
+  .rg-stat-card { padding:12px 14px; }
+  .rg-stat-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted); }
+  .rg-stat-value { font-size:22px; font-weight:700; color:#fff; margin-top:4px; }
+  #rgTooltip { position:fixed; z-index:9999; pointer-events:none; background:rgba(10,14,20,.95); border:1px solid var(--border);
+               border-radius:8px; padding:7px 10px; font-size:11.5px; color:var(--text); max-width:320px; display:none;
+               box-shadow:0 6px 20px rgba(0,0,0,.35); }
+  #rgTooltip b { color:#fff; }
 </style>
 <script>
+// ── Type styling: color + icon + size, keyed by exact ARM type ─────────────
+function svgIcon(inner) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+  return 'data:image/svg+xml,' + encodeURIComponent(svg);
+}
+const ICONS = {
+  vnet: svgIcon('<path d="M12 2 21 7v10l-9 5-9-5V7z"/><path d="M12 12 21 7M12 12v10M12 12 3 7"/>'),
+  subnet: svgIcon('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 4v16"/>'),
+  vm: svgIcon('<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>'),
+  aks: svgIcon('<circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M12 7.2 6.3 16.2M12 7.2l5.7 9M7 18h10"/>'),
+  storage: svgIcon('<ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5V18c0 1.7 3.6 3 8 3s8-1.3 8-3V5.5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>'),
+  keyvault: svgIcon('<circle cx="8" cy="8" r="4.2"/><path d="M11 11 21 21M17 17l2.5-2.5M14.5 14.5 17 12"/>'),
+  firewall: svgIcon('<path d="M4 4h7v6H4zM13 4h7v6h-7zM7 10v6M17 10v6M4 16h7v6H4zM13 16h7v6h-7z"/>'),
+  routetable: svgIcon('<circle cx="5" cy="12" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="19" cy="18" r="2.3"/><path d="M7 12h4a3 3 0 0 0 3-3V8M7 12h4a3 3 0 0 1 3 3v1"/>'),
+  dns: svgIcon('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.8 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.8-3.8-9S9.5 5.5 12 3z"/>'),
+};
+// size tiers (px)
+const SZ = { hub: 62, vnet: 46, medium: 34, small: 22 };
+const TYPE_STYLE = {
+  'microsoft.network/virtualnetworks':                              { color:'#3987e5', icon:'vnet',       size:'vnet',   level:80 },
+  'microsoft.network/virtualnetworks/subnets':                      { color:'#8ec1ff', icon:'subnet',     size:'small',  level:15 },
+  'microsoft.network/routetables':                                  { color:'#f59e0b', icon:'routetable', size:'small',  level:15 },
+  'microsoft.network/networksecuritygroups':                        { color:'#a855f7', icon:null,         size:'small',  level:15 },
+  'microsoft.network/firewallpolicies':                             { color:'#ef4444', icon:'firewall',   size:'medium', level:30 },
+  'microsoft.network/azurefirewalls':                                { color:'#ef4444', icon:'firewall',   size:'medium', level:30 },
+  'microsoft.network/privatednszones':                              { color:'#22c55e', icon:'dns',        size:'small',  level:15 },
+  'microsoft.network/privatednszones/virtualnetworklinks':          { color:'#22c55e', icon:null,         size:'small',  level:10 },
+  'microsoft.network/privateendpoints':                             { color:'#22c55e', icon:null,         size:'small',  level:15 },
+  'microsoft.network/privateendpoints/privatednszonegroups':        { color:'#22c55e', icon:null,         size:'small',  level:10 },
+  'microsoft.compute/virtualmachines':                              { color:'#22d3ee', icon:'vm',         size:'medium', level:30 },
+  'microsoft.containerservice/managedclusters':                     { color:'#1e3a8a', icon:'aks',        size:'medium', level:30 },
+  'microsoft.storage/storageaccounts':                              { color:'#14b8a6', icon:'storage',    size:'medium', level:30 },
+  'microsoft.storage/storageaccounts/blobservices/containers':      { color:'#14b8a6', icon:null,         size:'small',  level:10 },
+  'microsoft.keyvault/vaults':                                      { color:'#eab308', icon:'keyvault',   size:'medium', level:30 },
+  'microsoft.managedidentity/userassignedidentities':               { color:'#ec4899', icon:null,         size:'small',  level:15 },
+};
+const OTHER_STYLE = { color:'#94a3b8', icon:null, size:'small', level:10 };
+function typeStyle(type) { return TYPE_STYLE[(type || '').toLowerCase()] || OTHER_STYLE; }
+
 const CAT_COLOR = { network:'#3987e5', compute:'#199e70', platform:'#a855f7', storage:'#f59e0b', security:'#ef4444', other:'#94a3b8' };
-let cy = null, GRAPH = null, ACTIVE_CATS = new Set(Object.keys(CAT_COLOR));
+let cy = null, GRAPH = null, ACTIVE_CATS = new Set(Object.keys(CAT_COLOR)), ACTIVE_TYPE = '';
+let SUBS_BY_ID = {}, mouseX = 0, mouseY = 0, dashRAF = null, dashOffset = 0;
 
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function truncate(s, n) { s = s || ''; return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function scopeKey() {
+  return ['rgpos', document.getElementById('rgSub').value, document.getElementById('rgRg').value.trim(),
+          document.getElementById('rgType').value, document.getElementById('rgName').value.trim()].join('|');
+}
+function loadSavedPositions() {
+  try { return JSON.parse(localStorage.getItem(scopeKey()) || '{}'); } catch (e) { return {}; }
+}
+function savePosition(id, pos) {
+  const key = scopeKey();
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(key) || '{}'); } catch (e) {}
+  all[id] = { x: pos.x, y: pos.y };
+  localStorage.setItem(key, JSON.stringify(all));
+}
 
 async function loadSubs() {
   const sel = document.getElementById('rgSub');
   try {
     const d = await (await fetch('/api/resource-graph/subscriptions')).json();
     if (d.success && d.subscriptions && d.subscriptions.length) {
+      SUBS_BY_ID = {}; d.subscriptions.forEach(s => SUBS_BY_ID[s.id] = s.name);
       sel.innerHTML = d.subscriptions.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
     } else {
       sel.innerHTML = '<option value="">No subscriptions visible — check Reader access</option>';
@@ -133,6 +216,7 @@ async function runQuery() {
   btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Building…';
   status.textContent = 'Querying Azure Resource Graph…';
   document.getElementById('rgBody').style.display = 'none';
+  document.getElementById('rgStats').innerHTML = '';
   const params = new URLSearchParams({ subscription_id: sub });
   const rg = document.getElementById('rgRg').value.trim(); if (rg) params.set('resource_group', rg);
   const type = document.getElementById('rgType').value; if (type) params.set('resource_type', type);
@@ -146,6 +230,7 @@ async function runQuery() {
     if (d.truncated) msg += ` — truncated at hop ${d.truncated_at_hop} (raise "Max nodes per graph" in Settings → Resource Graph to see more)`;
     status.textContent = msg;
     document.getElementById('rgBody').style.display = '';
+    renderStats(d);
     renderGraph(d);
   } catch (e) {
     status.textContent = 'Network error building graph.';
@@ -154,17 +239,62 @@ async function runQuery() {
   }
 }
 
+function renderStats(d) {
+  const count = t => d.nodes.filter(n => n.type === t).length;
+  const cards = [
+    ['Total Resources', d.nodes.length],
+    ['VNets', count('microsoft.network/virtualnetworks')],
+    ['VMs', count('microsoft.compute/virtualmachines')],
+    ['Storage Accounts', count('microsoft.storage/storageaccounts')],
+    ['NSGs', count('microsoft.network/networksecuritygroups')],
+    ['Route Tables', count('microsoft.network/routetables')],
+    ['DNS Zones', count('microsoft.network/privatednszones')],
+  ];
+  document.getElementById('rgStats').innerHTML = cards.map(([label, val]) => `
+    <div class="rg-stat-card rg-glass">
+      <div class="rg-stat-label">${esc(label)}</div>
+      <div class="rg-stat-value">${val}</div>
+    </div>`).join('');
+}
+
+function nodeSizePx(n, isHub) {
+  if (isHub) return SZ.hub;
+  return SZ[typeStyle(n.type).size] || SZ.small;
+}
+
 function renderGraph(d) {
   ACTIVE_CATS = new Set(Object.keys(CAT_COLOR));
+  ACTIVE_TYPE = '';
   const cats = [...new Set(d.nodes.map(n => n.category))];
   document.getElementById('rgCatFilters').innerHTML = cats.map(c =>
     `<span class="rg-catchip on" data-cat="${c}" style="border-color:${CAT_COLOR[c]||CAT_COLOR.other};color:${CAT_COLOR[c]||CAT_COLOR.other};" onclick="toggleCat('${c}')">${c}</span>`).join('');
   document.getElementById('rgLegend').innerHTML = cats.map(c =>
     `<span><span class="dot" style="background:${CAT_COLOR[c]||CAT_COLOR.other};"></span>${c}</span>`).join('');
 
+  const typesPresent = [...new Set(d.nodes.map(n => n.type))].sort();
+  const typeSel = document.getElementById('rgTypeFilter');
+  typeSel.innerHTML = '<option value="">All types</option>' +
+    typesPresent.map(t => `<option value="${esc(t)}">${esc(t.split('/').pop())}</option>`).join('');
+
+  const saved = loadSavedPositions();
+  const hubId = (d.hub_id || '').toLowerCase();
+
   const elements = [
-    ...d.nodes.map(n => ({ data: { id: n.id, label: n.name, type: n.type, category: n.category,
-                                    color: CAT_COLOR[n.category] || CAT_COLOR.other, isRoot: n.id === d.root } })),
+    ...d.nodes.map(n => {
+      const st = typeStyle(n.type);
+      const isHub = hubId && n.id.toLowerCase() === hubId;
+      const isRoot = n.id === d.root;
+      const prov = (n.properties || {}).provisioningState;
+      const health = prov === 'Succeeded' ? '#22c55e' : prov === 'Failed' ? '#ef4444' : prov ? '#f59e0b' : '#5b6472';
+      const pos = saved[n.id];
+      const el = { data: {
+        id: n.id, label: truncate(n.name, 22), fullLabel: n.name, type: n.type, category: n.category,
+        color: st.color, icon: st.icon ? ICONS[st.icon] : '', isRoot, isHub,
+        size: nodeSizePx(n, isHub), level: isHub ? 100 : st.level, health,
+      } };
+      if (pos) el.position = pos;
+      return el;
+    }),
     ...d.edges.map((e, i) => ({ data: { id: 'e' + i, source: e.source, target: e.target, label: e.label } })),
   ];
 
@@ -172,24 +302,143 @@ function renderGraph(d) {
   cy = cytoscape({
     container: document.getElementById('rgCanvas'),
     elements,
+    minZoom: 0.15, maxZoom: 3.5,
+    hideEdgesOnViewport: true, hideLabelsOnViewport: true, textureOnViewport: true, pixelRatio: 1,
     style: [
       { selector: 'node', style: {
-          'background-color': 'data(color)', 'label': 'data(label)', 'color': '#fff',
-          'font-size': 9, 'text-valign': 'bottom', 'text-margin-y': 4,
-          'width': 26, 'height': 26, 'border-width': 2, 'border-color': 'rgba(255,255,255,.25)' } },
-      { selector: 'node[?isRoot]', style: { 'border-width': 3, 'border-color': '#fff', 'width': 34, 'height': 34 } },
+          'background-color': 'data(color)', 'background-image': 'data(icon)', 'background-fit': 'contain',
+          'background-width': '58%', 'background-height': '58%', 'background-clip': 'none',
+          'label': 'data(label)', 'color': '#e6e9ee',
+          'font-size': 9, 'text-valign': 'bottom', 'text-margin-y': 5,
+          'width': 'data(size)', 'height': 'data(size)',
+          'border-width': 2, 'border-color': 'data(health)',
+          'overlay-opacity': 0, 'overlay-color': '#3987e5', 'overlay-padding': 8,
+          'text-opacity': 1 } },
+      { selector: 'node[?isHub]', style: { 'border-width': 4 } },
+      { selector: 'node[?isRoot]', style: { 'border-width': 4, 'border-color': '#ffffff' } },
+      { selector: 'node:selected', style: { 'overlay-opacity': 0.28 } },
+      { selector: '.rg-labels-hidden', style: { 'text-opacity': 0 } },
+      { selector: '.rg-labels-hidden.rg-label-force', style: { 'text-opacity': 1 } },
       { selector: 'edge', style: {
-          'width': 1.4, 'line-color': 'rgba(255,255,255,.25)', 'target-arrow-color': 'rgba(255,255,255,.35)',
-          'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'label': 'data(label)',
-          'font-size': 7, 'color': '#9aa4b2', 'text-rotation': 'autorotate',
-          'text-background-color': '#1a1a1a', 'text-background-opacity': .7, 'text-background-padding': 1 } },
-      { selector: '.rg-dim', style: { 'opacity': 0.12 } },
+          'width': 1.3, 'line-color': 'rgba(255,255,255,.18)', 'target-arrow-color': 'rgba(255,255,255,.3)',
+          'target-arrow-shape': 'triangle', 'arrow-scale': .7, 'curve-style': 'bezier',
+          'label': '', 'opacity': 1 } },
+      { selector: '.rg-dim', style: { 'opacity': 0.08 } },
       { selector: '.rg-hidden', style: { 'display': 'none' } },
+      { selector: '.rg-path-active', style: {
+          'width': 2.2, 'line-color': '#3987e5', 'target-arrow-color': '#3987e5', 'opacity': 1,
+          'line-dash-pattern': [6, 3], 'line-dash-offset': 0 } },
+      { selector: '.rg-search-hit', style: { 'overlay-opacity': 0.32, 'overlay-color': '#22c55e' } },
     ],
-    layout: { name: 'cose', animate: false, nodeRepulsion: 8000, idealEdgeLength: 90 },
   });
 
-  cy.on('tap', 'node', (evt) => showDetail(evt.target.id()));
+  runLayout(d, saved);
+  wireInteractions();
+  if (cy.navigator) { try { cy.navigator({ container: '#rgNavigator' }); } catch (e) {} }
+  applyZoomLabelState();
+}
+
+function runLayout(d, saved) {
+  saved = saved || {};
+  const unpositioned = cy.nodes().filter(n => !saved[n.id()]);
+  const target = unpositioned.length === cy.nodes().length ? cy.elements() : unpositioned;
+  target.layout({
+    name: 'concentric',
+    concentric: n => n.data('level'),
+    levelWidth: () => 2,
+    minNodeSpacing: 34,
+    avoidOverlap: true,
+    animate: false,
+    fit: true,
+    padding: 40,
+  }).run();
+  if (target !== cy.elements()) cy.fit(undefined, 40);
+}
+
+function resetLayout() {
+  if (!cy || !GRAPH) return;
+  localStorage.removeItem(scopeKey());
+  renderGraph(GRAPH);
+}
+
+function wireInteractions() {
+  const container = cy.container();
+  container.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; positionTooltip(); });
+
+  cy.on('dragfree', 'node', evt => savePosition(evt.target.id(), evt.target.position()));
+
+  cy.on('zoom', applyZoomLabelState);
+
+  cy.on('mouseover', 'node', evt => {
+    const n = evt.target;
+    n.addClass('rg-label-force');
+    showTooltip(`<b>${esc(n.data('fullLabel'))}</b><br><span style="color:var(--text-muted);">${esc(n.data('type'))}</span>`);
+    highlightNeighborhood(n);
+  });
+  cy.on('mouseout', 'node', evt => {
+    evt.target.removeClass('rg-label-force');
+    hideTooltip();
+    const selected = cy.$('node:selected');
+    if (selected.length) highlightNeighborhood(selected[0]);
+    else clearHighlight();
+  });
+  cy.on('mouseover', 'edge', evt => {
+    const e = evt.target;
+    showTooltip(`${esc(truncate(e.source().data('fullLabel'), 24))} <span style="color:#3987e5;">—[${esc(e.data('label'))}]→</span> ${esc(truncate(e.target().data('fullLabel'), 24))}`);
+  });
+  cy.on('mouseout', 'edge', hideTooltip);
+
+  cy.on('tap', 'node', evt => {
+    cy.nodes().unselect();
+    evt.target.select();
+    showDetail(evt.target.id());
+    highlightNeighborhood(evt.target);
+  });
+  cy.on('tap', evt => { if (evt.target === cy) { cy.nodes().unselect(); clearHighlight(); } });
+}
+
+function positionTooltip() {
+  const t = document.getElementById('rgTooltip');
+  if (t.style.display === 'none') return;
+  t.style.left = (mouseX + 16) + 'px';
+  t.style.top = (mouseY + 16) + 'px';
+}
+function showTooltip(html) {
+  const t = document.getElementById('rgTooltip');
+  t.innerHTML = html;
+  t.style.display = 'block';
+  positionTooltip();
+}
+function hideTooltip() { document.getElementById('rgTooltip').style.display = 'none'; }
+
+function applyZoomLabelState() {
+  if (!cy) return;
+  const hidden = cy.zoom() < 0.55;
+  cy.nodes().forEach(n => n.toggleClass('rg-labels-hidden', hidden));
+}
+
+function highlightNeighborhood(node) {
+  const nbhd = node.closedNeighborhood();
+  cy.elements().not(nbhd).addClass('rg-dim');
+  nbhd.removeClass('rg-dim');
+  nbhd.edges().addClass('rg-path-active');
+  startDashAnimation();
+}
+function clearHighlight() {
+  cy.elements().removeClass('rg-dim').removeClass('rg-path-active');
+  stopDashAnimation();
+}
+function startDashAnimation() {
+  if (dashRAF) return;
+  const step = () => {
+    dashOffset = (dashOffset - 0.6) % 9;
+    cy.style().selector('.rg-path-active').style('line-dash-offset', dashOffset).update();
+    dashRAF = requestAnimationFrame(step);
+  };
+  dashRAF = requestAnimationFrame(step);
+}
+function stopDashAnimation() {
+  if (dashRAF) { cancelAnimationFrame(dashRAF); dashRAF = null; }
 }
 
 function toggleCat(cat) {
@@ -197,46 +446,116 @@ function toggleCat(cat) {
   document.querySelectorAll('.rg-catchip').forEach(el => {
     el.classList.toggle('on', ACTIVE_CATS.has(el.dataset.cat));
   });
+  applyFilters();
+}
+function onTypeFilterChange() {
+  ACTIVE_TYPE = document.getElementById('rgTypeFilter').value;
+  applyFilters();
+}
+function applyFilters() {
   if (!cy) return;
-  cy.nodes().forEach(n => n.toggleClass('rg-hidden', !ACTIVE_CATS.has(n.data('category'))));
+  cy.nodes().forEach(n => {
+    const hideCat = !ACTIVE_CATS.has(n.data('category'));
+    const hideType = ACTIVE_TYPE && n.data('type') !== ACTIVE_TYPE;
+    n.toggleClass('rg-hidden', hideCat || hideType);
+  });
   cy.edges().forEach(e => {
-    const hide = e.source().hasClass('rg-hidden') || e.target().hasClass('rg-hidden');
-    e.toggleClass('rg-hidden', hide);
+    e.toggleClass('rg-hidden', e.source().hasClass('rg-hidden') || e.target().hasClass('rg-hidden'));
   });
 }
 
 function onSearch() {
   const q = document.getElementById('rgSearch').value.trim().toLowerCase();
   if (!cy) return;
+  cy.nodes().removeClass('rg-search-hit');
   if (!q) { cy.elements().removeClass('rg-dim'); return; }
-  cy.nodes().forEach(n => n.toggleClass('rg-dim', !n.data('label').toLowerCase().includes(q)));
-  cy.edges().removeClass('rg-dim');
+  const matches = cy.nodes().filter(n => n.data('fullLabel').toLowerCase().includes(q));
+  cy.elements().addClass('rg-dim');
+  matches.removeClass('rg-dim').addClass('rg-search-hit');
+  matches.connectedEdges().removeClass('rg-dim');
+  if (matches.length) cy.animate({ fit: { eles: matches, padding: 80 } }, { duration: 300 });
+}
+
+// ── Relationship analysis: direct / upstream / downstream(impact) ─────────
+// Edges are consistently "source depends on target" (VM --uses_nic--> NIC,
+// Subnet --child_of--> VNet, etc). Upstream = what this depends on (follow
+// outgoing edges); downstream/impact = what depends on this (follow
+// incoming edges) — both computed as a transitive closure within the
+// CURRENTLY RENDERED graph only (hop/node caps mean the true environment-
+// wide impact could be larger; this isn't hidden from the user).
+function closure(nodeId, direction) {
+  const seen = new Set([nodeId]);
+  const queue = [nodeId];
+  const result = [];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const e of GRAPH.edges) {
+      const next = direction === 'out' ? (e.source === cur ? e.target : null)
+                                        : (e.target === cur ? e.source : null);
+      if (next && !seen.has(next)) {
+        seen.add(next); queue.push(next); result.push(next);
+      }
+    }
+  }
+  return result;
 }
 
 function showDetail(id) {
   const node = GRAPH.nodes.find(n => n.id === id);
   if (!node) return;
   const props = node.properties || {};
-  const rows = Object.entries(props).map(([k, v]) =>
-    `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('');
-  const nbrs = GRAPH.edges.filter(e => e.source === id || e.target === id).map(e => {
+  const subName = props.subscriptionId ? (SUBS_BY_ID[props.subscriptionId] || props.subscriptionId) : null;
+  const tags = props.tags || {};
+  const tagChips = Object.entries(tags).map(([k, v]) => `<span class="rg-tag-chip">${esc(k)}: ${esc(v)}</span>`).join('') ||
+    '<span style="font-size:11.5px;color:var(--text-muted);">No tags</span>';
+
+  const prov = props.provisioningState;
+  const health = prov === 'Succeeded' ? { c: '#22c55e', t: 'Healthy' } :
+                 prov === 'Failed' ? { c: '#ef4444', t: 'Critical' } :
+                 prov ? { c: '#f59e0b', t: 'Warning' } : { c: '#5b6472', t: 'Unknown' };
+
+  const otherRows = Object.entries(props).filter(([k]) => !['tags', 'subscriptionId', 'resourceGroup'].includes(k))
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('');
+
+  const direct = GRAPH.edges.filter(e => e.source === id || e.target === id);
+  const nbrs = direct.map(e => {
     const other = e.source === id ? e.target : e.source;
     const on = GRAPH.nodes.find(n => n.id === other);
-    return `<div style="font-size:11.5px;padding:2px 0;"><span style="color:var(--text-muted);">${esc(e.label)}</span> → ${esc(on ? on.name : other)}</div>`;
-  }).join('');
+    return `<div class="rg-impact"><span style="color:var(--text-muted);">${esc(e.label)}</span> → ${esc(on ? on.name : other)}</div>`;
+  }).join('') || '<div class="rg-impact" style="color:var(--text-muted);">None in this graph</div>';
+
+  const upstream = closure(id, 'out');
+  const downstream = closure(id, 'in');
+  const nameOf = nid => { const n = GRAPH.nodes.find(x => x.id === nid); return n ? n.name : nid; };
+  const listOf = ids => ids.length
+    ? ids.map(nid => `<div class="rg-impact">${esc(nameOf(nid))}</div>`).join('')
+    : '<div class="rg-impact" style="color:var(--text-muted);">None</div>';
+
   document.getElementById('rgDetail').innerHTML = `
     <h4>${esc(node.name)}</h4>
     <div class="rg-type">${esc(node.type)}</div>
-    <table>${rows || '<tr><td colspan="2" style="color:var(--text-muted);">No extra properties</td></tr>'}</table>
-    <div style="margin-top:12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted);">Relationships</div>
-    ${nbrs || '<div style="font-size:11.5px;color:var(--text-muted);">None in this graph</div>'}
-    <div style="margin-top:12px;"><a href="https://portal.azure.com/#@/resource${node.id}/overview" target="_blank" rel="noopener" style="font-size:11.5px;color:#60a5fa;"><i class="bi bi-box-arrow-up-right me-1"></i>Open in Azure Portal</a></div>`;
+    <div class="rg-health-row"><span class="rg-health-dot" style="background:${health.c};"></span>${health.t}${prov ? ' · ' + esc(prov) : ''}</div>
+    <table>
+      ${subName ? `<tr><td>Subscription</td><td>${esc(subName)}</td></tr>` : ''}
+      ${props.resourceGroup ? `<tr><td>Resource Group</td><td>${esc(props.resourceGroup)}</td></tr>` : ''}
+      ${otherRows}
+    </table>
+    <div class="rg-section-label">Tags</div>
+    <div>${tagChips}</div>
+    <div class="rg-section-label">Connected Resources (${direct.length})</div>
+    ${nbrs}
+    <div class="rg-section-label">Upstream dependencies (${upstream.length})</div>
+    ${listOf(upstream)}
+    <div class="rg-section-label">Impact if deleted — downstream (${downstream.length})</div>
+    ${listOf(downstream)}
+    ${downstream.length ? '<div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">Scoped to this rendered graph — the real environment-wide impact may be larger.</div>' : ''}
+    <div style="margin-top:14px;"><a href="https://portal.azure.com/#@/resource${node.id}/overview" target="_blank" rel="noopener" style="font-size:11.5px;color:#60a5fa;"><i class="bi bi-box-arrow-up-right me-1"></i>Open in Azure Portal</a></div>`;
 }
 
 function exportPng() {
   if (!cy) return;
   const a = document.createElement('a');
-  a.href = cy.png({ full: true, scale: 2, bg: '#111' });
+  a.href = cy.png({ full: true, scale: 2, bg: '#0b0f14' });
   a.download = 'resource-graph.png';
   a.click();
 }
@@ -250,6 +569,12 @@ function exportJson() {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+(function initTooltip() {
+  const div = document.createElement('div');
+  div.id = 'rgTooltip';
+  document.body.appendChild(div);
+})();
 </script>
 {% endif %}
 {% endblock %}

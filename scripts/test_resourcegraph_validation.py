@@ -172,4 +172,57 @@ finally:
     else:
         os.environ["RESGRAPH_MAX_NODES"] = orig_max_nodes
 
+# ── hub_id + tags/subscriptionId (UI-polish additions) ───────────────────
+# Direct cfg attribute monkeypatching, not env vars: this sandbox's real DB
+# already has HUB_* settings configured for actual hub-spoke automation (a
+# DB override), and DB overrides win over env vars in config.py's resolve()
+# order — an env-var-only approach silently tests against the real
+# configured hub instead of the values this test sets, which is exactly
+# what happened the first time this was written (caught by the test itself
+# failing against real data, not a mock).
+from config import cfg
+_hub_keys = ("HUB_SUBSCRIPTION_ID", "HUB_RESOURCE_GROUP", "HUB_VNET_NAME")
+_orig_hub = {k: cfg.__dict__.get(k, "__unset__") for k in _hub_keys}
+
+
+def _set_hub(sub, rg_, name):
+    for k, v in zip(_hub_keys, (sub, rg_, name)):
+        cfg.__dict__[k] = v
+
+
+def _restore_hub():
+    for k, v in _orig_hub.items():
+        if v == "__unset__":
+            cfg.__dict__.pop(k, None)
+        else:
+            cfg.__dict__[k] = v
+
+
+_set_hub("fake-sub", "rg-hub", "vnet-hub")
+try:
+    result3 = build_graph("fake-sub", resource_name="vm0", resource_type="microsoft.compute/virtualmachines")
+    check("hub_id built from HUB_* settings, no Azure call needed",
+          result3["hub_id"] == "/subscriptions/fake-sub/resourceGroups/rg-hub/providers/Microsoft.Network/virtualNetworks/vnet-hub")
+finally:
+    _restore_hub()
+
+_set_hub("", "", "")
+try:
+    result4 = build_graph("fake-sub", resource_name="vm0", resource_type="microsoft.compute/virtualmachines")
+    check("hub_id blank when HUB_* settings aren't fully configured", result4["hub_id"] == "")
+finally:
+    _restore_hub()
+
+tagged_rows = [{
+    "id": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Network/routeTables/rt1",
+    "name": "rt1", "type": "microsoft.network/routetables", "resourceGroup": "rg",
+    "location": "uaenorth", "subscriptionId": "s", "tags": {"Owner": "Atul", "Env": "Prod"},
+    "properties": {"provisioningState": "Succeeded"},
+}]
+rg._arg = lambda query, subs: tagged_rows
+result5 = build_graph("s", resource_name="rt1", resource_type="microsoft.network/routetables")
+node = result5["nodes"][0]
+check("tags surfaced in trimmed node properties", node["properties"].get("tags") == {"Owner": "Atul", "Env": "Prod"})
+check("subscriptionId surfaced in trimmed node properties", node["properties"].get("subscriptionId") == "s")
+
 print(f"\n{passed} checks passed.")

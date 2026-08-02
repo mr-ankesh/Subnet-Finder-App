@@ -347,3 +347,56 @@ raw Azure API responses, budget for at least one real-resource smoke test
 before trusting the offline mocks, since the ARM API's actual JSON shape
 (nested-properties-on-sub-resources, inconsistent ID casing) is exactly the
 kind of detail that's easy to get wrong from documentation/memory alone.
+
+---
+
+## 2026-08-02 — Resource Relationship Graph UI polish: concentric layout + hand-drawn icons, no new layout/icon library
+
+**Decision:** For the enterprise-UI-polish pass, use Cytoscape core's
+built-in `concentric` layout (keyed off a computed per-node importance
+`level`, hub VNET highest/most-central) instead of adding a force-directed
+layout extension (`cytoscape-fcose`), and hand-author a small set of inline
+SVG icons for the ~9 requested resource types instead of pulling in an
+icon-font/asset CDN.
+
+**Why:** Both were explicit trade-offs put to the user before implementing
+(layout: concentric-only vs. concentric+fcose; the user chose concentric-
+only). `concentric` gives the literal "hub in center, spokes radial" ask
+deterministically with zero new dependencies. For icons, Microsoft's actual
+Azure icon set isn't freely redistributable, and pulling in a generic
+icon-font would still need per-icon mapping work with no real fidelity gain
+over a handful of simple line-art SVGs baked directly into the JS as data
+URIs — same "no build step, self-contained" spirit as the rest of this
+codebase.
+
+**Tradeoff:** `cytoscape-navigator` (minimap) was still unavoidable — no
+core Cytoscape equivalent exists — so this pass isn't 100% dependency-free,
+just minimal. The concentric layout is also less optimal than a true
+force-directed layout at minimizing edge crossings in a single dense ring
+(e.g. many subnets under one spoke VNET); acceptable since the primary ask
+was hub-centric hierarchy, not globally-optimal crossing minimization.
+
+---
+
+## 2026-08-02 — Relationship Analysis (direct/upstream/downstream/impact) computed entirely client-side
+
+**Decision:** The side panel's new "Relationship Analysis" block — direct
+dependencies, upstream (transitive outgoing), downstream/"impact if
+deleted" (transitive incoming) — is computed in JS from `GRAPH.edges`
+already fetched for the current query. No new backend endpoint or field.
+
+**Why:** Every edge in this graph is already documented (see the original
+"Resource Relationship Graph" CLAUDE.md section) as consistently meaning
+"source depends on target." That gives a clean, uniform direction
+convention for free — upstream is just outgoing-edge BFS, downstream is
+just incoming-edge BFS — with no new Azure calls or backend traversal
+logic needed.
+
+**Tradeoff:** "Impact if deleted" is explicitly scoped to the *currently
+rendered* graph, not the true environment-wide impact — the UI says so
+plainly rather than implying completeness. A resource this graph didn't
+discover (outside the hop/node cap, or in a different subscription/RG not
+queried) that depends on the selected node won't show up. This is a real,
+disclosed limitation, not a bug to fix later — closing it properly would
+mean either removing the hop/node caps (defeating their purpose) or a
+separate "reverse-dependency sweep" feature, out of scope for this pass.

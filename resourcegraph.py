@@ -313,6 +313,10 @@ def _trim_properties(row: dict) -> dict:
         out["location"] = row["location"]
     if row.get("resourceGroup"):
         out["resourceGroup"] = row["resourceGroup"]
+    if row.get("subscriptionId"):
+        out["subscriptionId"] = row["subscriptionId"]
+    if row.get("tags"):
+        out["tags"] = row["tags"]
     props = row.get("properties") or {}
     for k in ("provisioningState", "addressSpace", "addressPrefix", "vmSize", "sku"):
         if k in props:
@@ -337,6 +341,7 @@ def _expand_subnets(vnet_row: dict, id_map: dict, forward: dict):
             "id": sid, "name": sub.get("name") or sid.split("/")[-1],
             "type": "microsoft.network/virtualnetworks/subnets",
             "resourceGroup": vnet_row.get("resourceGroup"), "location": vnet_row.get("location"),
+            "subscriptionId": vnet_row.get("subscriptionId"),
             "properties": sprops,
         }
         _add_edge(forward, sid, vnet_id, "child_of")
@@ -385,7 +390,7 @@ def _expand_aks_node_rg(cluster_row: dict, subscription_id: str, id_map: dict, f
         rows = _arg(
             f"Resources | where resourceGroup =~ '{node_rg}' "
             "| where type in~ ('microsoft.network/loadbalancers','microsoft.network/publicipaddresses') "
-            "| project id, name, type, resourceGroup, location, properties",
+            "| project id, name, type, resourceGroup, location, properties, tags, subscriptionId",
             [subscription_id])
     except Exception as exc:
         log.warning("resourcegraph: AKS node-RG lookup failed for %s: %s", node_rg, exc)
@@ -409,7 +414,8 @@ def _expand_storage_containers(account_row: dict, subscription_id: str, id_map: 
             cid = f"{account_row['id']}/blobServices/default/containers/{c.name}"
             id_map[cid.lower()] = {
                 "id": cid, "name": c.name, "type": "microsoft.storage/storageaccounts/blobservices/containers",
-                "resourceGroup": rg, "location": account_row.get("location"), "properties": {},
+                "resourceGroup": rg, "location": account_row.get("location"),
+                "subscriptionId": account_row.get("subscriptionId") or subscription_id, "properties": {},
             }
             _add_edge(forward, cid, account_row["id"], "child_of")
     except Exception as exc:
@@ -429,6 +435,7 @@ def _expand_pe_dns_zone_group(pe_row: dict, subscription_id: str, id_map: dict, 
             id_map[gid.lower()] = {
                 "id": gid, "name": grp.name, "type": "microsoft.network/privateendpoints/privatednszonegroups",
                 "resourceGroup": rg, "location": pe_row.get("location"),
+                "subscriptionId": pe_row.get("subscriptionId") or subscription_id,
                 "properties": {"privateDnsZoneConfigs": configs},
             }
             _add_edge(forward, gid, pe_row["id"], "child_of")
@@ -439,15 +446,27 @@ def _expand_pe_dns_zone_group(pe_row: dict, subscription_id: str, id_map: dict, 
         log.warning("resourcegraph: DNS zone group lookup failed for %s: %s", pe_row.get("name"), exc)
 
 
+def _hub_vnet_id() -> str:
+    """Resource ID of the hub VNET from Settings → Hub & Subscriptions, built
+    from the three settings alone (no Azure call) — used only so the frontend
+    can size/center the hub VNET when it happens to appear in a graph. Blank
+    if any of the three settings isn't configured."""
+    sub, rg, name = cfg.HUB_SUBSCRIPTION_ID, cfg.HUB_RESOURCE_GROUP, cfg.HUB_VNET_NAME
+    if not (sub and rg and name):
+        return ""
+    return f"/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Network/virtualNetworks/{name}"
+
+
 def build_graph(subscription_id: str, resource_group: str = None,
                  resource_type: str = None, resource_name: str = None) -> dict:
     max_nodes = int(cfg.RESGRAPH_MAX_NODES or 300)
     max_hops = int(cfg.RESGRAPH_MAX_HOPS or 3)
+    hub_id = _hub_vnet_id()
 
     query = "Resources"
     if resource_group:
         query += f" | where resourceGroup =~ '{resource_group}'"
-    query += " | project id, name, type, resourceGroup, location, properties"
+    query += " | project id, name, type, resourceGroup, location, properties, tags, subscriptionId"
     rows = _arg(query, [subscription_id])
 
     id_map = {r["id"].lower(): r for r in rows if r.get("id")}
@@ -501,7 +520,7 @@ def build_graph(subscription_id: str, resource_group: str = None,
                 break
         if not root_id:
             return {"nodes": [], "edges": [], "root": None, "truncated": False,
-                    "truncated_at_hop": None, "hop_limit": max_hops,
+                    "truncated_at_hop": None, "hop_limit": max_hops, "hub_id": hub_id,
                     "error": f"No resource named '{resource_name}' found in scope."}
         seed = [root_id]
     elif rtype_needle:
@@ -509,7 +528,7 @@ def build_graph(subscription_id: str, resource_group: str = None,
                 if (row.get("type") or "").lower() == rtype_needle][:max_nodes]
         if not seed:
             return {"nodes": [], "edges": [], "root": None, "truncated": False,
-                    "truncated_at_hop": None, "hop_limit": max_hops,
+                    "truncated_at_hop": None, "hop_limit": max_hops, "hub_id": hub_id,
                     "error": f"No resources of type '{resource_type}' found in scope."}
     else:
         seed = list(id_map.keys())[:max_nodes]
@@ -596,4 +615,5 @@ def build_graph(subscription_id: str, resource_group: str = None,
         "truncated": truncated,
         "truncated_at_hop": truncated_at_hop,
         "hop_limit": max_hops,
+        "hub_id": hub_id,
     }
