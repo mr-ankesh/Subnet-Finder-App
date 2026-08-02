@@ -1,0 +1,267 @@
+kb_version: "1.0.0"
+service: storage_account
+target_request_type: storage_account_create
+description: >
+  Maps advisor answers and derived values onto AlMadar's Storage Account request fields.
+  The advisor PREFILLS only. It never auto-submits. Anything the user must still supply is
+  listed under `user_must_provide` and shown as an explicit checklist.
+
+# ─────────────────────────────────────────────────────────────
+# Prefill contract
+# ─────────────────────────────────────────────────────────────
+prefill_contract:
+  method: >
+    Write the prefill payload to a server-side advisor session, then open the Storage
+    Account request form with a `?advisor_session=<id>` parameter. Do NOT pass the whole
+    payload in the query string — it exceeds practical URL length and leaks details into
+    browser history and proxy logs.
+  auto_submit: false
+  user_review_required: true
+  editable: All prefilled fields remain editable on the form.
+  validation: >
+    The existing server-side `_validate_storage_request()` remains the sole authority.
+    Prefill does not bypass, weaken or short-circuit any validation.
+
+# ─────────────────────────────────────────────────────────────
+# Direct field mappings
+# ─────────────────────────────────────────────────────────────
+field_mappings:
+
+  # --- Identity of the request -------------------------------
+  - request_field: purpose
+    from: purpose
+    transform: label_of_selected_option
+
+  - request_field: business_justification
+    from: [purpose, consumer, capacity_estimate, retention_period]
+    transform: compose_sentence
+    template: >
+      {purpose_label} for {application_name}, accessed by {consumer_labels}.
+      Estimated size {capacity_estimate}. {retention_clause}
+      Recommended by AlMadar AI Architecture Advisor (pattern: {pattern_id},
+      KB {kb_version}).
+
+  # --- Account configuration (from pattern, not user) --------
+  - request_field: storage_kind
+    from: pattern.design.storage_kind
+    locked: true
+
+  - request_field: sku
+    from: pattern.design.sku
+    locked: true
+    note: ZRS is a Presight constant except for archive.
+
+  - request_field: access_tier
+    from: derived.access_tier
+
+  - request_field: hierarchical_namespace
+    from: pattern.design.hierarchical_namespace
+    locked: true
+
+  - request_field: region
+    from: region
+    default: uaenorth
+
+  - request_field: region_justification
+    from: region_justification
+    include_if: "region != uaenorth"
+
+  # --- Networking --------------------------------------------
+  - request_field: public_network_access
+    value: Disabled
+    locked: true
+    reason: Azure Policy denies public PaaS endpoints.
+
+  - request_field: enable_private_endpoint
+    value: true
+    locked: true
+
+  - request_field: private_endpoint_sub_resource
+    from: derived.pe_sub_resource
+
+  - request_field: vnet_name
+    from: vnet_name
+    optional: true
+    note: Only prefilled if the user supplied it during the conversation.
+
+  - request_field: subnet_name
+    from: subnet_name
+    optional: true
+
+  # --- Encryption --------------------------------------------
+  - request_field: encryption_type
+    value: CMK
+    locked: true
+
+  - request_field: key_vault_name
+    from: key_vault_name
+    optional: true
+    note: User picks this on the form from the live Key Vault picker.
+
+  - request_field: identity_type
+    value: UserAssigned
+    locked: true
+
+  # --- Data protection ---------------------------------------
+  - request_field: blob_soft_delete
+    from: pattern.design.data_protection.blob_soft_delete
+    default: enabled
+
+  - request_field: container_soft_delete
+    from: pattern.design.data_protection.container_soft_delete
+    default: enabled
+
+  - request_field: versioning
+    from: pattern.design.data_protection.versioning
+    default: enabled
+
+  - request_field: change_feed
+    from: pattern.design.data_protection.change_feed
+    include_if: "pattern.design.data_protection.change_feed is defined"
+
+  - request_field: share_soft_delete
+    from: pattern.design.data_protection.share_soft_delete
+    include_if: "pattern.id == storage_files_private_standard"
+
+  - request_field: immutability_policy
+    from: immutability_required
+    include_if: "immutability_required == true"
+
+  - request_field: lifecycle_policy
+    from: derived.lifecycle_to_archive
+    include_if: "derived.lifecycle_to_archive == true"
+    note: Include the retention period so the admin can set realistic thresholds.
+
+# ─────────────────────────────────────────────────────────────
+# Tag mappings — governance schema
+# ─────────────────────────────────────────────────────────────
+tag_mappings:
+  note: >
+    AlMadar's `_deploy_tags()` already writes both the lowercase operational set and the
+    PascalCase governance set. These map onto the governance set.
+
+  ApplicationName:
+    from: application_name
+
+  BusinessUnit:
+    from: business_unit
+
+  Criticality:
+    from: criticality
+
+  DataClassification:
+    from: data_classification
+    transform: title_case
+    note: Defaults to Confidential when the user was unsure.
+
+  Environment:
+    from: environment
+    transform: expand_abbreviation
+    values:
+      dev: Development
+      tst: Test
+      uat: UAT
+      prd: Production
+      snd: Sandbox
+
+  Owner:
+    from: owner_email
+
+  Approver:
+    from: session.manager_email
+    optional: true
+    note: Populated by the approval flow if enabled; leave blank otherwise.
+
+  ServiceClass:
+    from: criticality
+    transform: map_to_service_class
+    values:
+      low: Bronze
+      medium: Silver
+      high: Gold
+      critical: Platinum
+    note: >
+      Confirm this mapping against the platform team's service-class definition before
+      relying on it — it is inferred, not quoted from the design documents.
+
+  Sovereignty:
+    value: Standard
+    note: >
+      Sovereign workloads are blocked earlier by the `sovereign_data` rule, so anything
+      reaching this point is Standard by definition.
+
+# ─────────────────────────────────────────────────────────────
+# What the user still has to supply
+# ─────────────────────────────────────────────────────────────
+user_must_provide:
+  - field: subscription_id
+    why: The advisor never enumerates subscriptions the user hasn't named.
+    blocking: true
+
+  - field: resource_group
+    why: Must follow the naming convention and exist in the right subscription.
+    blocking: true
+
+  - field: storage_account_name
+    why: >
+      Globally unique across Azure, 3–24 characters, lowercase letters and digits only.
+      The form validates availability live against Azure.
+    blocking: true
+    hint: Follow the Presight naming convention; the form's auto-name helper can generate it.
+
+  - field: vnet_name
+    why: The private endpoint must land in an onboarded subnet.
+    blocking: true
+    skip_if: "vnet_name was captured during the conversation"
+
+  - field: subnet_name
+    why: As above.
+    blocking: true
+    skip_if: "subnet_name was captured during the conversation"
+
+  - field: key_vault_name
+    why: CMK needs a Key Vault Premium holding an RSA-HSM key.
+    blocking: true
+
+  - field: key_name
+    why: The specific key and version used for encryption.
+    blocking: true
+
+  - field: container_names
+    why: The advisor doesn't invent container names.
+    blocking: false
+
+# ─────────────────────────────────────────────────────────────
+# Follow-on requests
+# ─────────────────────────────────────────────────────────────
+follow_on_requests:
+
+  - order: 2
+    request_type: dns
+    label: "DNS — link the private DNS zone to your VNET"
+    always_required: true
+    prefill:
+      request_kind: link_hub_zone_to_vnet
+      zone_name: derived.private_dns_zone
+      vnet_name: vnet_name
+      subscription_id: subscription_id
+    reason: >
+      Without the zone link, clients resolve the public IP and the connection fails even
+      though the private endpoint exists.
+
+  - order: 3
+    request_type: zpa_rnd_routing
+    label: "ZPA Routing — reachability for end users"
+    include_if: "derived.zpa_routing_required == true"
+    prefill:
+      spoke_vnet_name: vnet_name
+      subscription_id: subscription_id
+    reason: People connecting from outside the spoke need a ZPA path.
+
+  - order: 4
+    request_type: other
+    label: "Platform review"
+    include_if: "any escalation flag is set"
+    prefill:
+      purpose: "Advisor escalation"
+      description: compose_from_escalation_flags

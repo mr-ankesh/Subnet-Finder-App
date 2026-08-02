@@ -1,0 +1,325 @@
+kb_version: "1.0.0"
+service: storage_account
+description: >
+  Plain-English intake flow for the Storage Account advisor. Ask in `order`. Honour
+  `skip_if` and `stop_if`. The advisor must never ask a question whose answer is already
+  known from a previous answer or from the user's SSO session.
+
+# ─────────────────────────────────────────────────────────────
+# Conversational rules the agent must follow
+# ─────────────────────────────────────────────────────────────
+conversation_rules:
+  - Ask ONE question at a time. Never present the whole form as a wall of questions.
+  - Use the plain-English `question` text. Never show the `id` or Azure jargon.
+  - Always offer the `options` as numbered choices; accept free text too.
+  - If the user's free-text answer clearly maps to an option, accept it and move on.
+  - If the user says "I don't know", use `if_unknown` guidance; never guess silently.
+  - Re-state captured answers before producing the recommendation, so the user can correct.
+  - Never ask about replication, TLS version, encryption type, or public access —
+    those are Presight standards, not user choices. State them in the recommendation.
+
+# ─────────────────────────────────────────────────────────────
+# Questions
+# ─────────────────────────────────────────────────────────────
+questions:
+
+  - id: subscription_available
+    order: 10
+    question: "Do you already have an Azure subscription for this workload?"
+    type: yes_no
+    why_we_ask: "Every Azure resource lives in a subscription. Without one, nothing can be raised."
+    options:
+      - value: true
+        label: "Yes, I have a subscription"
+      - value: false
+        label: "No, I don't have one yet"
+      - value: unsure
+        label: "I'm not sure"
+    if_unknown: >
+      Check with your project or team lead — if your team already runs workloads in Azure,
+      a subscription very likely exists.
+    stop_if:
+      condition: "answer == false"
+      message: >
+        You'll need an Azure subscription before we can go further. Please request one
+        through the **HALO portal** first. Once it's approved, come back here with the
+        subscription ID and we'll pick up from this point.
+
+  - id: purpose
+    order: 20
+    question: "What will this storage be used for?"
+    type: single_choice
+    why_we_ask: "The purpose drives which storage pattern fits."
+    options:
+      - value: application_files
+        label: "Application files and artefacts"
+      - value: shared_drive
+        label: "A shared drive for a team or an application"
+      - value: logs_telemetry
+        label: "Logs, telemetry or diagnostic output"
+      - value: analytics_datalake
+        label: "Analytics or data lake"
+      - value: backup_copy
+        label: "Backup copies"
+      - value: compliance_retention
+        label: "Long-term retention for compliance or legal reasons"
+      - value: media_documents
+        label: "Images, video or documents"
+      - value: other
+        label: "Something else"
+    if_unknown: >
+      Describe the workload in your own words and I'll work out which category it fits.
+
+  - id: data_shape
+    order: 30
+    question: "How will the application work with the data?"
+    type: single_choice
+    why_we_ask: "Object storage and file-share storage are different Azure services."
+    options:
+      - value: unstructured_objects
+        label: "Read and write individual files or objects through code or an SDK"
+      - value: shared_file_system
+        label: "Mount it like a network drive or file path"
+      - value: analytics_datalake
+        label: "Point an analytics engine at folders of data"
+      - value: unsure
+        label: "I'm not sure"
+    if_unknown: >
+      If the application expects a drive letter or a mount path like /data, it needs a
+      file share. If it calls an API or SDK to read and write files, it needs object
+      storage. If you're pointing Databricks, Spark or Synapse at it, it's a data lake.
+    skip_if:
+      condition: "purpose in [analytics_datalake]"
+      set: "data_shape = analytics_datalake"
+
+  - id: access_protocol
+    order: 40
+    question: "How will the workload connect to it?"
+    type: multi_choice
+    why_we_ask: "This determines which private endpoint and DNS zone you need."
+    options:
+      - value: rest_sdk
+        label: "Application code, REST API or Azure SDK"
+      - value: blobfuse
+        label: "Mounted on Linux using Blobfuse2"
+      - value: smb
+        label: "SMB — Windows file share"
+      - value: nfs_posix
+        label: "NFS — Linux file share"
+      - value: abfs
+        label: "Analytics engine (Databricks, Spark, Synapse)"
+      - value: unsure
+        label: "I'm not sure"
+    if_unknown: >
+      If you're unsure, tell me what runs the workload — AKS, a Windows VM, a Linux VM, or
+      an analytics platform — and I'll infer the likely protocol.
+
+  - id: consumer
+    order: 50
+    question: "Who or what needs to reach this storage?"
+    type: multi_choice
+    why_we_ask: "Human access needs ZPA routing; workload access does not."
+    options:
+      - value: aks
+        label: "An AKS cluster"
+      - value: vm
+        label: "One or more virtual machines"
+      - value: application
+        label: "An application or service"
+      - value: analytics_engine
+        label: "An analytics platform"
+      - value: end_user_zpa
+        label: "People, connecting through ZPA"
+      - value: external_system
+        label: "A system outside Presight"
+    escalate_if:
+      condition: "'external_system' in answer"
+      message: >
+        External access needs a separate conversation. Presight storage is private by
+        default and public endpoints are blocked by Azure Policy. I'll note this and
+        flag it for the platform team rather than including it in the recommendation.
+
+  - id: data_classification
+    order: 60
+    question: "How would you classify the data?"
+    type: single_choice
+    why_we_ask: "Classification drives the tagging, and sovereign data follows a different path."
+    options:
+      - value: public
+        label: "Public"
+      - value: internal
+        label: "Internal"
+      - value: confidential
+        label: "Confidential"
+      - value: restricted
+        label: "Restricted"
+      - value: restricted_sovereign
+        label: "Restricted and subject to sovereignty or regulatory controls"
+      - value: unsure
+        label: "I'm not sure"
+    if_unknown: >
+      If the data contains personal information, credentials, financial records, or
+      anything you would not want shared outside your team, treat it as Confidential
+      at minimum. If unsure, I'll default to Confidential and flag it for review.
+    default_if_unknown: confidential
+
+  - id: access_frequency
+    order: 70
+    question: "How often will the data be read after it's written?"
+    type: single_choice
+    why_we_ask: "This picks the access tier, which is the largest cost lever."
+    options:
+      - value: frequent
+        label: "Regularly — daily or more"
+      - value: mixed
+        label: "Some data often, some rarely"
+      - value: infrequent
+        label: "Occasionally — monthly or so"
+      - value: rare_archive
+        label: "Almost never, but it must be kept"
+    if_unknown: >
+      If you're not sure, start with regular access. Lifecycle rules can move data to
+      cheaper tiers later without changing the application.
+
+  - id: retention_period
+    order: 80
+    question: "How long does the data need to be kept?"
+    type: text
+    why_we_ask: "Retention drives lifecycle rules and any immutability requirement."
+    skip_if:
+      condition: "access_frequency not in [rare_archive, infrequent]"
+    examples: ["90 days", "1 year", "7 years", "indefinitely"]
+
+  - id: immutability_required
+    order: 85
+    question: "Does the data need to be protected against deletion or modification for a fixed period?"
+    type: yes_no
+    why_we_ask: "This is a WORM compliance control, not just a backup setting."
+    skip_if:
+      condition: "purpose not in [compliance_retention, backup_copy]"
+    if_unknown: >
+      If a regulator or auditor requires the data to be tamper-proof for a set period,
+      the answer is yes. Otherwise, standard soft delete and versioning is enough.
+
+  - id: capacity_estimate
+    order: 90
+    question: "Roughly how much data do you expect to store?"
+    type: text
+    why_we_ask: "Sizing informs cost expectation and whether service limits are in play."
+    examples: ["100 GB", "2 TB", "50 TB", "not sure yet"]
+    if_unknown: >
+      A rough order of magnitude is fine — I only need to know whether this is gigabytes,
+      terabytes, or hundreds of terabytes.
+
+  - id: performance_requirement
+    order: 100
+    question: "Does the workload have a measured low-latency or high-throughput requirement?"
+    type: single_choice
+    why_we_ask: >
+      Presight standardises on the Standard tier. Premium is provisioned only when
+      Standard has been measured and found insufficient.
+    options:
+      - value: standard_ok
+        label: "No — normal performance is fine"
+      - value: premium_justified
+        label: "Yes — we've measured it and Standard isn't enough"
+      - value: unsure
+        label: "I'm not sure"
+    default_if_unknown: standard_ok
+    follow_up_if:
+      condition: "answer == premium_justified"
+      ask:
+        - id: workload_duration
+          question: "Is this a time-boxed workload, or permanent?"
+          type: single_choice
+          options:
+            - value: temporary_bounded
+              label: "Time-boxed — it has an end date"
+            - value: permanent
+              label: "Permanent"
+        - id: performance_evidence
+          question: "What's the measured requirement? (IOPS, throughput, or latency target)"
+          type: text
+
+  - id: environment
+    order: 110
+    question: "Which environment is this for?"
+    type: single_choice
+    why_we_ask: "Environment appears in the resource name and the Environment tag."
+    options:
+      - value: dev
+        label: "Development"
+      - value: tst
+        label: "Test"
+      - value: uat
+        label: "UAT"
+      - value: prd
+        label: "Production"
+      - value: snd
+        label: "Sandbox"
+
+  - id: business_unit
+    order: 120
+    question: "Which business unit or project does this belong to?"
+    type: text
+    why_we_ask: "Drives the BusinessUnit tag and the resource naming convention."
+
+  - id: application_name
+    order: 130
+    question: "What's the name of the application or workload this supports?"
+    type: text
+    why_we_ask: "Populates the ApplicationName tag."
+
+  - id: criticality
+    order: 140
+    question: "How critical is this to the business?"
+    type: single_choice
+    options:
+      - value: low
+        label: "Low"
+      - value: medium
+        label: "Medium"
+      - value: high
+        label: "High"
+      - value: critical
+        label: "Critical"
+
+  - id: owner_email
+    order: 150
+    question: "Who is the technical owner? (email)"
+    type: email
+    why_we_ask: "Populates the Owner tag and the request's owner field."
+    prefill_from_session: true
+
+  - id: region
+    order: 160
+    question: "Which region should this be deployed in?"
+    type: single_choice
+    why_we_ask: "UAE North is the Presight primary region."
+    options:
+      - value: uaenorth
+        label: "UAE North (standard)"
+      - value: uaecentral
+        label: "UAE Central (secondary — needs justification)"
+    default: uaenorth
+    follow_up_if:
+      condition: "answer != uaenorth"
+      ask:
+        - id: region_justification
+          question: "Why is a non-standard region needed?"
+          type: text
+
+  - id: network_details_known
+    order: 170
+    question: "Do you already know which VNET and subnet this will connect to?"
+    type: yes_no
+    why_we_ask: "The private endpoint has to land in an onboarded subnet."
+    if_no: >
+      That's fine — you'll pick it on the request form, or raise a New VNET / New Subnet
+      request first if your network isn't onboarded yet.
+
+  - id: want_diagram
+    order: 900
+    question: "Would you like a diagram showing how the network flow will work?"
+    type: yes_no
+    ask_last: true
