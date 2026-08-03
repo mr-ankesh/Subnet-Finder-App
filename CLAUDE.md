@@ -574,10 +574,13 @@ Graph query, so `AZURE_DRY_RUN` doesn't apply).
 
 `advisor/` (new package) + `/advisor` + `templates/advisor.html` is a guided
 intake chat that turns plain-English answers into a Presight-approved
-Storage Account request, **prefilling** it (never submitting). Like the
-Resource Relationship Graph, this isn't a `RequestType` — there's no deploy/
-revert cycle, and unlike every AI feature elsewhere in this app it makes
-**zero** Azure SDK calls at all (not even read-only ones — see the
+request, **prefilling** it (never submitting). Shipped storage-only first,
+then expanded to six services (Storage, Kubernetes, VMs, Database,
+Application Gateway, Key Vault) — see the dedicated subsection below for
+what changed in that expansion. Like the Resource Relationship Graph, this
+isn't a `RequestType` — there's no deploy/revert cycle, and unlike every AI
+feature elsewhere in this app it makes **zero** Azure SDK calls at all (not
+even read-only ones — see the
 [Resource Relationship Graph](#resource-relationship-graph-read-only-dependency-map-not-a-request-type)
 above for the read-only-but-still-calls-Azure case; the advisor doesn't even
 do that).
@@ -677,6 +680,100 @@ Rules decide.  LLM explains.  Forms validate.  Azure deploys.
   `diagram_builder` directly against the real `advisor_kb/` content — not
   synthetic mocks — since the KB itself is as much the thing under test as
   the code that reads it.
+
+#### Six-service expansion: storage-only → Storage/AKS/VM/Postgres/AppGW
+
+`advisor_kb/` was extended (see its own `MIGRATION.md`) with catalog
+patterns, questions, decision matrices and request mappings for four more
+services, plus a `rules/platform_constants.yaml` shared by all of them. The
+KB delta is purely additive — every storage file, and the 63 checks that
+covered it, are untouched; `scripts/test_advisor_validation.py` grew to 172.
+
+- **Service selection is the literal first question**, before any
+  per-service question bank even loads (`advisor/services.py`'s 5-item
+  menu — Key Vault is excluded, see below). Free text ("I need a cluster")
+  routes via a deterministic keyword fallback, not just the generic
+  option-substring/LLM matcher, so it still works with zero LLM configured.
+- **`catalog_loader.SERVICE_FILES`** maps each of the five selectable
+  service ids to its own `questions/rules/mapping` files — keyed to each
+  KB file's own `service:` field, which is **not** always the real
+  `RequestType` (storage's own KB files say `service: storage_account`, but
+  its `target_request_type` is `storage_account_create`; only the mapping
+  file's `target_request_type` is ever used to pick the real form). All
+  patterns across every service still live in one flat `catalog/`
+  directory; per-service code filters by each pattern's own `service` field.
+- **`rules_engine.evaluate_full`** iterates whatever `execution_order` the
+  active service's matrix declares instead of assuming storage's fixed
+  seven phases — the five new matrices only declare six (no `constants`,
+  which is storage's own per-pattern exception list). `platform_constants.yaml`
+  is loaded once and is pure reference data (naming pattern, DNS zones,
+  encryption floor) for rendering — no decision matrix references it inside
+  a `when:` condition, so it never affects rule outcomes.
+- **Cross-service mechanics new in this delta**: an escalation's/derivation's
+  `add_service` (e.g. AKS flagging `app_gateway`/`postgres_create`/
+  `container_registry` as companions) accumulates into a list rendered as
+  "you'll also need," never auto-run through its own question flow (that's
+  the Phase 3 environment composer, out of scope). A `redirect` (Postgres's
+  `self_managed` escalation → `vm_workload_standard`) sends the whole
+  recommendation to a different pattern's summary + a restart hint —
+  never a fabricated cross-service prefill built from answers shaped for a
+  different service. `design.inherits` (`aks_gpu_nodepool` inheriting
+  `aks_private_standard`'s design) is resolved once at catalog-load time via
+  a shallow merge, so nothing downstream needs to know inheritance exists.
+  An escalation's `message_ref` (e.g. AppGW's InfoSec gate) is loaded from
+  `advisor_kb/composer/` and rendered **verbatim** by `recommendation.py` —
+  never passed through the LLM narration step, which is what structurally
+  guarantees "never suggest a workaround / promise a timeline" for that gate.
+- **`condition_eval.evaluate()` got stricter, not just more tolerant**: the
+  new mapping files' `include_if`/`required_requests[].condition` strings
+  turned out to be genuine plain-English prose in several places (e.g.
+  `"egress_destinations specified"`, `"engineers need kubectl access"`) —
+  not valid condition-language at all. Left alone, `_quote_bare_enums`
+  quotes every bare word into its own string literal, and Python's implicit
+  adjacent-string-literal concatenation makes the whole thing `eval()` to a
+  non-empty (truthy) string **instead of raising** — silently wrong, not
+  just unparseable. `evaluate()` now rejects any rewritten condition with no
+  recognizable operator at all; the new `evaluate_safe()` wraps this for the
+  optional-item call sites (mapping `include_if`) so a malformed string
+  fails closed (item excluded) rather than crashing the chat. Every
+  `required_requests[].condition` across the whole KB is prose like this —
+  `recommendation.py` always shows the request and surfaces the condition
+  as a visible caveat instead of trying to evaluate it.
+- **AKS/VM real-form-field mismatches** (same discipline as storage's own,
+  re-verified against the actual markup, not the KB's claims): both forms'
+  "project" field is what the KB's `tag_mappings` call `application_name`
+  (neither form has a field literally named `application_name`); VM's
+  `auth_mode` only offers `ssh_key`/`password` (the KB derives
+  `admin_password_at_deploy` for Windows); AKS's `node_pool_name` and
+  `zpa_rnd_access` are required by the form but missing from the KB's own
+  `user_must_provide` — flagged defensively, same precedent as storage's
+  `service_class` gap. `gpu_node_pool` (AKS) and `os_image`'s curated-image
+  transform (VM) have no backing form field / data source at all — never
+  guessed, only surfaced as checklist notes.
+- **Postgres and App Gateway don't have a dedicated `RequestType` yet** —
+  both mapping files say so themselves ("build the request type before
+  wiring this in"). Ship now targeting `RequestType.OTHER`, whose real form
+  has exactly two fields (`description`, `priority`) — no project/env/owner/
+  criticality block like every other type gets. Neither service's rich
+  `mapped_fields`/`locked_fields` can be prefilled field-by-field on a form
+  that small, so `prefill.py`'s `_compose_description_block()` weaves the
+  pattern, key derived facts, and the full `user_must_provide` checklist
+  into one readable `description` instead — which doubles as the field spec
+  for whichever dedicated request type gets built later, per the mapping
+  files' own stated intent.
+- **Key Vault stays reference-only.** The KB ships a `keyvault_premium_private`
+  catalog pattern but no question/rules/mapping files — it loads fine (other
+  patterns can cite it) but isn't one of the five menu options and has no
+  guided conversation of its own this round.
+- **`recommendation.build_recommendation_generic()`** serves AKS/VM/Postgres/
+  AppGW. Their catalog patterns' `design` dicts are too heterogeneous
+  (AppGW's `layers` is a list of dicts, AKS's `node_pools` is a nested dict,
+  etc.) to force into storage's flat settings table — each pattern's
+  `security_floor` (flat scalars in every pattern) becomes the table
+  instead, and `design` is passed through as-is for the frontend to render
+  generically (`advisor.html`'s `advRenderDesignValue()` recurses over
+  whatever shape it finds). Every value still comes straight from the KB
+  pattern's own YAML — nothing invented in either module.
 
 ### Separate credentials per concern
 

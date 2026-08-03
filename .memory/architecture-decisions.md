@@ -536,3 +536,88 @@ of what a form *should* have) was what caught all four.
 tradeoff is an intentionally incomplete prefill on one field — accepted
 because a wrong-but-plausible-looking auto-selection would be worse than a
 clearly-flagged manual step.
+
+## 2026-08-03 — AI Architecture Advisor: expanded from storage-only to six services
+
+**Decision:** `advisor_kb/` was extended additively (per its own
+`MIGRATION.md`) with catalog patterns, questions, decision matrices and
+request mappings for AKS/VM/Postgres/AppGW, plus a shared
+`platform_constants.yaml`, plus a `key_vault` catalog pattern. Rather than
+duplicate `catalog_loader.py`/`rules_engine.py`/etc. per service, the
+existing storage-only engine was generalized to take a `service` parameter
+throughout — `SERVICE_FILES` maps each service id to its own
+questions/rules/mapping files, and `rules_engine.evaluate_full` now
+iterates whatever `execution_order` a service's own matrix declares instead
+of assuming storage's fixed seven phases (the five new matrices only
+declare six — no `constants`, which is storage's own concept).
+
+**Finding: a service's internal `service:` id is not always its real
+`RequestType`.** Every KB file (rules/questions/mapping) for a given
+service agrees on one `service:` field value, but storage's is
+`storage_account` while its real `RequestType`/form section is
+`storage_account_create` — only each mapping file's own
+`target_request_type` field is the source of truth for which form to
+prefill. AKS's and VM's `service:` values happen to equal their real
+`RequestType` (`aks_cluster`, `vm_create`), which could easily have masked
+this distinction if only tested against those two — caught because
+Postgres/AppGW's `target_request_type` (`postgres_create`/`app_gateway`)
+also doesn't correspond to any real `RequestType` at all yet (see below).
+
+**Decision: Key Vault stays reference-only, not a 6th menu item.** The KB
+ships a full `keyvault_premium_private` catalog pattern (so other services'
+recommendations can cite it) but no question/rules/mapping files, and the
+task's own menu spec listed five items, not six. Asked the user explicitly
+rather than assuming either way; confirmed reference-only.
+
+**Decision: Postgres/AppGW ship now targeting `RequestType.OTHER`**, per
+the user's explicit instruction, rather than waiting on two new dedicated
+request types being built first — both mapping files say so themselves
+("this mapping is the specification for its field set — build the request
+type before wiring this in"). `RequestType.OTHER`'s real form has exactly
+two fields (`description`, `priority`) — nothing like the project/env/
+owner/criticality block every other type gets — so neither service's rich
+`mapped_fields` can be prefilled field-by-field; the whole recommendation
+(pattern, key derived facts, the full `user_must_provide` checklist, an
+explicit "dedicated type is coming" note) is composed into the description
+text instead.
+
+**Decision: cross-service mechanics render, never auto-orchestrate.**
+`add_service` (a companion service, e.g. AKS flagging `app_gateway` for
+public exposure) is shown as a "you'll also need" list — never
+auto-continued into that service's own question flow, which is explicitly
+the Phase 3 "whole environment" composer's job, out of scope here. A
+`redirect` (Postgres's `self_managed` escalation sending the whole
+recommendation to `vm_workload_standard`) renders only the target pattern's
+summary plus a restart hint — never a fabricated VM-shaped prefill built
+from Postgres-shaped answers. Both decisions follow the same "never invent
+a mapping the KB doesn't sanction" discipline established for storage's
+curated-VM-image and ServiceClass gaps.
+
+**Bug found: `condition_eval.evaluate()` could silently return the wrong
+answer instead of raising.** The new mapping files' `include_if`/
+`required_requests[].condition` strings turned out to be genuine
+plain-English prose in several places (`"egress_destinations specified"`,
+`"engineers need kubectl access"` — confirmed by scanning every condition
+string in the whole KB, not just the ones exercised by this session's own
+tests). `_quote_bare_enums` quotes every bare word in a condition into its
+own string literal; when a string has NO operator at all, that produces two
+or more adjacent string literals, which Python's implicit adjacent-literal
+concatenation happily evaluates to a truthy non-empty string instead of
+raising a `NameError`/`SyntaxError`. This was going to be silently `True`
+for every one of these strings, not "safely fail" — worse than the
+originally-planned "wrap in try/except" defensive fallback, since there was
+no exception to catch. Fixed by making `evaluate()` itself reject any
+rewritten condition with no recognizable operator (`==`, `!=`, `in`, `is`,
+`and`, `or`, `not`, comparisons), verified safe against every real
+condition string in the whole KB (92 unique strings scanned; the 14 that
+now correctly fail all live in `mapping`/`catalog`/`composer` contexts that
+already use plain-string checks or the new `evaluate_safe()`, never the
+strict blockers/escalations/derivations path). `evaluate_safe()` (catches
+any exception, logs, returns `False`) is the actual fail-closed wrapper used
+at the optional-item call sites this was originally scoped for.
+
+**Tradeoff:** Postgres/AppGW's `RequestType.OTHER` prefill is a genuinely
+weaker experience than storage/AKS/VM's field-by-field prefill — accepted
+as the explicitly-chosen interim state per the user's instruction, with the
+mapping files' `user_must_provide` blocks already positioned as the future
+field spec once dedicated types exist.

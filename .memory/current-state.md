@@ -8,11 +8,14 @@
 Active development. Storage Account feature committed (`8ef4ef2`,
 2026-08-01). Resource Relationship Graph committed (`66824be` base feature,
 `5b12f9f` UI polish pass, `9fff6b1` background-image bugfix, all
-2026-08-02). AI Architecture Advisor V1 (Storage only) built and verified
-2026-08-03, **not yet committed** — see "Features In Progress" below.
-Remaining uncommitted changes also include the unrelated cosmetic/infra
-items noted below. `main` is the only branch; commits go
-straight to it.
+2026-08-02). AI Architecture Advisor V1 (Storage only) committed
+2026-08-03 (`4ccd9d8`/`4ca0053`/`90ddc17`/`72d27c9`, plus KB duplicate-dir
+cleanup `f06285c`). Advisor expanded from storage-only to six services
+(Storage/AKS/VM/Postgres/AppGW selectable, Key Vault reference-only) —
+committed 2026-08-03 (`1aca22a`/`cc1e58c`/`1c70a91`) — see "Features In
+Progress" below for the full breakdown. Remaining uncommitted changes are
+the unrelated cosmetic/infra items noted below (predate all advisor work).
+`main` is the only branch; commits go straight to it.
 
 ## Features Completed (committed, on `main`)
 
@@ -46,17 +49,19 @@ straight to it.
 
 ## Features In Progress
 
-### AI Architecture Advisor V1 (Storage only) — built + verified 2026-08-03, uncommitted
+### AI Architecture Advisor — storage-only V1, then expanded to six services
 
 Guided-intake chat at `/advisor` that turns plain-English answers into a
-Presight-approved Storage Account request (prefilled, never auto-submitted).
-Entirely knowledge-base-driven (`advisor_kb/`, checked in, provenance-tracked
-to two Microsoft/Kyndryl design documents) — see `CLAUDE.md` → "AI
-Architecture Advisor" for the full design (rules decide/LLM explains
-separation, condition-language evaluator, session storage, prefill handoff,
-Mermaid vendoring). Makes **zero** Azure SDK calls of any kind (not even
-read-only).
+Presight-approved request (prefilled, never auto-submitted). Entirely
+knowledge-base-driven (`advisor_kb/`, checked in, provenance-tracked to
+Microsoft/Kyndryl design documents) — see `CLAUDE.md` → "AI Architecture
+Advisor" (rules decide/LLM explains separation, condition-language
+evaluator, session storage, prefill handoff, Mermaid vendoring) and its
+"Six-service expansion" subsection for what changed in the second round.
+Makes **zero** Azure SDK calls of any kind (not even read-only).
 
+**V1 (Storage only) — committed `4ccd9d8`/`4ca0053`/`90ddc17`/`72d27c9`,
+KB dir cleanup `f06285c`:**
 - New package `advisor/` (11 files: `catalog_loader`, `condition_eval`,
   `question_engine`, `rules_engine`, `pattern_matcher`, `prefill`,
   `diagram_builder`, `session_store`, `prompts`, `recommendation`,
@@ -65,29 +70,62 @@ read-only).
 - 4 routes in `app.py` (`/advisor`, `/api/advisor/chat`,
   `/api/advisor/diagram`, `/api/advisor/prefill`) + `requester_page()`
   extended for the `?advisor_session=<id>` prefill handoff.
-- **Verified**: the full 63-check `test_advisor_validation.py` suite
-  (condition evaluator against every real condition string in the KB;
-  `catalog_loader` against the real 5-pattern catalog; all 5 patterns'
-  scoring; blockers/escalations/derivations against the real decision
-  matrix; the full question-flow → rules → pattern-selection → prefill →
-  diagram pipeline end-to-end) plus a real Flask-test-client run of every
-  route (login → full conversation → recommendation → diagram → prefill →
-  requester page shows the embedded payload) — covers all 13 of the user's
-  verification items except a live-browser visual check (no headless
-  browser reached for in this session; the same standing gap noted for the
-  Resource Relationship Graph).
-- **Real bugs found and fixed during this build** (see
+- Verified: the full 63-check suite plus a real Flask-test-client run of
+  every route (login → full conversation → recommendation → diagram →
+  prefill → requester page shows the embedded payload).
+- Real bugs found and fixed during this build (see
   `architecture-decisions.md` 2026-08-03 entries): 3 in `condition_eval.py`'s
-  string rewriter, caught by testing against the KB's actual condition
-  strings, not synthetic ones; a dead-code gap in `prefill.py` that never
-  actually flagged the `service_class` field as unfillable; a client-side
-  "Change answer" bug that would silently skip the question being changed;
-  and 4 KB-vocabulary-vs-real-form-field mismatches (`identity_type`,
-  `encryption_type`, `Premium_ZRS` missing from the SKU list entirely,
-  `ServiceClass` vocabulary mismatch) found by reading the actual
-  `templates/requester.html` markup rather than trusting the KB's own
-  description of form fields.
-- **Not yet done**: commit this feature; a real in-browser visual pass.
+  string rewriter; a dead-code gap in `prefill.py` that never actually
+  flagged `service_class` as unfillable; a client-side "Change answer" bug;
+  4 KB-vocabulary-vs-real-form-field mismatches (`identity_type`,
+  `encryption_type`, `Premium_ZRS` missing from the SKU list, `ServiceClass`
+  vocabulary mismatch).
+
+**Six-service expansion (Storage/AKS/VM/Postgres/AppGW selectable, Key
+Vault reference-only) — committed `1aca22a`/`cc1e58c`/`1c70a91`:**
+- `advisor_kb/` extended additively (`MIGRATION.md`): catalog patterns,
+  questions, decision matrices, request mappings for 4 more services, plus
+  a shared `platform_constants.yaml`. Storage's own files untouched.
+- `catalog_loader.SERVICE_FILES` map, `design.inherits` merge,
+  `platform_constants`/composer-file loaders; `rules_engine.evaluate_full`
+  now runs whatever `execution_order` a service's matrix declares (5 new
+  matrices have 6 phases, no `constants`); `add_service` accumulation,
+  `redirect`, verbatim `message_ref` rendering (the InfoSec gate) all new;
+  `question_engine` normalizes two option/skip_if shapes the new KB
+  introduced + adds the service-selection question as the literal first
+  step, with a deterministic keyword fallback for free text.
+- `condition_eval.evaluate()` now rejects conditions with no recognizable
+  operator — several new mapping-file strings turned out to be plain-English
+  prose that was silently evaluating to `True` via Python's implicit
+  adjacent-string-literal concatenation, not raising as intended.
+  `evaluate_safe()` added for the optional-item (`include_if`) call sites.
+- `prefill.build_prefill_aks`/`build_prefill_vm`/`build_prefill_postgres`/
+  `build_prefill_appgw` + `recommendation.build_recommendation_generic()` +
+  `build_redirect_response()`. Postgres/AppGW have no dedicated `RequestType`
+  yet, so both target `RequestType.OTHER` (its form has only
+  `description`+`priority`) — the recommendation is composed into
+  `description` text instead of field-by-field prefill.
+- `app.py`'s `/api/advisor/chat` fully service-aware; `templates/advisor.html`
+  renders the new `redirect` response type, verbatim `message_ref` content,
+  `add_services`, and a generic recursive `design` dict renderer;
+  `templates/requester.html`'s prefill JS reads `request_type` from the
+  payload instead of hardcoding storage.
+- `scripts/test_advisor_validation.py` grew from 63 to 172 checks (all 63
+  original storage checks pass unmodified — only call-signature updates for
+  the new required `service` argument).
+- **Verified live against the running app** (not just the assert suite): a
+  full AKS conversation through diagram render and prefill handoff; a
+  Postgres `self_managed` conversation confirming the redirect to
+  `vm_workload_standard` fires; an AppGW public-exposure conversation
+  confirming the InfoSec gate escalation renders its `message_ref` content
+  verbatim with `request_type: "other"`.
+- Real KB-vs-real-form mismatches found (same discipline as V1, re-verified
+  against actual markup): AKS/VM's form field is `project`, not
+  `application_name`; VM's `auth_mode` only offers `ssh_key`/`password`
+  (not the KB's derived `admin_password_at_deploy`); AKS's `node_pool_name`/
+  `zpa_rnd_access` are required but missing from the KB's own
+  `user_must_provide`; `gpu_node_pool`/VM's curated-image transform have no
+  backing form field or data source — never guessed, only checklist notes.
 
 ### Resource Relationship Graph — fully committed (`66824be`, `5b12f9f`, `9fff6b1`)
 
@@ -252,6 +290,23 @@ feature, cosmetic/infra, not part of Storage or VM):
   for the user to remove.
 
 ## Verification Notes
+
+**2026-08-03, VM_CREATE re-verification caught a DB-vs-env `AZURE_DRY_RUN`
+mismatch.** Before this session's advisor work, `VM_CREATE` was
+re-verified end-to-end in local dev (SQLite, local auth) at the user's
+request. `.env` had `AZURE_DRY_RUN=true`, but Settings had a **DB-level
+override of `false`** (config.py's resolution order is DB → env → default)
+— a `vm_deploy` action ran for real against the sandbox subscription before
+this was caught, creating a real throwaway VM+NIC in `rg-claude-e2e-qa-test`.
+An attempted UI revert also silently no-op'd (it ran *after* `AZURE_DRY_RUN`
+had since been flipped back to `true`, so `delete_vm` itself simulated
+under dry-run even though the change-ledger entry got marked `reverted`).
+Cleaned up via a direct `azure_tools.delete_vm()` call with dry-run
+genuinely off, with an audit-trail note added explaining the ledger's
+"reverted" status didn't reflect reality until that manual cleanup. Lesson
+for future sessions: **always check the DB `app_settings` override, not
+just `.env`, before assuming `AZURE_DRY_RUN`'s live value** — the two can
+disagree, and only the DB value is authoritative once one exists.
 
 **2026-08-01, full real Azure E2E pass (both VM and Storage) — both
 features fully confirmed working, independently of the app's own
