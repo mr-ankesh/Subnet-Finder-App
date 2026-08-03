@@ -2,6 +2,47 @@
 {% block title %}AI Architecture Advisor | AlMadar 360{% endblock %}
 
 {% block content %}
+{% if chat_history_enabled %}
+<div class="adv-conv-shell">
+  <aside class="adv-sidebar">
+    <div class="adv-sidebar-header">
+      <button class="btn btn-glow adv-new-btn" onclick="advConvShowNewMenu()"><i class="bi bi-plus-lg me-1"></i>New conversation</button>
+      <div id="advNewMenu" class="adv-new-menu" style="display:none;">
+        <div class="adv-mode-card" onclick="advConvCreate('service')"><b>A single service</b><span>Storage, Kubernetes, VMs, Database or Application Gateway</span></div>
+        <div class="adv-mode-card" onclick="advConvCreate('environment')"><b>A whole environment</b><span>Describe everything at once, get one architecture</span></div>
+      </div>
+    </div>
+    <div id="advConvList" class="adv-conv-list"></div>
+  </aside>
+
+  <main class="adv-conv-main">
+    <div id="advConvEmpty" class="adv-conv-empty" {% if conversation %}style="display:none;"{% endif %}>
+      <i class="bi bi-chat-square-text" style="font-size:32px;color:var(--text-muted);"></i>
+      <p>Pick a conversation on the left, or start a new one.</p>
+    </div>
+    <div id="advConvActive" style="display:{{ 'flex' if conversation else 'none' }};flex-direction:column;height:100%;">
+      <div class="adv-conv-titlebar">
+        <span id="advConvTitle">{{ conversation.title if conversation else '' }}</span>
+        <span id="advConvModeBadge" class="adv-mode-badge">{{ conversation.mode if conversation else '' }}</span>
+      </div>
+      <div id="advConvTranscript" class="adv-conv-transcript"></div>
+      <div id="advConvWorking" class="adv-conv-working" style="display:none;"><span class="spinner-border spinner-border-sm"></span> Thinking…</div>
+      <div id="advConvInputBar" class="adv-conv-inputbar">
+        <div id="advConvChips" class="adv-options"></div>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="advConvFreeText" class="adv-in" style="flex:1;" placeholder="Answer, ask a question, or say what to change…">
+          <button class="btn btn-glow" onclick="advConvSend()">Send</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script id="advConvBootstrap" type="application/json">
+{{ ({
+  "conversation": conversation, "messages": messages, "state": conversation_state
+}) | tojson if conversation else 'null' }}
+</script>
+{% else %}
 <div class="alloc-page-header">
   <img class="alloc-page-bg" src="{{ url_for('static', filename='page-bg.jpg') }}" alt="">
   <div class="alloc-page-header-content">
@@ -33,6 +74,7 @@
   <div id="advRecommendation" style="display:none;"></div>
   <div id="advEnvPlan" style="display:none;"></div>
 </div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -72,6 +114,36 @@
   .adv-mode-card:hover { background:rgba(57,135,229,.12); border-color:rgba(57,135,229,.4); }
   .adv-mode-card b { display:block; color:#fff; font-size:14px; margin-bottom:4px; }
   .adv-mode-card span { font-size:12px; color:var(--text-muted); }
+
+  /* ── Persistent conversation chat (ADVISOR_CHAT_HISTORY_ENABLED) ── */
+  .adv-conv-shell { display:flex; height:calc(100vh - 80px); max-width:1400px; margin:0 auto; }
+  .adv-sidebar { width:280px; flex-shrink:0; border-right:1px solid var(--border); padding:16px 12px;
+                 overflow-y:auto; display:flex; flex-direction:column; }
+  .adv-sidebar-header { margin-bottom:14px; position:relative; }
+  .adv-new-btn { width:100%; }
+  .adv-new-menu { position:absolute; top:100%; left:0; right:0; z-index:20; margin-top:6px;
+                  background:var(--panel-bg, #14181f); border:1px solid var(--border); border-radius:10px;
+                  padding:8px; display:flex; flex-direction:column; gap:8px; }
+  .adv-conv-group-label { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--text-muted);
+                           margin:14px 0 6px 6px; }
+  .adv-conv-row { display:flex; align-items:center; gap:8px; padding:9px 10px; border-radius:8px; cursor:pointer;
+                  font-size:12.5px; color:var(--text-dim); transition:background .12s; }
+  .adv-conv-row:hover { background:rgba(255,255,255,.05); }
+  .adv-conv-row.active { background:rgba(57,135,229,.14); color:#fff; }
+  .adv-conv-row .title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .adv-conv-row .del { opacity:.4; cursor:pointer; }
+  .adv-conv-row .del:hover { opacity:1; color:#ef4444; }
+  .adv-mode-badge { font-size:10px; text-transform:uppercase; letter-spacing:.4px; padding:2px 7px; border-radius:10px;
+                     border:1px solid var(--border); color:var(--text-muted); flex-shrink:0; }
+  .adv-conv-main { flex:1; display:flex; flex-direction:column; padding:16px 24px; min-width:0; }
+  .adv-conv-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--text-muted); }
+  .adv-conv-titlebar { display:flex; align-items:center; gap:10px; padding-bottom:12px; border-bottom:1px solid var(--border);
+                       margin-bottom:14px; color:#fff; font-weight:600; font-size:14.5px; }
+  .adv-conv-transcript { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding-right:4px; }
+  .adv-msg.freeform { border-left:3px solid rgba(245,158,11,.6); }
+  .adv-msg.guided.bot { border-left:3px solid rgba(57,135,229,.5); }
+  .adv-conv-working { padding:8px 0; color:var(--text-muted); font-size:12.5px; }
+  .adv-conv-inputbar { border-top:1px solid var(--border); padding-top:12px; margin-top:10px; }
   .adv-net-table { width:100%; border-collapse:collapse; font-size:12.5px; margin:10px 0; }
   .adv-net-table th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted); padding:6px 8px; border-bottom:1px solid var(--border); }
   .adv-net-table td { padding:6px 8px; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:top; }
@@ -82,6 +154,7 @@
   .adv-infosec-box h4 { color:#fff; margin:0 0 8px; font-size:14px; }
   .adv-infosec-box p { font-size:12.5px; color:var(--text-dim); line-height:1.7; }
 </style>
+{% if not chat_history_enabled %}
 <script>
 let SESSION_ID = null;
 let QA_HISTORY = [];   // [{id, question, answerLabel}]
@@ -542,4 +615,230 @@ async function advEnvRequestDiagram() {
 
 advStart();
 </script>
+{% else %}
+<script>
+// ── Persistent, conversational advisor chat ─────────────────────────────
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function mdLite(s) {
+  return esc(s).split(/\n\s*\n/).map(p => p.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')).join('<br><br>');
+}
+
+let ACTIVE_CID = {{ conversation.id if conversation else 'null' }};
+let ACTIVE_MODE = {{ (conversation.mode if conversation else '') | tojson }};
+let CURRENT_QUESTION = null;
+const BOOTSTRAP = JSON.parse(document.getElementById('advConvBootstrap').textContent || 'null');
+
+function advConvShowNewMenu() {
+  const m = document.getElementById('advNewMenu');
+  m.style.display = m.style.display === 'none' ? 'flex' : 'none';
+}
+
+const GROUP_LABELS = ['Today', 'This week', 'Older'];
+function groupConversations(convs) {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const weekAgo = new Date(startOfToday); weekAgo.setDate(weekAgo.getDate() - 7);
+  const groups = {Today: [], 'This week': [], Older: []};
+  for (const c of convs) {
+    const ts = new Date((c.updated_ts || '').replace(' ', 'T') + 'Z');
+    if (ts >= startOfToday) groups.Today.push(c);
+    else if (ts >= weekAgo) groups['This week'].push(c);
+    else groups.Older.push(c);
+  }
+  return groups;
+}
+
+function renderConvList(convs) {
+  const el = document.getElementById('advConvList');
+  const groups = groupConversations(convs || []);
+  let html = '';
+  for (const label of GROUP_LABELS) {
+    const rows = groups[label];
+    if (!rows.length) continue;
+    html += `<div class="adv-conv-group-label">${label}</div>`;
+    html += rows.map(c => `
+      <div class="adv-conv-row ${c.id === ACTIVE_CID ? 'active' : ''}" onclick="advConvOpen(${c.id})">
+        <span class="title">${esc(c.title || 'New conversation')}</span>
+        <span class="adv-mode-badge">${c.mode === 'environment' ? 'Env' : 'Svc'}</span>
+        <i class="bi bi-trash del" onclick="event.stopPropagation(); advConvDelete(${c.id});"></i>
+      </div>`).join('');
+  }
+  el.innerHTML = html || '<p style="font-size:12px;color:var(--text-muted);padding:8px;">No conversations yet.</p>';
+}
+
+function advConvOpen(id) {
+  window.location.href = '/advisor/c/' + id;
+}
+
+async function advConvCreate(mode) {
+  document.getElementById('advNewMenu').style.display = 'none';
+  const resp = await fetch('/api/advisor/conversations', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({mode}),
+  });
+  const d = await resp.json();
+  if (d.ok) window.location.href = '/advisor/c/' + d.data.conversation_id;
+}
+
+async function advConvDelete(id) {
+  await fetch('/api/advisor/conversations/' + id, {method: 'DELETE'});
+  if (id === ACTIVE_CID) window.location.href = '/advisor';
+  else window.location.reload();
+}
+
+function addTranscriptMsg(role, mode, contentHtml) {
+  const t = document.getElementById('advConvTranscript');
+  const div = document.createElement('div');
+  const who = role === 'user' ? 'user' : 'bot';
+  div.className = `adv-msg ${who} ${mode || ''}`;
+  div.innerHTML = contentHtml;
+  t.appendChild(div);
+  div.scrollIntoView({behavior: 'smooth', block: 'end'});
+}
+
+function setWorking(v) {
+  document.getElementById('advConvWorking').style.display = v ? '' : 'none';
+}
+
+function renderQuestion(q) {
+  CURRENT_QUESTION = q;
+  const chips = document.getElementById('advConvChips');
+  chips.innerHTML = (q && q.options || []).map((o, i) =>
+    `<span class="adv-chip" onclick="advConvSendChip(${i})">${esc(o.label)}</span>`).join('');
+  document.getElementById('advConvFreeText').value = (q && q.default_value) || '';
+}
+
+async function advConvSendChip(idx) {
+  const opt = CURRENT_QUESTION.options[idx];
+  await advConvSubmit(opt.label, true, opt.value);
+}
+
+async function advConvSend() {
+  const input = document.getElementById('advConvFreeText');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  await advConvSubmit(text, false, null);
+}
+
+async function advConvSubmit(text, isChip, chipValue) {
+  addTranscriptMsg('user', null, esc(text));
+  setWorking(true);
+  try {
+    const resp = await fetch(`/api/advisor/conversations/${ACTIVE_CID}/messages`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, question_id: CURRENT_QUESTION ? CURRENT_QUESTION.id : null,
+                            is_chip: isChip, chip_value: chipValue}),
+    });
+    const d = await resp.json();
+    setWorking(false);
+    if (!d.ok) { addTranscriptMsg('assistant', null, 'Something went wrong: ' + esc(d.error || 'unknown error')); return; }
+    handleTurnResult(d.data);
+  } catch (e) {
+    setWorking(false);
+    addTranscriptMsg('assistant', null, 'Network error — please try again.');
+  }
+}
+
+function handleTurnResult(data) {
+  if (data.type === 'question') {
+    if (data.question) addTranscriptMsg('assistant', 'guided', esc(data.question.question));
+    renderQuestion(data.question);
+  } else if (data.type === 'blocked') {
+    addTranscriptMsg('assistant', 'guided', `<b>I can't continue yet.</b><br>${esc(data.message || '')}`);
+    renderQuestion(null);
+  } else if (data.type === 'redirect' || data.type === 'escalate') {
+    addTranscriptMsg('assistant', 'guided', esc(data.message || JSON.stringify(data)));
+    renderQuestion(null);
+  } else if (data.type === 'ready') {
+    addTranscriptMsg('assistant', 'guided', renderRecommendationHtml(data.recommendation, ACTIVE_MODE));
+    renderQuestion(null);
+  }
+}
+
+// Compact inline recommendation renderer — covers both modes' required
+// elements (subnet table/arithmetic/Pod CIDR/waves/InfoSec for environment;
+// settings table/requests for service) so a resumed conversation shows the
+// exact same thing a live one did, since both render straight from the
+// same stored `recommendation` payload.
+function renderRecommendationHtml(rec, mode) {
+  if (mode === 'environment') return renderEnvRecommendationHtml(rec);
+  const rows = (rec.table_rows || []).map(r => `<tr><td>${esc(r.setting)}</td><td style="color:#fff;">${esc(r.value)}</td></tr>`).join('');
+  const reqs = (rec.requests || []).map(r => `<li><b>${esc(r.label)}</b>${r.note ? ' — ' + esc(r.note) : ''}</li>`).join('');
+  return `
+    <div class="p-eyebrow">Recommended Presight Architecture</div>
+    <h4 style="color:#fff;margin:6px 0;">${esc(rec.pattern_name || '')}</h4>
+    <p style="font-size:13px;color:var(--text-dim);">${esc(rec.pattern_summary || '')}</p>
+    <table class="adv-rec-table"><tbody>${rows}</tbody></table>
+    <div class="adv-section-label">Requests you'll need to raise</div>
+    <ol class="adv-checklist">${reqs}</ol>`;
+}
+
+function renderEnvRecommendationHtml(plan) {
+  const subnetRows = (plan.network_plan.subnet_rows || []).map(s =>
+    `<tr><td><code>${esc(s.name)}</code></td><td>${esc(s.purpose)}</td><td><b style="color:#fff;">${esc(s.size)}</b></td><td>${esc(s.usable)}</td></tr>`).join('');
+  const waveRows = (plan.build_sequence.rows || []).map(w =>
+    `<tr><td>${w.wave}</td><td>${esc(w.requests)}</td></tr>`).join('');
+  const podCidr = plan.network_plan.pod_cidr_paragraph
+    ? `<div class="adv-pod-cidr"><b style="color:#fff;">Pod networking is separate.</b> ${esc(plan.network_plan.pod_cidr_paragraph)}</div>` : '';
+  const infosec = plan.public_access ? `
+    <div class="adv-infosec-box"><h4>${esc(plan.public_access.heading)}</h4><p>${mdLite(plan.public_access.body)}</p>
+    <p style="color:#fff;"><b>Exactly ${plan.public_access.public_ip_count} public IP</b> — on the ${esc(plan.public_access.public_ip_location)}.</p></div>` : '';
+  return `
+    <div class="p-eyebrow">Recommended Presight Architecture</div>
+    <h4 style="color:#fff;margin:6px 0;">${esc(plan.environment_label)}</h4>
+    <p style="font-size:13px;color:var(--text-dim);">${esc(plan.summary)}</p>
+    <div class="adv-section-label">Network plan</div>
+    <table class="adv-net-table"><thead><tr><th>Subnet</th><th>Purpose</th><th>Size</th><th>Usable</th></tr></thead><tbody>${subnetRows}</tbody></table>
+    <div class="adv-arith-line">${esc(plan.network_plan.arithmetic_line)}</div>
+    ${podCidr}
+    ${infosec}
+    <div class="adv-section-label">Build sequence</div>
+    <table class="adv-net-table"><thead><tr><th>Wave</th><th>Requests</th></tr></thead><tbody>${waveRows}</tbody></table>`;
+}
+
+function replayTranscript() {
+  if (!BOOTSTRAP) return;
+  const msgs = BOOTSTRAP.messages || [];
+  for (const m of msgs) {
+    if (m.metadata && m.metadata.recommendation) {
+      const rec = BOOTSTRAP.state.recommendation;
+      if (rec) addTranscriptMsg('assistant', 'guided', renderRecommendationHtml(rec, ACTIVE_MODE));
+      continue;
+    }
+    addTranscriptMsg(m.role, m.mode, esc(m.content));
+  }
+  const state = BOOTSTRAP.state;
+  if (state && state.pending_question_id && !(state.recommendation)) {
+    // Re-derive the question payload isn't persisted verbatim on the state
+    // row itself (only its id) — the last assistant "guided" message already
+    // shown IS that question, so just re-enable chips from the last question
+    // metadata if present.
+    const lastGuided = [...msgs].reverse().find(m => m.role === 'assistant' && m.mode === 'guided' && m.metadata && m.metadata.question);
+    if (lastGuided) renderQuestion(lastGuided.metadata.question);
+  }
+}
+
+if (ACTIVE_CID) {
+  replayTranscript();
+} else {
+  document.getElementById('advConvEmpty').style.display = '';
+}
+
+// Sidebar list comes from the server-rendered conversations context var,
+// embedded the same way the transcript bootstrap is.
+renderConvList({{ conversations | tojson if conversations else '[]' }});
+
+document.addEventListener('click', (e) => {
+  const menu = document.getElementById('advNewMenu');
+  if (menu && menu.style.display !== 'none' && !menu.contains(e.target) && e.target.id !== 'advNewMenu'
+      && !e.target.closest('.adv-new-btn')) {
+    menu.style.display = 'none';
+  }
+});
+
+document.getElementById('advConvFreeText')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') advConvSend();
+});
+</script>
+{% endif %}
 {% endblock %}
