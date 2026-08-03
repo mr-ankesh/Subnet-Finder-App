@@ -440,3 +440,99 @@ image/asset loading needs a real (or real-headless-browser) render to
 verify, not just a model-level reproduction. Recorded so a future session
 doesn't trust "the headless repro passed" as proof the visual output is
 correct.
+
+---
+
+## 2026-08-03 — AI Architecture Advisor: "Rules decide, LLM explains" enforced structurally, not just documented
+
+**Decision:** The advisor's deterministic engine (`rules_engine.py` +
+`pattern_matcher.py`) runs completely before any LLM call, and its output is
+treated as data the LLM narrates, never a decision it can revise.
+Concretely: `recommendation.py` builds every section of the output template
+except one sentence ("Why this pattern") entirely from rule/pattern output;
+the LLM is only ever handed already-decided facts to phrase, and if its
+classification-stage output disagrees with the rules/matcher's own pick,
+the rules/matcher's pick wins silently (the LLM's disagreement is not
+surfaced as an alternative).
+
+**Why:** This was the user's explicit non-negotiable framing for the whole
+feature. The risk with LLM-driven architecture advisors generally is
+silent scope creep — an LLM "helpfully" suggesting a slightly different
+SKU, or omitting a mandatory DNS step it didn't think was needed. Making
+the rules engine the sole source of every structured fact (and giving the
+LLM only prose-filling and free-text-classification jobs, both with
+deterministic fallbacks) makes this enforced by the code's own structure,
+not just a policy someone has to remember to follow.
+
+**Verification note:** this wasn't just a design intention — during
+implementation, a real LLM provider call failed live (expired license,
+403) and the recommendation still rendered completely and correctly via
+the deterministic fallback path. The feature was proven to work with
+**zero working LLM configuration**, which is the strongest evidence the
+separation actually holds.
+
+---
+
+## 2026-08-03 — AI Architecture Advisor: new `advisor_sessions` table, not `chats.py`
+
+**Decision:** Conversation state lives in a new `advisor_sessions` table
+(`advisor/session_store.py`, own `ensure_table()`), not `chats.py`'s
+existing `agent_chats` table.
+
+**Why:** `agent_chats` is a flat, append-only list of `{role, content, ts}`
+messages — the right shape for a chat transcript, wrong shape for an
+advisor conversation's actual state (answers-so-far, derived values,
+selected pattern, escalation flags, prefill payload). Bolting structured
+state onto a message-log column would conflate two different data models
+in one field. A second, genuinely different table is the correct call here
+— this is the same reasoning that led to `agent_chats` itself being kept
+separate from `spoke_requests` for the original agent chat feature.
+
+**Tradeoff:** One more raw-SQL table to remember for
+`scripts/sqlite_to_postgres.py` (added — `TABLES` list, one line) and to
+carry through any future schema change. Documented here specifically so a
+future session doesn't try to "simplify" by merging it into `agent_chats`
+without re-deriving why that doesn't fit.
+
+---
+
+## 2026-08-03 — AI Architecture Advisor: KB-vs-real-form mismatches found and resolved during implementation
+
+**Decision/finding:** `advisor_kb/` was written with its own semantic
+vocabulary for Azure storage settings, which in four places didn't
+literally match this app's actual `templates/requester.html` form markup —
+found by reading the real form directly rather than assuming the KB's
+field/value names were the form's:
+
+1. `identity_type`: KB says `UserAssigned`/`SystemAssigned`; the form's
+   `<select>` options are `user`/`system`. Translated in `prefill.py`.
+2. `encryption_type`: KB says `CMK`/`MMK`; the form's options are
+   `customer_managed`/`microsoft_managed`. Translated in `prefill.py`.
+3. `storage_premium_temporary`'s `design.sku` is `Premium_ZRS`, which had
+   **no matching `<option>`** on the form at all (only `Premium_LRS`
+   existed) — fixed by adding `Premium_ZRS` to `config.py`'s `STORAGE_SKUS`
+   and the form's dropdown. This is a genuine pre-existing gap the advisor
+   surfaced (the manual form couldn't have offered this SKU either), not
+   scope creep, and it only *widens* what `_validate_storage_request()`
+   accepts — nothing about validation was weakened.
+4. `ServiceClass`: the KB's own mapping derives Bronze/Silver/Gold/Platinum
+   from criticality, but the form's actual `service_class` field only
+   offers Standard/Business Critical/Mission Critical — a different
+   vocabulary entirely, and the KB's own mapping file already flags this
+   exact mapping as "inferred, not quoted from the design documents."
+   Rather than force either vocabulary onto a field neither confirms, this
+   is left blank with an explicit checklist note explaining why, so the
+   user picks it themselves instead of silently getting a wrong-looking
+   value that superficially seems prefilled correctly.
+
+**Why this matters beyond the four fixes:** this is the same pattern as the
+Resource Relationship Graph's "the mock's assumption was wrong" lesson,
+one layer up — a KB or spec document describing intended behavior can be
+correct in its own terms and still not match what the actual running
+application does. Reading the real form markup (not the KB's description
+of what a form *should* have) was what caught all four.
+
+**Tradeoff:** None for 1-3 (straightforward, complete fixes). For 4, the
+tradeoff is an intentionally incomplete prefill on one field — accepted
+because a wrong-but-plausible-looking auto-selection would be worse than a
+clearly-flagged manual step.

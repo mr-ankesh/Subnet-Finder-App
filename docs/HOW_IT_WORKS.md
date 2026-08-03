@@ -112,6 +112,16 @@ by reading the hub VNET (read-only, works even in dry-run).
 
 ## 5. Request lifecycle (end to end)
 
+0. **(Optional, Storage only) Advise** — a requester unsure what to ask for
+   can start at `/advisor` instead of the form. It's a separate guided-intake
+   step *before* Submit, not a new lifecycle stage of its own: a fixed
+   rules engine (`advisor/`, driven by the checked-in `advisor_kb/`
+   knowledge base) picks a Presight-approved storage pattern and prefills
+   the Storage Account form — the LLM only narrates that decision, never
+   makes it. It hands off to step 1 exactly like a human filling the form
+   themselves; every prefilled field stays editable and nothing is
+   submitted until the requester does so from the normal form. See
+   `CLAUDE.md` → "AI Architecture Advisor" for the full design.
 1. **Submit** — requester uses the form or the AI chat agent. Both paths hit
    the same validated creation code (subnet fit, FQDN-only application
    rules, ports/protocol parsing — bad input is rejected at submission, not

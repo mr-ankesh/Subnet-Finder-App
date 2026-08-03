@@ -1,15 +1,17 @@
 # Current State
 
-> Last updated: 2026-08-02. Update this file at the end of every session
+> Last updated: 2026-08-03. Update this file at the end of every session
 > (see maintenance rules in `CLAUDE.md` → "Session Memory Protocol").
 
 ## Development Status
 
 Active development. Storage Account feature committed (`8ef4ef2`,
-2026-08-01). Resource Relationship Graph (new module, read-only) built and
-real-Azure verified 2026-08-02, **not yet committed** — see "Features In
-Progress" below. Remaining uncommitted changes also include the unrelated
-cosmetic/infra items noted below. `main` is the only branch; commits go
+2026-08-01). Resource Relationship Graph committed (`66824be` base feature,
+`5b12f9f` UI polish pass, `9fff6b1` background-image bugfix, all
+2026-08-02). AI Architecture Advisor V1 (Storage only) built and verified
+2026-08-03, **not yet committed** — see "Features In Progress" below.
+Remaining uncommitted changes also include the unrelated cosmetic/infra
+items noted below. `main` is the only branch; commits go
 straight to it.
 
 ## Features Completed (committed, on `main`)
@@ -44,7 +46,50 @@ straight to it.
 
 ## Features In Progress
 
-### Resource Relationship Graph — base feature committed (`66824be`), UI polish pass uncommitted
+### AI Architecture Advisor V1 (Storage only) — built + verified 2026-08-03, uncommitted
+
+Guided-intake chat at `/advisor` that turns plain-English answers into a
+Presight-approved Storage Account request (prefilled, never auto-submitted).
+Entirely knowledge-base-driven (`advisor_kb/`, checked in, provenance-tracked
+to two Microsoft/Kyndryl design documents) — see `CLAUDE.md` → "AI
+Architecture Advisor" for the full design (rules decide/LLM explains
+separation, condition-language evaluator, session storage, prefill handoff,
+Mermaid vendoring). Makes **zero** Azure SDK calls of any kind (not even
+read-only).
+
+- New package `advisor/` (11 files: `catalog_loader`, `condition_eval`,
+  `question_engine`, `rules_engine`, `pattern_matcher`, `prefill`,
+  `diagram_builder`, `session_store`, `prompts`, `recommendation`,
+  `__init__`), `templates/advisor.html`, `scripts/test_advisor_validation.py`
+  (63 checks), `static/vendor/mermaid.min.js` (vendored UMD build).
+- 4 routes in `app.py` (`/advisor`, `/api/advisor/chat`,
+  `/api/advisor/diagram`, `/api/advisor/prefill`) + `requester_page()`
+  extended for the `?advisor_session=<id>` prefill handoff.
+- **Verified**: the full 63-check `test_advisor_validation.py` suite
+  (condition evaluator against every real condition string in the KB;
+  `catalog_loader` against the real 5-pattern catalog; all 5 patterns'
+  scoring; blockers/escalations/derivations against the real decision
+  matrix; the full question-flow → rules → pattern-selection → prefill →
+  diagram pipeline end-to-end) plus a real Flask-test-client run of every
+  route (login → full conversation → recommendation → diagram → prefill →
+  requester page shows the embedded payload) — covers all 13 of the user's
+  verification items except a live-browser visual check (no headless
+  browser reached for in this session; the same standing gap noted for the
+  Resource Relationship Graph).
+- **Real bugs found and fixed during this build** (see
+  `architecture-decisions.md` 2026-08-03 entries): 3 in `condition_eval.py`'s
+  string rewriter, caught by testing against the KB's actual condition
+  strings, not synthetic ones; a dead-code gap in `prefill.py` that never
+  actually flagged the `service_class` field as unfillable; a client-side
+  "Change answer" bug that would silently skip the question being changed;
+  and 4 KB-vocabulary-vs-real-form-field mismatches (`identity_type`,
+  `encryption_type`, `Premium_ZRS` missing from the SKU list entirely,
+  `ServiceClass` vocabulary mismatch) found by reading the actual
+  `templates/requester.html` markup rather than trusting the KB's own
+  description of form fields.
+- **Not yet done**: commit this feature; a real in-browser visual pass.
+
+### Resource Relationship Graph — fully committed (`66824be`, `5b12f9f`, `9fff6b1`)
 
 New read-only (V1, no Azure mutations) module: visual node/edge map of
 Azure resource dependencies (Network/Compute/Platform/Storage/Security) for

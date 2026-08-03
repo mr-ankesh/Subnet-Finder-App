@@ -570,6 +570,114 @@ Graph query, so `AZURE_DRY_RUN` doesn't apply).
   settings — no extra Azure call) and `tags`/`subscriptionId` added to the
   ARG projection and `_trim_properties()`.
 
+### AI Architecture Advisor: rules decide, LLM explains — not a `RequestType`
+
+`advisor/` (new package) + `/advisor` + `templates/advisor.html` is a guided
+intake chat that turns plain-English answers into a Presight-approved
+Storage Account request, **prefilling** it (never submitting). Like the
+Resource Relationship Graph, this isn't a `RequestType` — there's no deploy/
+revert cycle, and unlike every AI feature elsewhere in this app it makes
+**zero** Azure SDK calls at all (not even read-only ones — see the
+[Resource Relationship Graph](#resource-relationship-graph-read-only-dependency-map-not-a-request-type)
+above for the read-only-but-still-calls-Azure case; the advisor doesn't even
+do that).
+
+The whole feature is driven by a checked-in knowledge base at `advisor_kb/`
+(provenance-tracked to two Microsoft/Kyndryl design documents — see its own
+`README.md`), which is the **only** source of architecture defaults, policy
+and pattern choices. The non-negotiable, stated as literally as possible so
+it doesn't drift:
+
+```
+Rules decide.  LLM explains.  Forms validate.  Azure deploys.
+```
+
+- **`rules_engine.py`** runs `advisor_kb/rules/storage_decision_matrix.yaml`'s
+  seven phases (blockers → escalations → constants → derivations → pattern
+  selection → deviations → warnings) in that literal order — deterministic,
+  no LLM involved, and its output is authoritative. **Blockers/escalations
+  are re-evaluated after every single answer**, not just once at the end of
+  the questionnaire — a rule referencing an unanswered field simply doesn't
+  fire yet, so this is safe to run incrementally, and it's what makes
+  "answering 'no subscription' halts immediately" work rather than only
+  after the whole intake finishes.
+- **`pattern_matcher.py`** scores `advisor_kb/catalog/*.yaml`'s five
+  patterns per the schema's own rules (exclude on disqualify/unmet-required,
+  score by preferred-hits, tie-break approved-over-conditional then catalog
+  order); if nothing scores above zero, it escalates rather than guessing.
+- The LLM (`advisor/prompts.py`, a single-turn `call_llm()` — no tool-calling
+  loop, unlike `agent_requester.py`/`agent_admin.py`, since the advisor's LLM
+  usage is always "explain this fixed data," never "go look something up")
+  is used in exactly three narrow places, all downstream of the rules:
+  classifying free-text answers onto the fixed question bank's options,
+  filling only the "Why this pattern" prose sentence in the recommendation
+  (every other section — the settings table, requests list, deviations,
+  warnings — is assembled deterministically in `advisor/recommendation.py`
+  from rule output, with nothing left for the LLM to decide), and picking
+  between tied patterns only when the KB's own `tiebreak_questions` doesn't
+  resolve it. If the LLM is unavailable or fails, every one of these has a
+  deterministic fallback — the feature works with **no LLM configured at
+  all** (verified: an expired-license 403 from the provider was hit live
+  during this build and the recommendation still rendered correctly).
+- **Condition language**: the KB's `when`/`skip_if`/`include_if` strings
+  (`"purpose in [analytics_datalake]"`, `"performance_evidence is empty"`,
+  `"pattern.design.change_feed is defined"`) are evaluated by
+  `advisor/condition_eval.py` — a small restricted `eval()` (builtins
+  stripped, only the answers/derived namespace exposed) after rewriting the
+  KB's few non-Python phrases (`is empty`, `is defined`, `contains`,
+  `always`) and quoting bare enum identifiers into string literals. Safe
+  because these strings are static content in this repo's own `advisor_kb/`
+  files, never user input — not a general-purpose expression language.
+- **Session state** (`advisor/session_store.py`) is a new `advisor_sessions`
+  table, not `chats.py`'s `agent_chats` — a conversation here is structured
+  state (answers-so-far, derived values, selected pattern, escalation flags)
+  in one JSON column, not an append-only message transcript, so it doesn't
+  fit `chats.py`'s shape. Added to `scripts/sqlite_to_postgres.py`'s
+  `TABLES` list like every other raw-SQL table.
+- **Prefill handoff**: `/api/advisor/prefill` persists the payload
+  server-side and hands back `/requester?advisor_session=<id>` — only the
+  session id ever travels in the URL. `requester_page()` (the existing
+  route) was extended to look up that session and pass the payload into the
+  template; `requester.html`'s prefill JS calls the existing `selectType()`
+  then populates matching `[data-detail]` fields generically — no
+  hand-written per-field JS mapping, since the field-name translation
+  already happened server-side in `advisor/prefill.py`. `_validate_storage_request()`
+  is never called by the advisor — prefill only ever populates form inputs
+  that remain fully editable; the existing form → `_create_service_request`
+  → `_validate_storage_request` path is completely untouched.
+- **KB-vs-real-form mismatches found and fixed while wiring this up** (the
+  KB was written somewhat independently of this app's actual form markup):
+  `identity_type`/`encryption_type` needed translating from the KB's
+  semantic values (`UserAssigned`/`CMK`) to the form's actual `<option>`
+  values (`user`/`customer_managed`); `storage_premium_temporary`'s
+  `Premium_ZRS` SKU had no matching form option at all (fixed by adding it
+  to both `config.py`'s `STORAGE_SKUS` and the form's dropdown — a genuine
+  pre-existing gap, not new scope); the KB's `ServiceClass` tag mapping
+  (Bronze/Silver/Gold/Platinum) doesn't match the form's actual
+  `service_class` options (Standard/Business Critical/Mission Critical) —
+  left for the user to pick rather than force either vocabulary, since the
+  KB itself flags that mapping as "inferred, not quoted from the design
+  documents."
+- **Mermaid is vendored as the single-file UMD build**
+  (`static/vendor/mermaid.min.js`), not the ESM build the KB's own
+  `diagrams/README.md` snippet shows — the ESM entry file turned out to be a
+  76-byte re-export pointing at 121 separate hash-named chunk files, too
+  fragile to vendor reliably. The UMD bundle is one self-contained 3.3 MB
+  file with the identical practical outcome (no CDN, no supply-chain
+  surface) and is loaded via a plain `<script>` tag instead of
+  `type="module"`. `diagram_builder.py` only does placeholder substitution
+  (escaping `< > " ` `` in every substituted value) plus two named,
+  KB-mandated block-removal rules — the ZPA subgraph when
+  `zpa_routing_required` is false, and the datalake diagram's second (blob)
+  private-endpoint block unless the analytics engine is confirmed to use it
+  too — never generating Mermaid syntax from scratch.
+- **`scripts/test_advisor_validation.py`** (assert-based, no pytest, no
+  Flask/LLM needed) exercises `condition_eval`/`catalog_loader`/
+  `pattern_matcher`/`rules_engine`/`question_engine`/`prefill`/
+  `diagram_builder` directly against the real `advisor_kb/` content — not
+  synthetic mocks — since the KB itself is as much the thing under test as
+  the code that reads it.
+
 ### Separate credentials per concern
 
 Four independent service-principal configs, intentionally isolated so a
