@@ -1,10 +1,23 @@
-kb_version: "2.0.0"
+kb_version: "2.1.0"
 scope: environment_composer
 description: >
   Deterministic subnet and VNET sizing. The composer computes these arithmetically and shows
   its working. The LLM never estimates a CIDR — a wrong CIDR is a routing incident, and
   TechOps has to approve it anyway.
 
+changelog:
+  - version: "2.1.0"
+    change: >
+      AKS subnet sizing corrected for Azure CNI Overlay. The previous per-pod formula
+      (nodes × (1 + max_pods)) described classic Azure CNI, where every pod consumes a VNET
+      IP. The platform defaults to Overlay (AKS_NETWORK_PLUGIN_MODE=overlay), where pods draw
+      from a separate Pod CIDR and only nodes consume VNET addresses. Node subnets are
+      therefore an order of magnitude smaller. Added a Pod CIDR planning section, which
+      Overlay makes necessary and the previous version did not cover.
+
+# ─────────────────────────────────────────────────────────────
+# Ground rules
+# ─────────────────────────────────────────────────────────────
 ground_rules:
   azure_reserved_per_subnet: 5
   azure_reserved_note: >
@@ -18,6 +31,19 @@ ground_rules:
     Size for roughly double today's requirement. Subnets cannot be resized once resources are
     deployed into them, and re-addressing a live environment is a project, not a change.
 
+cidr_reference:
+  - {prefix: "/28", total: 16, usable: 11}
+  - {prefix: "/27", total: 32, usable: 27}
+  - {prefix: "/26", total: 64, usable: 59}
+  - {prefix: "/25", total: 128, usable: 123}
+  - {prefix: "/24", total: 256, usable: 251}
+  - {prefix: "/23", total: 512, usable: 507}
+  - {prefix: "/22", total: 1024, usable: 1019}
+  - {prefix: "/21", total: 2048, usable: 2043}
+
+# ─────────────────────────────────────────────────────────────
+# How many VNETs
+# ─────────────────────────────────────────────────────────────
 vnet_count:
   default: 1
   default_rule: >
@@ -32,7 +58,11 @@ vnet_count:
     - a VNET per application tier — that is what subnets are for
     - a VNET in the hub — workloads never deploy into Connectivity
 
+# ─────────────────────────────────────────────────────────────
+# Subnet catalogue
+# ─────────────────────────────────────────────────────────────
 subnets:
+
   - id: snet_appgw
     purpose: Application Gateway
     required_when: an Application Gateway is in the environment
@@ -51,20 +81,52 @@ subnets:
     purpose: AKS node pools
     required_when: an AKS cluster is in the environment
     dedicated: true
-    formula_azure_cni: "(nodes × (1 + max_pods_per_node)) + 5 reserved + growth headroom"
+
+    network_plugin_mode: overlay
+    network_plugin_source: >
+      The platform default is Azure CNI Overlay (AKS_NETWORK_PLUGIN_MODE=overlay,
+      Pod CIDR 10.244.0.0/16), taken from the application's own live Settings default in
+      config.py. Neither external design document specifies Overlay — this is sourced from
+      the running platform configuration, not from Microsoft or Kyndryl deliverables.
+
+    formula: "total_nodes + surge_nodes + 5 reserved + growth headroom"
     formula_note: >
-      With Azure CNI every pod takes a VNET IP, so pod count dominates. Default max pods per
-      node is 30. A 6-node cluster needs roughly 6 × 31 = 186 addresses before headroom — a
-      /24 (251 usable) fits, a /25 (123 usable) does not.
+      Under Overlay, pods draw from the cluster's Pod CIDR, not the VNET. Only nodes consume
+      VNET addresses, so the node subnet is roughly one address per node rather than one per
+      pod. Count nodes across ALL node pools — system, user and any GPU pool sharing this
+      subnet.
+    surge_allowance:
+      default_assumption: 33% of node count, minimum 1
+      why: >
+        AKS provisions surge nodes during upgrades. If the subnet cannot accommodate them,
+        the upgrade fails part-way. The AKS default maxSurge is 1 node per pool unless
+        configured; 33% is common for production pools. Confirm the configured value for the
+        cluster rather than assuming — this is the difference between an upgrade that works
+        and one that stalls at 3am.
+
     sizing_table:
-      - {nodes: "up to 3", max_pods: 30, min_addresses: 93, recommended: "/24"}
-      - {nodes: "up to 6", max_pods: 30, min_addresses: 186, recommended: "/24"}
-      - {nodes: "up to 12", max_pods: 30, min_addresses: 372, recommended: "/23"}
-      - {nodes: "up to 25", max_pods: 30, min_addresses: 775, recommended: "/22"}
-    recommended_default: "/23"
+      - {nodes: "up to 10", surge: 3, min_addresses: 18, recommended: "/26"}
+      - {nodes: "up to 25", surge: 8, min_addresses: 38, recommended: "/26"}
+      - {nodes: "up to 50", surge: 16, min_addresses: 71, recommended: "/25"}
+      - {nodes: "up to 100", surge: 33, min_addresses: 138, recommended: "/24"}
+      - {nodes: "up to 200", surge: 66, min_addresses: 271, recommended: "/23"}
+
+    recommended_default: "/26"
     recommended_default_reason: >
-      Clusters grow. A /23 costs nothing extra today and avoids re-addressing when the node
-      count doubles.
+      59 usable addresses covers roughly 40 nodes plus surge — comfortably beyond what most
+      environments start with, and the subnet cannot be resized later. A /27 (27 usable)
+      fits a 6-node cluster today but constrains growth to around 20 nodes, which is a
+      cluster rebuild rather than a scaling operation.
+
+    multiple_node_pools: >
+      Node pools may share one subnet or use separate subnets. Sharing is simpler and is the
+      default assumption here — size for the combined node count. If a GPU pool needs its own
+      subnet for isolation, size each separately and state both.
+
+    do_not_reintroduce: >
+      Do not size this subnet for pods, and do not warn that "the AKS subnet is much larger
+      than the node count suggests". That reasoning applies to classic Azure CNI and is wrong
+      under Overlay.
 
   - id: snet_workload
     purpose: Virtual machines
@@ -103,24 +165,124 @@ subnets:
       Presight's standard access path is ZPA. Only include Bastion if ZPA cannot serve the
       requirement, and expect to justify it.
 
+# ─────────────────────────────────────────────────────────────
+# Pod CIDR — Overlay only, and NOT part of the VNET
+# ─────────────────────────────────────────────────────────────
+pod_cidr:
+  applies_when: an AKS cluster is in the environment
+  default: 10.244.0.0/16
+  default_source: AKS_NETWORK_PLUGIN_MODE / Pod CIDR settings in config.py
+
+  is_not_vnet_space: >
+    The Pod CIDR is a separate address space from the VNET. It is NOT one of the subnets, is
+    NOT carved from the 10.110.0.0/16 or 10.119.0.0/16 pools, and must NOT be included in the
+    VNET size arithmetic. Render it as its own line in the network plan, visibly distinct
+    from the subnet table, or it will be mistaken for a subnet.
+
+  composer_must_state:
+    - The Pod CIDR in use (default 10.244.0.0/16).
+    - That it is separate from the VNET address space.
+    - That it must not overlap the VNET pools, the hub, VPN or ZPA ranges.
+
+  non_overlap_assertion:
+    check_against:
+      - the allocated spoke VNET CIDR
+      - 10.110.0.0/16 and 10.119.0.0/16 (both pools, not just the one allocated from)
+      - hub / Connectivity VNET ranges
+      - VPN and ZPA client ranges
+      - any on-premises or peered range reachable from the spoke
+    on_conflict: >
+      Do not silently pick a different range. Surface the conflict and route it to TechOps —
+      Pod CIDR selection interacts with routing they own.
+
+  reuse_across_clusters:
+    status: UNVERIFIED — must be confirmed before the composer asserts anything
+    what_to_verify: >
+      Whether the same Pod CIDR may be reused across multiple Overlay clusters in the same or
+      peered VNETs, and whether it must avoid ranges reachable over peering, VPN or
+      ExpressRoute. Overlay pod traffic is translated behind the node IP, which is why reuse
+      is often possible — but confirm against current Azure documentation and Presight's own
+      routing before the composer states it as fact.
+    interim_behaviour: >
+      Until verified, state the default Pod CIDR and the non-overlap requirement, and flag
+      Pod CIDR selection for TechOps confirmation. Do not claim reuse is safe, and do not
+      claim it is unsafe.
+
+# ─────────────────────────────────────────────────────────────
+# Rolling subnets up to a VNET
+# ─────────────────────────────────────────────────────────────
 vnet_sizing:
   method: >
-    Sum the address space of every required subnet, round up to the next CIDR boundary, then
-    add one size class of headroom for subnets not yet imagined.
+    Sum the TOTAL addresses of every required subnet (not usable, and excluding the Pod CIDR),
+    round up to the next CIDR boundary, then add one size class where utilisation would
+    otherwise exceed the flag threshold.
   worked_method:
-    - Compute each subnet's total addresses (not usable).
+    - Compute each subnet's total addresses.
     - Sum them.
     - Round up to the nearest power of two.
-    - Add one size class where utilisation would otherwise exceed 75%.
+    - Compute utilisation as sum / capacity.
+    - If utilisation exceeds the flag threshold, offer the next size class up.
+
+  utilisation_flag:
+    threshold_percent: 75
+    comparison: strictly_greater
+    comparison_note: >
+      Exactly 75.0% does NOT trip the flag. This matters: the canonical worked example lands
+      on 75.0% precisely, and an ambiguous >= would push it to a /22 at 37.5% utilisation,
+      wasting pool space for no benefit. Implement as `utilisation > 75`, not `>=`, and do
+      not "tidy" this later without re-checking the worked example.
+    when_tripped: >
+      State the utilisation, offer the next size class, and explain that subnets cannot be
+      resized after deployment so the cost of asking now is zero.
+
   reference_table:
-    - {vnet: "/24", total_addresses: 256, typical: "small VM-only environment"}
-    - {vnet: "/23", total_addresses: 512, typical: "VMs + private endpoints, no AKS"}
-    - {vnet: "/22", total_addresses: 1024, typical: "AKS + VMs + PaaS + App Gateway"}
-    - {vnet: "/21", total_addresses: 2048, typical: "large AKS or multiple node pools"}
+    - {vnet: "/24", total_addresses: 256, typical: "small VM-only environment, or AKS + PaaS with no gateway"}
+    - {vnet: "/23", total_addresses: 512, typical: "AKS + VMs + PaaS + App Gateway (Overlay)"}
+    - {vnet: "/22", total_addresses: 1024, typical: "large or multi-cluster environment"}
+    - {vnet: "/21", total_addresses: 2048, typical: "very large estate — question whether it should be split"}
   guard: >
     Requesting more than a /21 should prompt a conversation about whether the environment
     should be split across subscriptions instead.
 
+# ─────────────────────────────────────────────────────────────
+# Canonical worked examples — these are the acceptance-test figures
+# ─────────────────────────────────────────────────────────────
+canonical_examples:
+
+  public_environment:
+    inventory: 10 VMs, 1 AKS cluster (6 nodes), 1 PostgreSQL, publicly hosted
+    subnets:
+      - {id: snet_appgw, size: "/24", total: 256}
+      - {id: snet_aks, size: "/26", total: 64}
+      - {id: snet_workload, size: "/27", total: 32}
+      - {id: snet_pe, size: "/27", total: 32}
+    arithmetic: "256 + 64 + 32 + 32 = 384"
+    vnet: "/23"
+    capacity: 512
+    utilisation_percent: 75.0
+    spare: 128
+    flag_tripped: false
+    flag_note: Sits exactly on the threshold; strictly_greater means it does not trip.
+    pod_cidr: 10.244.0.0/16 — separate from the VNET, stated as its own line
+
+  internal_only_environment:
+    inventory: same, but exposure = internal_only
+    subnets:
+      - {id: snet_aks, size: "/26", total: 64}
+      - {id: snet_workload, size: "/27", total: 32}
+      - {id: snet_pe, size: "/27", total: 32}
+    arithmetic: "64 + 32 + 32 = 128"
+    vnet: "/24"
+    capacity: 256
+    utilisation_percent: 50.0
+    spare: 128
+    flag_tripped: false
+    snet_appgw: ABSENT — no Application Gateway exists in this variant
+    pod_cidr: 10.244.0.0/16 — unchanged; exposure does not affect it
+
+# ─────────────────────────────────────────────────────────────
+# What always comes with a new spoke
+# ─────────────────────────────────────────────────────────────
 mandatory_spoke_wiring:
   - {step: Hub-spoke peering, owner: TechOps, note: Both directions, correct gateway transit settings}
   - {step: Base UDR applied to spoke subnets, detail: "0.0.0.0/0 next hop Azure Firewall"}
