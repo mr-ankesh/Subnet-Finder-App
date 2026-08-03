@@ -3,24 +3,36 @@ Assert-based checks for the AI Architecture Advisor's pure logic — no Flask
 app, no DB, no LLM needed. Run: python scripts/test_advisor_validation.py
 
 Mirrors scripts/test_storage_validation.py / test_resourcegraph_validation.py's
-style (assert-based, no pytest). Covers verification items #2, #3, #4, #5,
-#6, #7, #8, #9, #10 from the AI Architecture Advisor build (see the session's
-plan) directly against the real advisor_kb/ content — not synthetic mocks —
-since the KB itself is the thing under test as much as the code that reads it.
+style (assert-based, no pytest). The original 63 checks (storage-only build)
+cover verification items #2-#10, #12-#13; the six-service expansion adds 15
+more (numbered #1-#15 in the expansion's own plan) — both sets run against
+the real advisor_kb/ content, not synthetic mocks, since the KB itself is as
+much the thing under test as the code that reads it.
+
+rules_engine.evaluate_blockers/evaluate_full now take a `service` as their
+first argument (the six-service delta made the engine service-aware) — every
+pre-existing storage check below was updated to pass STORAGE explicitly;
+none of their actual assertions changed.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from advisor.condition_eval import evaluate, apply_set, AttrDict
-from advisor.catalog_loader import get_catalog
+from advisor.condition_eval import evaluate, evaluate_safe, apply_set, AttrDict
+from advisor.catalog_loader import (get_catalog, get_rules, get_mapping, get_platform_constants,
+                                     AdvisorKBError, _validate_pattern)
 from advisor.pattern_matcher import score
 from advisor.rules_engine import evaluate_full, evaluate_blockers
-from advisor.question_engine import next_question, record_answer, is_complete
+from advisor.question_engine import (next_question, record_answer, is_complete,
+                                      _normalize_options, _normalize_skip_if, _service_questions)
 from advisor.prefill import build_prefill
 from advisor.diagram_builder import render as render_diagram
+from advisor import services as advisor_services
+from pathlib import Path
 import re
+
+STORAGE = "storage_account"
 
 passed = 0
 
@@ -30,6 +42,10 @@ def check(name, cond):
     assert cond, f"FAILED: {name}"
     passed += 1
     print(f"  ok: {name}")
+
+
+def _storage_catalog(full_catalog):
+    return {pid: p for pid, p in full_catalog.items() if p.get("service") == STORAGE}
 
 
 # ── condition_eval: every distinct condition shape used across the KB ────
@@ -63,20 +79,21 @@ check("apply_set bool coercion", ctx2["zpa_routing_required"] is True)
 # ── catalog_loader: real KB loads cleanly ─────────────────────────────────
 print("\ncatalog_loader")
 catalog = get_catalog()
-check("all 5 patterns load", set(catalog.keys()) == {
+storage_catalog = _storage_catalog(catalog)
+check("all 5 storage patterns load", set(storage_catalog.keys()) == {
     "storage_blob_private_standard", "storage_files_private_standard",
     "storage_datalake_private", "storage_archive_retention", "storage_premium_temporary",
 })
 
 # ── #2: no subscription -> halt, HALO portal ──────────────────────────────
 print("\n#2 no subscription blocks immediately")
-r = evaluate_blockers({"subscription_available": False})
+r = evaluate_blockers(STORAGE, {"subscription_available": False})
 check("blocked", r["blocked"] is True)
 check("HALO portal mentioned", "HALO" in r["message"])
 
 # ── #8: sovereign classification -> blocked, platform + security ─────────
 print("\n#8 sovereign data blocks, routes to platform+security")
-r = evaluate_blockers({"subscription_available": True, "data_classification": "restricted_sovereign"})
+r = evaluate_blockers(STORAGE, {"subscription_available": True, "data_classification": "restricted_sovereign"})
 check("blocked", r["blocked"] is True)
 check("blocker id", r["blocker_id"] == "sovereign_data")
 check("mentions platform and security teams",
@@ -84,7 +101,7 @@ check("mentions platform and security teams",
 
 # ── #3: application files + AKS + SDK -> storage_blob_private_standard ───
 print("\n#3 application files + AKS + SDK -> blob")
-r = score(catalog, {
+r = score(storage_catalog, {
     "purpose": "application_files", "data_shape": "unstructured_objects",
     "access_protocol": ["rest_sdk"], "consumer": ["aks"], "access_frequency": "frequent",
     "data_classification": "internal",
@@ -93,7 +110,7 @@ check("winner", r["winner"] == "storage_blob_private_standard")
 
 # ── #4: shared drive + SMB -> storage_files_private_standard ─────────────
 print("\n#4 shared drive + SMB -> files")
-r = score(catalog, {
+r = score(storage_catalog, {
     "purpose": "shared_drive", "data_shape": "shared_file_system",
     "access_protocol": ["smb"], "consumer": ["vm"], "access_frequency": "frequent",
     "data_classification": "internal",
@@ -102,7 +119,7 @@ check("winner", r["winner"] == "storage_files_private_standard")
 
 # ── #5: analytics + Databricks -> storage_datalake_private, HNS warning ──
 print("\n#5 analytics + Databricks -> datalake, HNS warning present")
-r = evaluate_full({
+r = evaluate_full(STORAGE, {
     "subscription_available": True, "purpose": "analytics_datalake",
     "data_shape": "analytics_datalake", "access_protocol": ["abfs"],
     "consumer": ["analytics_engine"], "data_classification": "internal",
@@ -114,7 +131,7 @@ check("HNS warning present", any("Hierarchical namespace" in w for w in r["warni
 
 # ── #6: compliance retention + rarely read -> archive, LRS/GRS deviation ─
 print("\n#6 compliance retention + rare access -> archive, ZRS deviation stated")
-r = evaluate_full({
+r = evaluate_full(STORAGE, {
     "subscription_available": True, "purpose": "compliance_retention",
     "data_shape": "unstructured_objects", "access_protocol": ["rest_sdk"],
     "consumer": ["application"], "data_classification": "internal",
@@ -128,7 +145,7 @@ check("deviation explicitly states ZRS/LRS/GRS",
 
 # ── #7: premium requested, unmeasured -> downgraded to Standard, flagged ─
 print("\n#7 premium unmeasured -> downgraded to Standard, flagged")
-r = evaluate_full({
+r = evaluate_full(STORAGE, {
     "subscription_available": True, "purpose": "application_files",
     "data_shape": "unstructured_objects", "access_protocol": ["rest_sdk"],
     "consumer": ["application"], "data_classification": "internal",
@@ -142,7 +159,7 @@ check("winner is blob (not premium)", r["selection"]["winner"] == "storage_blob_
 
 # ── #9: DNS link always required ──────────────────────────────────────────
 print("\n#9 DNS link always required")
-r = evaluate_full({
+r = evaluate_full(STORAGE, {
     "subscription_available": True, "purpose": "application_files",
     "data_shape": "unstructured_objects", "access_protocol": ["rest_sdk"],
     "consumer": ["application"], "data_classification": "internal",
@@ -160,14 +177,14 @@ base = {
     "performance_requirement": "standard_ok", "region": "uaenorth",
     "network_details_known": True,
 }
-r_no_zpa = evaluate_full({**base, "consumer": ["application"]})
+r_no_zpa = evaluate_full(STORAGE, {**base, "consumer": ["application"]})
 check("no ZPA when not selected", r_no_zpa["derived"]["zpa_routing_required"] is False)
-r_zpa = evaluate_full({**base, "consumer": ["application", "end_user_zpa"]})
+r_zpa = evaluate_full(STORAGE, {**base, "consumer": ["application", "end_user_zpa"]})
 check("ZPA required when end_user_zpa selected", r_zpa["derived"]["zpa_routing_required"] is True)
 
 # ── #1: question flow starts correctly, one question at a time ──────────
 print("\n#1 question flow: one question at a time, skip_if + follow_up_if + default_if_unknown")
-state = {"answers": {}, "pending_followups": []}
+state = {"service": STORAGE, "answers": {}, "pending_followups": []}
 q = next_question(state)
 check("first question is subscription_available", q["id"] == "subscription_available")
 state = record_answer(state, "subscription_available", True)
@@ -178,7 +195,7 @@ q = next_question(state)
 check("data_shape auto-set + skipped via skip_if", state["answers"].get("data_shape") == "analytics_datalake")
 check("skipped question isn't re-asked", q["id"] != "data_shape")
 
-state2 = {"answers": {"capacity_estimate": "2 TB"}, "pending_followups": []}
+state2 = {"service": STORAGE, "answers": {"capacity_estimate": "2 TB"}, "pending_followups": []}
 state2 = record_answer(state2, "performance_requirement", "premium_justified")
 q = next_question(state2)
 check("follow_up_if queues workload_duration", q["id"] == "workload_duration")
@@ -186,13 +203,13 @@ state2 = record_answer(state2, "workload_duration", "temporary_bounded")
 q = next_question(state2)
 check("follow_up_if queues performance_evidence next", q["id"] == "performance_evidence")
 
-state3 = {"answers": {}, "pending_followups": []}
+state3 = {"service": STORAGE, "answers": {}, "pending_followups": []}
 state3 = record_answer(state3, "data_classification", "unsure")
 check("default_if_unknown applied", state3["answers"]["data_classification"] == "confidential")
 
 # ── End-to-end: full question walk -> rules -> pattern_matcher pipeline ──
 print("\nEnd-to-end: full conversation -> rules -> pattern selection")
-state4 = {"answers": {}, "pending_followups": []}
+state4 = {"service": STORAGE, "answers": {}, "pending_followups": []}
 full_answers = {
     "subscription_available": True, "purpose": "application_files", "data_shape": "unstructured_objects",
     "access_protocol": ["rest_sdk"], "consumer": ["aks"], "data_classification": "internal",
@@ -207,7 +224,7 @@ while not is_complete(state4) and steps < 50:
     state4 = record_answer(state4, q["id"], full_answers[q["id"]])
     steps += 1
 check("flow completes", is_complete(state4))
-result = evaluate_full(state4["answers"])
+result = evaluate_full(STORAGE, state4["answers"])
 check("end-to-end pattern selection matches", result["selection"]["winner"] == "storage_blob_private_standard")
 check("not blocked", not result["blocked"])
 
@@ -221,7 +238,7 @@ answers9 = {
     "application_name": "MyApp", "criticality": "high", "owner_email": "a@b.com",
     "region": "uaenorth", "network_details_known": True, "vnet_name": "vnet-x", "subnet_name": "snet-x",
 }
-r9 = evaluate_full(answers9)
+r9 = evaluate_full(STORAGE, answers9)
 pattern9 = catalog[r9["selection"]["winner"]]
 p9 = build_prefill(pattern9, answers9, r9)
 check("#9 DNS always included", "dns" in [f["request_type"] for f in p9["follow_on_requests"]])
@@ -233,7 +250,7 @@ check("encryption_type translated to form value 'customer_managed'",
 check("sku matches ZRS baseline", p9["fields"]["sku"] == "Standard_ZRS")
 
 answers10 = dict(answers9, consumer=["aks", "end_user_zpa"])
-r10 = evaluate_full(answers10)
+r10 = evaluate_full(STORAGE, answers10)
 pattern10 = catalog[r10["selection"]["winner"]]
 p10 = build_prefill(pattern10, answers10, r10)
 check("#10b ZPA included when end_user_zpa selected",
@@ -254,7 +271,7 @@ check("archive sku falls back to Standard_LRS (no single sku in its design)",
 print("\n#12 diagram rendering: placeholders, ZPA + datalake block-removal")
 diag_answers = {"application_name": "MyApp", "vnet_name": "vnet-x", "subnet_name": "snet-x",
                  "storage_account_name": "stgmyapp001", "environment": "prd"}
-for pid, pattern in catalog.items():
+for pid, pattern in storage_catalog.items():
     out = render_diagram(pattern, diag_answers, {"zpa_routing_required": False})
     check(f"{pid}: no raw placeholders", not re.findall(r"\{[A-Z_]+\}", out))
 
@@ -274,5 +291,245 @@ check("datalake: blob endpoint kept when engine confirmed to use both",
 malicious = render_diagram(blob, {**diag_answers, "application_name": "<script>alert(1)</script>"},
                             {"zpa_routing_required": False})
 check("HTML-unsafe characters escaped in diagram output", "<script>" not in malicious)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Six-service expansion — new checks (numbered per the expansion's own plan)
+# ═══════════════════════════════════════════════════════════════════════
+
+AKS, VM, POSTGRES, APPGW = "aks_cluster", "vm_create", "postgres_create", "app_gateway"
+
+# ── schema normalization: both options/skip_if shapes -> one uniform shape ─
+print("\nquestion_engine: options/skip_if schema normalization")
+check("plain string list options normalize to {value,label} dicts",
+      _normalize_options(["dev", "tst"]) == [{"value": "dev", "label": "Dev"},
+                                              {"value": "tst", "label": "Tst"}])
+check("dict-shaped options pass through unchanged",
+      _normalize_options([{"value": "a", "label": "A label"}]) == [{"value": "a", "label": "A label"}])
+check("bare skip_if string normalizes to {condition,set}",
+      _normalize_skip_if("exposure != public_internet") == {"condition": "exposure != public_internet", "set": None})
+check("dict-shaped skip_if passes through unchanged",
+      _normalize_skip_if({"condition": "x == y", "set": "z = 1"}) == {"condition": "x == y", "set": "z = 1"})
+
+# real appgw_questions.yaml exercises both shapes for real (public_hostname's
+# skip_if is a bare string; environment's options are a bare list) — confirm
+# question_engine loads it without crashing and the shapes come out normalized.
+appgw_qs = {q["id"]: q for q in _service_questions(APPGW)}
+check("appgw public_hostname skip_if normalized from bare string",
+      appgw_qs["public_hostname"]["skip_if"] == {"condition": "exposure != public_internet", "set": None})
+check("appgw environment options normalized from bare string list",
+      {o["value"] for o in appgw_qs["environment"]["options"]} == {"dev", "tst", "uat", "prd", "snd"})
+
+# ── #1: service selection is the literal first question, both menu + free text
+print("\n#1 service selection: menu routing and free-text keyword fallback")
+svc_state = {"answers": {}, "pending_followups": []}
+first_q = next_question(svc_state)
+check("first question (no service chosen yet) is the service-selector",
+      first_q["id"] == advisor_services.SERVICE_QUESTION_ID)
+check("five services offered, Key Vault and 'whole environment' excluded",
+      {o["value"] for o in first_q["options"]} == {STORAGE, AKS, VM, POSTGRES, APPGW})
+svc_state = record_answer(svc_state, advisor_services.SERVICE_QUESTION_ID, AKS)
+check("menu selection sets state['service']", svc_state["service"] == AKS)
+next_after_service = next_question(svc_state)
+check("next question after service choice is that service's own first question",
+      next_after_service["id"] == "subscription_available")
+
+check("free text 'I need a cluster' routes to aks_cluster (keyword fallback, no LLM)",
+      advisor_services.classify_free_text("I need a cluster") == AKS)
+check("free text routes VM/database/gateway/storage too",
+      advisor_services.classify_free_text("spin up a few VMs") == VM and
+      advisor_services.classify_free_text("need a postgres database") == POSTGRES and
+      advisor_services.classify_free_text("expose this behind a gateway") == APPGW and
+      advisor_services.classify_free_text("need some blob storage") == STORAGE)
+check("unrelated free text doesn't force a match", advisor_services.classify_free_text("hello there") is None)
+
+# ── #13: malformed KB YAML fails loudly at load time, not at request time ──
+print("\n#13 malformed KB file fails loudly at load, not at request time")
+try:
+    _validate_pattern(Path("broken.yaml"), {"id": "broken", "name": "Broken"})  # missing required keys
+    raised = False
+except AdvisorKBError as exc:
+    raised = True
+    check("error names the offending file", "broken.yaml" in str(exc.path))
+    check("error names the offending/missing key", exc.key not in (None, ""))
+check("malformed pattern raises AdvisorKBError, not a bare traceback", raised)
+try:
+    get_rules("not_a_real_service")
+    unknown_raised = False
+except AdvisorKBError:
+    unknown_raised = True
+check("get_rules() on an unknown service id raises AdvisorKBError", unknown_raised)
+
+# ── platform_constants: loads once, shared, not restated per service ──────
+print("\nplatform_constants: loads once, applies across all six services")
+pc1 = get_platform_constants()
+pc2 = get_platform_constants()
+check("platform_constants loads (scope: all_services)", pc1.get("scope") == "all_services")
+check("cached — same object on repeated calls", pc1 is pc2)
+check("naming pattern present (shared by every service's real form fields)",
+      "naming" in pc1 and "pattern" in pc1["naming"])
+for svc in (STORAGE, AKS, VM, POSTGRES, APPGW):
+    rules = get_rules(svc)
+    check(f"{svc}'s own matrix doesn't restate platform_constants' naming/DNS keys",
+          "naming" not in rules and "private_dns_zones" not in rules)
+
+# ── generic execution_order: 4 new services' 6-phase matrices run cleanly ──
+print("\nrules_engine: generic execution_order across all five services")
+for svc in (AKS, VM, POSTGRES, APPGW):
+    order = get_rules(svc)["execution_order"]
+    check(f"{svc} matrix has no 'constants' phase (only storage's does)", "constants" not in order)
+    r = evaluate_blockers(svc, {"subscription_available": False})
+    check(f"{svc}: no-subscription blocks immediately, HALO portal", r["blocked"] and "HALO" in r["message"])
+    r = evaluate_blockers(svc, {"subscription_available": True, "data_classification": "restricted_sovereign"})
+    check(f"{svc}: sovereign data blocks, routes to platform+security",
+          r["blocked"] and "platform" in r["message"].lower() and "security" in r["message"].lower())
+
+# ── VM/Postgres: no real match.required signal is ever set -> always falls
+# through catalog scoring to pattern_selection.default (confirmed by reading
+# the KB: vm_workload_standard/postgres_flexible_private require
+# workload_shape/data_shape, which no question or derivation in these two
+# services' own KBs ever sets) ───────────────────────────────────────────
+print("\npattern_selection: default fallback for single-pattern services")
+r = evaluate_full(VM, {
+    "subscription_available": True, "vm_purpose": "batch jobs", "vm_count": 2,
+    "os_family": "linux", "sizing": "small", "data_disks": False,
+    "access_need": ["application_only"], "availability": False, "environment": "dev",
+    "data_classification": "internal", "business_unit": "Platform", "application_name": "App",
+    "owner_email": "a@b.com", "criticality": "low",
+})
+check("VM: falls through to its only pattern (vm_workload_standard) via default",
+      r["selection"]["winner"] == "vm_workload_standard")
+check("VM: vm_count coerced to int by the integer question type", r["derived"]["vm_count"] == 2)
+
+r = evaluate_full(POSTGRES, {
+    "subscription_available": True, "purpose": "app database", "consumer": ["aks"],
+    "managed_preference": "managed", "size_estimate": "100 GB", "ha_requirement": "unsure",
+    "rpo_rto": "1 hour", "environment": "prd", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "App", "owner_email": "a@b.com",
+    "criticality": "high",
+})
+check("Postgres: falls through to its only pattern via default", r["selection"]["winner"] == "postgres_flexible_private")
+check("#7 (postgres) prd + ha unsure -> zone_redundant", r["derived"]["ha_requirement"] == "zone_redundant")
+
+r_dev = evaluate_full(POSTGRES, {
+    "subscription_available": True, "purpose": "app database", "consumer": ["aks"],
+    "managed_preference": "managed", "size_estimate": "10 GB", "ha_requirement": "unsure",
+    "rpo_rto": "1 day", "environment": "dev", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "App", "owner_email": "a@b.com",
+    "criticality": "low",
+})
+check("#7 (postgres) dev + ha unsure -> single", r_dev["derived"]["ha_requirement"] == "single")
+
+r_prd_single = evaluate_full(POSTGRES, {
+    "subscription_available": True, "purpose": "app database", "consumer": ["aks"],
+    "managed_preference": "managed", "size_estimate": "10 GB", "ha_requirement": "single",
+    "rpo_rto": "1 day", "environment": "prd", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "App", "owner_email": "a@b.com",
+    "criticality": "high",
+})
+check("#8 (postgres) prd + single HA -> deviation surfaced",
+      any("zone-redundant" in d.lower() or "production" in d.lower() for d in r_prd_single["deviations"]))
+
+r_self_managed = evaluate_full(POSTGRES, {
+    "subscription_available": True, "purpose": "app database", "consumer": ["aks"],
+    "managed_preference": "self_managed", "size_estimate": "10 GB", "ha_requirement": "single",
+    "rpo_rto": "1 day", "environment": "dev", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "App", "owner_email": "a@b.com",
+    "criticality": "low",
+})
+check("#9 (postgres) self_managed -> escalation carries a redirect to vm_workload_standard",
+      any(e.get("redirect") == "vm_workload_standard" for e in r_self_managed["escalations"]))
+
+# ── AKS: GPU vs non-GPU pattern selection, CNI warning, escalation flag ────
+print("\nAKS: GPU/non-GPU pattern selection + warnings")
+aks_base = {
+    "subscription_available": True, "workload_description": "internal API", "node_count": "6",
+    "exposure": "internal_only", "persistent_storage": False, "database_needed": False,
+    "environment": "prd", "data_classification": "internal", "business_unit": "Platform",
+    "application_name": "App", "owner_email": "a@b.com", "criticality": "high",
+}
+r_gpu = evaluate_full(AKS, {**aks_base, "gpu_required": True})
+check("#3 AKS + GPU -> aks_gpu_nodepool", r_gpu["selection"]["winner"] == "aks_gpu_nodepool")
+check("#3 GPU quota escalation flagged as longest lead time",
+      any(e["flag"] == "GPU_QUOTA_REQUIRED" and "longest lead" in e["message"].lower()
+          for e in r_gpu["escalations"]))
+r_nogpu = evaluate_full(AKS, {**aks_base, "gpu_required": False})
+check("#4 AKS without GPU -> aks_private_standard", r_nogpu["selection"]["winner"] == "aks_private_standard")
+check("#5 AKS CNI pod-IP subnet-sizing warning present",
+      any("pod" in w.lower() and ("ip" in w.lower() or "address" in w.lower()) for w in r_nogpu["warnings"]))
+check("aks_gpu_nodepool inherited aks_private_standard's design (design.inherits resolved)",
+      "inherits" not in catalog["aks_gpu_nodepool"]["design"] and
+      catalog["aks_gpu_nodepool"]["design"].get("tier") == catalog["aks_private_standard"]["design"].get("tier"))
+
+# ── add_service accumulation: multiple derivations must not overwrite ─────
+print("\nrules_engine: add_service accumulates across escalations + derivations")
+r_multi = evaluate_full(AKS, {**aks_base, "gpu_required": False, "persistent_storage": True,
+                              "database_needed": True, "exposure": "public_internet"})
+check("add_services accumulates storage_account + postgres_create + container_registry + app_gateway",
+      set(r_multi["add_services"]) >= {"storage_account", "postgres_create", "container_registry", "app_gateway"})
+
+# ── VM: fleet-size escalation + single-VM-HA warning ──────────────────────
+print("\nVM: fleet-size escalation + single-VM availability warning")
+vm_base = {
+    "subscription_available": True, "vm_purpose": "batch jobs", "os_family": "linux",
+    "sizing": "small", "data_disks": False, "access_need": ["application_only"],
+    "environment": "dev", "data_classification": "internal", "business_unit": "Platform",
+    "application_name": "App", "owner_email": "a@b.com", "criticality": "low",
+}
+r_fleet = evaluate_full(VM, {**vm_base, "vm_count": 25, "availability": False})
+check("#6 VM count > 20 -> FLEET_SIZE_REVIEW", any(e["flag"] == "FLEET_SIZE_REVIEW" for e in r_fleet["escalations"]))
+r_single_ha = evaluate_full(VM, {**vm_base, "vm_count": 1, "availability": True})
+check("#7 VM single VM + availability=true -> single-point-of-failure warning",
+      any("single point of failure" in w.lower() for w in r_single_ha["warnings"]))
+
+# ── AppGW: public/internal InfoSec gate, direct-public-IP hard blocker ────
+print("\nAppGW: InfoSec gate presence/absence, direct-public-IP blocker")
+appgw_base = {
+    "subscription_available": True, "backend": "aks", "routing_need": "single_backend",
+    "environment": "prd", "data_classification": "internal", "business_unit": "Platform",
+    "application_name": "App", "owner_email": "a@b.com", "criticality": "high",
+}
+r_public = evaluate_full(APPGW, {**appgw_base, "exposure": "public_internet"})
+check("#10 AppGW public -> appgw_public_cloudflare", r_public["selection"]["winner"] == "appgw_public_cloudflare")
+check("#10 AppGW public -> exactly 1 public IP", str(r_public["derived"]["public_ip_count"]) == "1")
+check("#10 AppGW public -> InfoSec gate escalation present, rendered verbatim (message_ref)",
+      any(e["id"] == "infosec_onboarding" and e.get("message_ref") for e in r_public["escalations"]))
+infosec_msg = next(e["message_ref"] for e in r_public["escalations"] if e["id"] == "infosec_onboarding")
+check("InfoSec gate message has heading/body/next_step (verbatim composer content)",
+      {"heading", "body", "next_step"} <= set(infosec_msg.keys()))
+
+r_internal = evaluate_full(APPGW, {**appgw_base, "exposure": "internal_only"})
+check("#11 AppGW internal -> appgw_internal", r_internal["selection"]["winner"] == "appgw_internal")
+check("#11 AppGW internal -> 0 public IPs", str(r_internal["derived"]["public_ip_count"]) == "0")
+check("#11 AppGW internal -> NO InfoSec gate escalation",
+      not any(e["id"] == "infosec_onboarding" for e in r_internal["escalations"]))
+
+r_direct_ip = evaluate_blockers(APPGW, {**appgw_base, "exposure": "public_internet",
+                                        "user_requests_direct_public_ip": True})
+check("#12 AppGW public + direct-public-IP request -> hard blocker",
+      r_direct_ip["blocked"] and r_direct_ip["blocker_id"] == "public_without_cloudflare")
+
+r_unsure = evaluate_full(APPGW, {**appgw_base, "exposure": "unsure"})
+check("AppGW exposure=unsure -> tiebreak question asked, not guessed",
+      r_unsure["selection"]["outcome"] == "ask_tiebreak")
+
+# ── #14: every private-endpoint recommendation lists the DNS link as required
+print("\n#14 DNS link listed as required wherever a private endpoint is recommended")
+pg_mapping = get_mapping(POSTGRES)
+check("postgres mapping's DNS follow-on is always_required (private endpoint always used)",
+      any(f.get("request_type") == "dns" and f.get("always_required")
+          for f in pg_mapping["follow_on_requests"]))
+appgw_mapping = get_mapping(APPGW)
+check("appgw mapping's DNS follow-on (private backend A record) is always_required",
+      any(f.get("request_type") == "dns" and f.get("always_required")
+          for f in appgw_mapping["follow_on_requests"]))
+
+# ── evaluate_safe: unparseable KB condition strings fail closed, not loudly ─
+print("\ncondition_eval.evaluate_safe: malformed include_if strings fail closed")
+check("malformed condition (real mapping-file example) treated as False, not raised",
+      evaluate_safe("egress_destinations specified", {}) is False)
+check("malformed condition referencing a never-set field also fails closed",
+      evaluate_safe("engineer_access_needed == true", {}) is False)
+check("well-formed conditions still evaluate normally through evaluate_safe",
+      evaluate_safe("exposure == public_internet", {"exposure": "public_internet"}) is True)
 
 print(f"\n{passed} checks passed.")

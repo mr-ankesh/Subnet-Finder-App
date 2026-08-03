@@ -33,7 +33,9 @@ Key Vault field name: mapping.yaml's `key_vault_name` is the form's
 `cmk_keyvault_name`; `key_name` is `cmk_key_name`.
 """
 from advisor.catalog_loader import get_mapping
-from advisor.condition_eval import evaluate, AttrDict
+from advisor.condition_eval import evaluate, evaluate_safe, AttrDict
+
+STORAGE_SERVICE = "storage_account"
 
 _IDENTITY_TYPE_FORM_VALUE = {"UserAssigned": "user", "SystemAssigned": "system"}
 _ENCRYPTION_TYPE_FORM_VALUE = {"CMK": "customer_managed", "MMK": "microsoft_managed"}
@@ -68,7 +70,7 @@ def _resolve_from(from_spec, ns: dict):
 
 def _label_of_option(question_id: str, value) -> str:
     from advisor.catalog_loader import get_questions
-    for q in get_questions()["questions"]:
+    for q in get_questions(STORAGE_SERVICE)["questions"]:
         if q["id"] == question_id:
             for opt in q.get("options", []):
                 if opt["value"] == value:
@@ -164,7 +166,7 @@ def build_prefill(pattern: dict, answers: dict, rule_result: dict) -> dict:
     if answers.get("criticality"):
         tags["ServiceClass"] = _SERVICE_CLASS_BY_CRITICALITY.get(answers["criticality"])
 
-    mapping = get_mapping()
+    mapping = get_mapping(STORAGE_SERVICE)
     user_must_provide = []
     for item in mapping["user_must_provide"]:
         field = item["field"]
@@ -194,7 +196,7 @@ def build_prefill(pattern: dict, answers: dict, rule_result: dict) -> dict:
             if "escalation flag is set" in req["include_if"]:
                 include = bool(rule_result.get("escalations"))
             else:
-                include = evaluate(req["include_if"], ns)
+                include = evaluate_safe(req["include_if"], ns)
         else:
             include = True
         if not include:
@@ -206,6 +208,7 @@ def build_prefill(pattern: dict, answers: dict, rule_result: dict) -> dict:
         follow_on.append(entry)
 
     return {
+        "request_type": mapping.get("target_request_type", STORAGE_SERVICE),
         "fields": fields,
         "tags": tags,
         "user_must_provide": user_must_provide,

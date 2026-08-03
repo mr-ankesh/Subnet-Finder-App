@@ -24,7 +24,10 @@ _evaluate() rewrites both, then runs eval() with __builtins__ stripped and
 only the provided namespace as locals — restricted to boolean logic over
 that namespace, nothing else reachable.
 """
+import logging
 import re
+
+log = logging.getLogger(__name__)
 
 _PY_KEYWORDS = {"and", "or", "not", "in", "is", "None", "True", "False", "if", "else"}
 _IDENTIFIER_RE = re.compile(r"(?<!\.)\b[a-zA-Z_][a-zA-Z0-9_]*\b")
@@ -95,6 +98,9 @@ def _quote_bare_enums(cond: str, known_names: set) -> str:
     return "".join(out)
 
 
+_OPERATOR_RE = re.compile(r"==|!=|<=|>=|<|>|\bin\b|\bis\b|\band\b|\bor\b|\bnot\b")
+
+
 def evaluate(cond: str, namespace: dict) -> bool:
     """Evaluate a KB condition string against `namespace` (field name -> value,
     values already an AttrDict where nested dotted access is needed)."""
@@ -106,10 +112,37 @@ def evaluate(cond: str, namespace: dict) -> bool:
     rewritten = _rewrite_phrases(cond)
     rewritten = _rewrite_bool_words(rewritten)
     rewritten = _quote_bare_enums(rewritten, set(namespace.keys()))
+    # A rewritten condition with no recognized operator at all (and that
+    # isn't the literal "True" the "always" phrase rewrites to) is plain
+    # prose, not a condition — e.g. a six-service mapping file's
+    # "egress_destinations specified". Left alone, _quote_bare_enums turns
+    # every bare word into its own string literal, and Python's implicit
+    # adjacent-string-literal concatenation makes the whole thing eval() to
+    # a non-empty (truthy) string instead of raising — the opposite of
+    # "fail closed". Catch it here, before eval ever runs.
+    if rewritten != "True" and not _OPERATOR_RE.search(rewritten):
+        raise ValueError(f"advisor condition has no recognizable operator: {cond!r} -> {rewritten!r}")
     try:
         return bool(eval(rewritten, {"__builtins__": {}}, namespace))
     except Exception as exc:
         raise ValueError(f"advisor condition failed to evaluate: {cond!r} -> {rewritten!r}: {exc}") from exc
+
+
+def evaluate_safe(cond: str, namespace: dict) -> bool:
+    """Same as evaluate(), except any condition that fails to parse/evaluate
+    is treated as False instead of raising. Some six-service mapping files'
+    `include_if` strings aren't valid condition-language (e.g.
+    "egress_destinations specified") or reference fields no question/
+    derivation ever sets (e.g. "engineer_access_needed == true") — these only
+    gate OPTIONAL follow-on-request items, never blockers, so failing closed
+    (item excluded) is the safe default rather than crashing the chat.
+    Blockers/escalations/derivations still use the strict evaluate() —
+    a malformed condition THERE is a real KB bug that should fail loudly."""
+    try:
+        return evaluate(cond, namespace)
+    except Exception as exc:
+        log.warning("advisor: unparseable condition treated as False: %r (%s)", cond, exc)
+        return False
 
 
 def apply_set(ctx: dict, set_str: str) -> None:

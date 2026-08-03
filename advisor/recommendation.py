@@ -56,7 +56,7 @@ def _why_this_pattern(pattern: dict, answers: dict, rule_result: dict) -> str:
 def build_recommendation(pattern: dict, answers: dict, rule_result: dict, prefill_payload: dict) -> dict:
     design = pattern["design"]
     derived = rule_result["derived"]
-    replication = resolve_constant("replication", pattern["id"])
+    replication = resolve_constant("storage_account", "replication", pattern["id"])
 
     data_protection = design.get("data_protection", {})
     dp_bits = []
