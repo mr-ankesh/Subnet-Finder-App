@@ -1,9 +1,17 @@
-kb_version: "2.0.0"
+kb_version: "2.1.0"
 scope: environment_composer
 description: >
   Cross-service rules for composing a whole environment. These run AFTER each individual
   service pattern has been selected, and they are what turn a list of resources into an
   architecture.
+
+changelog:
+  - version: "2.1.0"
+    change: >
+      AKS warnings corrected for Azure CNI Overlay. The previous aks_cni_sizing warning
+      described classic CNI (one VNET IP per pod) and was wrong for this platform, whose
+      default is Overlay. Replaced with aks_overlay_sizing, plus new surge-headroom and Pod
+      CIDR non-overlap warnings. Pod CIDR added to network_plan outputs.
 
 execution_order:
   - environment_blockers
@@ -127,6 +135,8 @@ network_plan:
   outputs:
     - vnet_count and recommended VNET size
     - a subnet table: name, purpose, recommended size, usable addresses, sizing basis
+    - the Pod CIDR, when an AKS cluster is present — rendered as prose or its own line,
+      NEVER as a row in the subnet table, and NEVER counted in the VNET arithmetic
     - hub integration requirement (always yes for a new spoke)
     - the list of private DNS zones to link
     - the list of private endpoints to create
@@ -207,11 +217,26 @@ environment_warnings:
       Subnets cannot be resized once resources are deployed into them. The sizes here include
       growth headroom for that reason.
 
-  - id: aks_cni_sizing
+  - id: aks_overlay_sizing
     when: "aks_count > 0"
     message: >
-      AKS with Azure CNI consumes one VNET IP per pod, not per node. That is why the AKS
-      subnet is much larger than the node count alone would suggest.
+      Your cluster uses Azure CNI Overlay, so pods get their addresses from a separate Pod
+      CIDR rather than the VNET. Only nodes consume VNET addresses, which is why the AKS
+      subnet is small relative to the number of pods you'll run.
+
+  - id: aks_surge_headroom
+    when: "aks_count > 0"
+    message: >
+      The AKS subnet includes headroom for surge nodes during upgrades. Confirm the cluster's
+      max-surge setting — if the subnet can't accommodate the surge, an upgrade stalls
+      part-way through.
+
+  - id: pod_cidr_non_overlap
+    when: "aks_count > 0"
+    message: >
+      The Pod CIDR is a separate address space from the VNET. It must not overlap the VNET
+      pools, the hub, or the VPN and ZPA ranges. TechOps confirms it alongside the VNET
+      allocation.
 
   - id: gpu_quota_lead_time
     when: "gpu_required == true"
