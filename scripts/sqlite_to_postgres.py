@@ -36,13 +36,17 @@ os.environ["SKIP_BOOTSTRAP_MIGRATION"] = "1"   # don't auto-seed from any xlsx
 import app          # noqa: E402,F401
 import db_backend   # noqa: E402
 
-# Copy order respects FKs (vnet_info → spoke_requests). Includes the raw-sqlite
-# tables (agent_chats, subscription_inventory, budget_alert_state) — they have no
-# FKs but still hold real data (chats, owner/budget/criticality, alert dedup).
+# Copy order respects FKs (vnet_info → spoke_requests; advisor_conversations →
+# advisor_messages/advisor_state). Includes the raw-sqlite tables (agent_chats,
+# subscription_inventory, budget_alert_state, advisor_sessions,
+# advisor_conversations/messages/state) — they have no FKs to the ORM tables but
+# still hold real data (chats, owner/budget/criticality, alert dedup, advisor
+# conversation history).
 TABLES = ["spoke_requests", "vnet_info", "subnet_records",
           "app_settings", "audit_log", "change_log", "fw_collections",
           "agent_chats", "subscription_inventory", "budget_alert_state",
-          "advisor_sessions"]
+          "advisor_sessions", "advisor_conversations", "advisor_messages",
+          "advisor_state"]
 
 # Columns that are BOOLEAN in Postgres but stored 0/1 in SQLite.
 BOOL_COLS = {

@@ -90,6 +90,13 @@ class _Result:
     def fetchall(self):
         return [self._to_dict(r) for r in self._cursor.fetchall()]
 
+    @property
+    def rowcount(self):
+        """Rows affected by the last UPDATE/DELETE — verified identical on both
+        psycopg and sqlite3 for a conditional UPDATE (1 on match, 0 on a stale
+        WHERE clause), which is what optimistic-concurrency writers rely on."""
+        return getattr(self._cursor, "rowcount", -1)
+
 
 class _Conn:
     """Wraps a raw sqlite3 / psycopg connection with a uniform surface."""

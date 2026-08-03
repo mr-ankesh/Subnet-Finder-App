@@ -255,6 +255,10 @@ with app.app_context():
     budgetalerts.ensure_table()
     budgetalerts.start_scheduler(app)
 
+    # Advisor persistent conversations (additive alongside advisor_sessions)
+    import advisor.conversations as advisor_conversations
+    advisor_conversations.ensure_tables()
+
 # Keycloak OIDC — registers the app; the client is built lazily from live
 # settings, so enabling/configuring SSO in the portal needs no restart.
 oidc.init_oidc(app)
@@ -503,6 +507,18 @@ def _chat_owner(kind: str) -> str:
     return uid
 
 
+def _advisor_owner_key() -> str:
+    """Stable per-user key for the advisor's persistent conversations. Uses the
+    Keycloak 'sub' claim under SSO — not email or display name, since both can
+    change while 'sub' doesn't — falling back to sso_email/sso_user only if a
+    token somehow omitted it. Local dev has no Keycloak at all, so it falls
+    back to the admin name, matching _chat_owner's own local-dev behaviour."""
+    if session.get("sso"):
+        return (session.get("sso_sub") or session.get("sso_email")
+                or session.get("sso_user") or "sso-user")
+    return session.get("admin_name") or "admin"
+
+
 def _sso_identity(client_name: str = "", client_email: str = ""):
     """
     Effective (name, email) for a request. When signed in via Keycloak, its
@@ -634,6 +650,11 @@ def auth_callback():
     session["is_requester"] = is_requester
     session["sso_user"] = username
     session["sso_email"] = info.get("email") or ""
+    # Stable per-user key for the advisor's persistent conversations — the
+    # Keycloak 'sub' claim, not email/display name (both can change; sub
+    # doesn't). Standard OIDC userinfo always carries 'sub'; fall back to the
+    # id token's own claim only if userinfo somehow omitted it.
+    session["sso_sub"] = info.get("sub") or (token.get("id_token_claims") or {}).get("sub") or ""
     session["sso_has_name"] = bool(info.get("name") or full)   # real name vs username fallback
     session["sso_groups"] = oidc.groups_from_token(token)       # Keycloak groups = teams
     session["admin_name"] = display               # audit actor
