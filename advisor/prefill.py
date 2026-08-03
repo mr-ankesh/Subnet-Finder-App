@@ -411,3 +411,130 @@ def build_prefill_vm(pattern: dict, answers: dict, rule_result: dict) -> dict:
         "user_must_provide": user_must_provide,
         "follow_on_requests": _resolve_follow_ons(mapping, answers, rule_result, derived),
     }
+
+
+# ── Postgres / App Gateway -> RequestType.OTHER (no dedicated type yet) ────
+#
+# postgres_request_mapping.yaml / appgw_request_mapping.yaml both say so
+# themselves: "if RequestType.POSTGRES_CREATE/APP_GATEWAY does not exist yet,
+# this mapping is the specification for its field set — build the request
+# type before wiring this in." Per your instruction, ship now targeting
+# RequestType.OTHER instead of waiting on that. RequestType.OTHER's real
+# form (`section-other`) has exactly two fields — `description` (textarea)
+# and `priority` (select) — no project/env/owner/criticality block at all
+# (confirmed: unlike every other type, "other" doesn't duplicate that
+# shared block). So none of these two services' rich mapped_fields/
+# locked_fields can be prefilled field-by-field the way storage/AKS/VM are;
+# _compose_description_block() below weaves everything — pattern, key
+# design facts, the full user_must_provide checklist, and a "dedicated type
+# is coming" note — into one readable `description`, which is the only
+# place left for it to live.
+
+_PRIORITY_BY_CRITICALITY_ENV = {"prd": "high", "critical": "high", "high": "high"}
+
+
+def _compose_description_block(service_label: str, pattern: dict, answers: dict,
+                                design_facts: list, mapping: dict) -> str:
+    lines = [
+        f"AI Architecture Advisor recommendation — {service_label}",
+        f"Pattern: {pattern['name']} ({pattern['id']}, KB {pattern.get('kb_version', '2.0.0')})",
+        "",
+        "NOTE: this portal doesn't have a dedicated request type for this service yet — "
+        "submitting as \"Other\". The fields below are informational; TechOps will need to "
+        "configure them manually. The checklist doubles as the field spec for the future "
+        "dedicated request type.",
+        "",
+        pattern["summary"].strip(),
+        "",
+        "Key design facts:",
+    ]
+    lines.extend(f"  - {label}: {value}" for label, value in design_facts if value not in (None, "", "unsure"))
+    lines.append("")
+    lines.append("Still to configure (see advisor_kb mapping's user_must_provide):")
+    for item in mapping.get("user_must_provide", []):
+        hint = item.get("hint") or item.get("why") or ""
+        lines.append(f"  - {item['field']}" + (f" — {hint}" if hint else ""))
+    return "\n".join(lines)
+
+
+def _priority_from(answers: dict) -> str:
+    return _PRIORITY_BY_CRITICALITY_ENV.get(answers.get("environment"), None) \
+        or _PRIORITY_BY_CRITICALITY_ENV.get(answers.get("criticality"), "normal")
+
+
+POSTGRES_SERVICE = "postgres_create"
+APPGW_SERVICE = "app_gateway"
+
+
+def build_prefill_postgres(pattern: dict, answers: dict, rule_result: dict) -> dict:
+    derived = AttrDict(rule_result.get("derived") or {})
+    mapping = get_mapping(POSTGRES_SERVICE)
+
+    design_facts = [
+        ("Environment", _ENV_LABEL.get(answers.get("environment"), answers.get("environment"))),
+        ("High availability", derived.get("ha_requirement")),
+        ("Compute tier", derived.get("compute_tier_hint")),
+        ("Private DNS zone", derived.get("private_dns_zone")),
+        ("Estimated size / connections", answers.get("size_estimate")),
+        ("Recovery objective (RPO/RTO)", answers.get("rpo_rto")),
+        ("Consumers", ", ".join(answers.get("consumer") or []) or None),
+    ]
+    description = _compose_description_block("PostgreSQL (managed)", pattern, answers, design_facts, mapping)
+
+    fields = {"description": description, "priority": _priority_from(answers)}
+    purpose = answers.get("purpose") or "Managed PostgreSQL database"
+
+    tags = {
+        "ApplicationName": answers.get("application_name") or "",
+        "BusinessUnit": answers.get("business_unit") or "",
+        "Criticality": _title(answers.get("criticality")) if answers.get("criticality") else "",
+        "Environment": _ENV_LABEL.get(answers.get("environment"), answers.get("environment") or ""),
+        "Owner": answers.get("owner_email") or "",
+        "Sovereignty": "Standard",
+    }
+
+    return {
+        "request_type": "other",
+        "purpose": purpose,
+        "fields": fields,
+        "tags": tags,
+        "user_must_provide": [dict(i) for i in mapping.get("user_must_provide", [])],
+        "follow_on_requests": _resolve_follow_ons(mapping, answers, rule_result, derived),
+    }
+
+
+def build_prefill_appgw(pattern: dict, answers: dict, rule_result: dict) -> dict:
+    derived = AttrDict(rule_result.get("derived") or {})
+    mapping = get_mapping(APPGW_SERVICE)
+
+    design_facts = [
+        ("Environment", _ENV_LABEL.get(answers.get("environment"), answers.get("environment"))),
+        ("Exposure", answers.get("exposure")),
+        ("Backend", answers.get("backend")),
+        ("Routing", answers.get("routing_need")),
+        ("Public hostname", answers.get("public_hostname")),
+        ("Public IP count", derived.get("public_ip_count")),
+        ("InfoSec onboarding required", derived.get("infosec_gate")),
+    ]
+    description = _compose_description_block("Application Gateway", pattern, answers, design_facts, mapping)
+
+    fields = {"description": description, "priority": _priority_from(answers)}
+    purpose = f"Application Gateway for {answers.get('application_name') or 'the application'}"
+
+    tags = {
+        "ApplicationName": answers.get("application_name") or "",
+        "BusinessUnit": answers.get("business_unit") or "",
+        "Criticality": _title(answers.get("criticality")) if answers.get("criticality") else "",
+        "Environment": _ENV_LABEL.get(answers.get("environment"), answers.get("environment") or ""),
+        "Owner": answers.get("owner_email") or "",
+        "Sovereignty": "Standard",
+    }
+
+    return {
+        "request_type": "other",
+        "purpose": purpose,
+        "fields": fields,
+        "tags": tags,
+        "user_must_provide": [dict(i) for i in mapping.get("user_must_provide", [])],
+        "follow_on_requests": _resolve_follow_ons(mapping, answers, rule_result, derived),
+    }

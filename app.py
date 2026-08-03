@@ -2210,9 +2210,9 @@ def advisor_page():
     return render_template("advisor.html")
 
 
-def _advisor_find_question_by_id(qid):
+def _advisor_find_question_by_id(service, qid):
     from advisor.question_engine import find_question
-    return find_question(qid)
+    return find_question(service, qid)
 
 
 def _advisor_classify_free_text(question, free_text):
@@ -2220,9 +2220,22 @@ def _advisor_classify_free_text(question, free_text):
     options. Heuristic first (cheap, deterministic); LLM only as a fallback
     for genuinely ambiguous text — never guesses silently past that (falls
     back to 'unsure', which question_engine/rules_engine already handle via
-    default_if_unknown / derivations)."""
+    default_if_unknown / derivations).
+
+    The service-selection question (the literal first question of every
+    conversation) gets its own deterministic keyword fallback
+    (advisor.services.classify_free_text) ahead of the generic option
+    substring/LLM logic below — "I need a cluster" doesn't contain either
+    the value "aks_cluster" or the label "Kubernetes cluster" as a
+    substring, so the generic matcher alone can't route it."""
+    from advisor.services import SERVICE_QUESTION_ID, classify_free_text as classify_service
+
     text = (free_text or "").strip()
     low = text.lower()
+    if question["id"] == SERVICE_QUESTION_ID:
+        matched = classify_service(text)
+        if matched:
+            return matched
     if question["type"] in ("text", "email"):
         return text
     if any(p in low for p in ("don't know", "dont know", "not sure", "unsure", "no idea")):
@@ -2265,10 +2278,32 @@ def _advisor_question_payload(question):
             "options": question.get("options", []), "why_we_ask": question.get("why_we_ask", "")}
 
 
+def _advisor_build_prefill_and_recommendation(service, pattern, answers, result):
+    """Service-aware dispatch to the right prefill builder + recommendation
+    renderer. Storage keeps its own bespoke pair (settings table tailored to
+    its flat design shape); the five-service delta's AKS/VM/Postgres/AppGW
+    all share build_recommendation_generic (see its own docstring for why a
+    generic table works across such heterogeneous catalog `design` shapes)."""
+    from advisor import prefill as advisor_prefill_mod, recommendation
+    if service == "storage_account":
+        prefill_payload = advisor_prefill_mod.build_prefill(pattern, answers, result)
+        rec = recommendation.build_recommendation(pattern, answers, result, prefill_payload)
+    else:
+        builder = {
+            "aks_cluster": advisor_prefill_mod.build_prefill_aks,
+            "vm_create": advisor_prefill_mod.build_prefill_vm,
+            "postgres_create": advisor_prefill_mod.build_prefill_postgres,
+            "app_gateway": advisor_prefill_mod.build_prefill_appgw,
+        }[service]
+        prefill_payload = builder(pattern, answers, result)
+        rec = recommendation.build_recommendation_generic(pattern, answers, result, prefill_payload)
+    return prefill_payload, rec
+
+
 @app.route("/api/advisor/chat", methods=["POST"])
 @require_login
 def api_advisor_chat():
-    from advisor import session_store, question_engine, rules_engine, prefill as advisor_prefill_mod, recommendation
+    from advisor import session_store, question_engine, rules_engine, recommendation
     from advisor.catalog_loader import get_catalog
 
     data = request.get_json(force=True) or {}
@@ -2290,7 +2325,7 @@ def api_advisor_chat():
         free_text = data.get("free_text")
 
         if question_id:
-            question = _advisor_find_question_by_id(question_id) or \
+            question = _advisor_find_question_by_id(state.get("service"), question_id) or \
                 next((p for p in state.get("pending_followups", []) if p["id"] == question_id), None)
             if free_text is not None and value is None and question:
                 if rules_engine.detect_public_access_request(free_text):
@@ -2298,13 +2333,16 @@ def api_advisor_chat():
                 value = _advisor_classify_free_text(question, free_text)
             state = question_engine.record_answer(state, question_id, value)
 
-            blocker = rules_engine.evaluate_blockers(state["answers"])
-            if blocker["blocked"]:
-                state["blocked"] = True
-                state["blocker_message"] = blocker["message"]
-                session_store.save_state(session_id, state)
-                rec = recommendation.build_blocked_response(blocker, state["answers"])
-                return jsonify({"ok": True, "data": {"type": "blocked", "session_id": session_id, **rec}})
+            # No service chosen yet (this WAS the service-selection answer,
+            # or an invalid one) -> nothing to run blockers against yet.
+            if state.get("service"):
+                blocker = rules_engine.evaluate_blockers(state["service"], state["answers"])
+                if blocker["blocked"]:
+                    state["blocked"] = True
+                    state["blocker_message"] = blocker["message"]
+                    session_store.save_state(session_id, state)
+                    rec = recommendation.build_blocked_response(blocker, state["answers"])
+                    return jsonify({"ok": True, "data": {"type": "blocked", "session_id": session_id, **rec}})
 
         next_q = question_engine.next_question(state)
         if next_q is not None:
@@ -2313,11 +2351,23 @@ def api_advisor_chat():
                                                   "question": _advisor_question_payload(next_q)}})
 
         # Question flow exhausted -> run the full deterministic pipeline.
-        result = rules_engine.evaluate_full(state["answers"])
+        service = state["service"]
+        result = rules_engine.evaluate_full(service, state["answers"])
         if result["blocked"]:
             session_store.save_state(session_id, state)
             rec = recommendation.build_blocked_response(result["blocker"], state["answers"])
             return jsonify({"ok": True, "data": {"type": "blocked", "session_id": session_id, **rec}})
+
+        # A `redirect` escalation (currently only Postgres's self_managed ->
+        # vm_workload_standard) sends the whole recommendation to a
+        # different service's pattern — informational only, never a
+        # fabricated cross-service prefill (see build_redirect_response).
+        redirect_esc = next((e for e in result["escalations"] if e.get("redirect")), None)
+        if redirect_esc:
+            session_store.save_state(session_id, state)
+            catalog = get_catalog()
+            rec = recommendation.build_redirect_response(result, catalog, state["answers"])
+            return jsonify({"ok": True, "data": {"type": "redirect", "session_id": session_id, **rec}})
 
         selection = result["selection"]
         if selection["outcome"] == "ask_tiebreak":
@@ -2338,8 +2388,8 @@ def api_advisor_chat():
 
         catalog = get_catalog()
         pattern = catalog[selection["winner"]]
-        prefill_payload = advisor_prefill_mod.build_prefill(pattern, state["answers"], result)
-        rec = recommendation.build_recommendation(pattern, state["answers"], result, prefill_payload)
+        prefill_payload, rec = _advisor_build_prefill_and_recommendation(
+            service, pattern, state["answers"], result)
 
         state["derived"] = result["derived"]
         state["escalations"] = result["escalations"]

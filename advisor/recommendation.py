@@ -119,6 +119,7 @@ def build_recommendation(pattern: dict, answers: dict, rule_result: dict, prefil
         "deviations": rule_result.get("deviations", []),
         "warnings": rule_result.get("warnings", []),
         "escalations": rule_result.get("escalations", []),
+        "request_type": prefill_payload.get("request_type"),
         "cost_band": pattern.get("cost_band", "$"),
         "kb_version": pattern.get("kb_version", "1.0.0"),
     }
@@ -188,6 +189,7 @@ def build_recommendation_generic(pattern: dict, answers: dict, rule_result: dict
         "warnings": rule_result.get("warnings", []),
         "escalations": rule_result.get("escalations", []),
         "add_services": rule_result.get("add_services", []),
+        "request_type": prefill_payload.get("request_type"),
         "cost_band": pattern.get("cost_band", "$"),
         "kb_version": pattern.get("kb_version", "2.0.0"),
     }

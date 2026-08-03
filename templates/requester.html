@@ -3322,8 +3322,9 @@ reqLoadChats();
 {% if advisor_prefill %}
 (function applyAdvisorPrefill() {
   const payload = {{ advisor_prefill | tojson }};
-  selectType('storage_account_create');
-  const section = document.getElementById('section-storage_account_create');
+  const requestType = payload.request_type || 'storage_account_create';
+  selectType(requestType);
+  const section = document.getElementById('section-' + requestType);
   if (!section) return;
   Object.entries(payload.fields || {}).forEach(([key, value]) => {
     if (key === 'business_justification') return;  // handled separately below
@@ -3337,6 +3338,10 @@ reqLoadChats();
   const justification = document.getElementById('g_justification');
   if (justification && payload.fields && payload.fields.business_justification) {
     justification.value = payload.fields.business_justification;
+  }
+  const purposeEl = document.getElementById('g_purpose');
+  if (purposeEl && payload.purpose) {
+    purposeEl.value = payload.purpose;
   }
   showResult('newReqResult', resultBox('info',
     'Prefilled from the AI Architecture Advisor — review every field before submitting. ' +

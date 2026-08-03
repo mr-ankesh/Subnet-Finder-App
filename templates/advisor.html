@@ -7,7 +7,7 @@
   <div class="alloc-page-header-content">
     <div class="p-eyebrow" style="margin-bottom:10px;">Operations · Guided Intake</div>
     <h1 class="alloc-page-title">AI Architecture Advisor</h1>
-    <p class="alloc-page-sub">Answer a few plain-English questions and get a Presight-approved storage architecture, prefilled into a request you review before submitting. Rules decide the pattern — the assistant only explains it.</p>
+    <p class="alloc-page-sub">Answer a few plain-English questions and get a Presight-approved architecture for Storage, Kubernetes, VMs, Databases or Application Gateway — prefilled into a request you review before submitting. Rules decide the pattern — the assistant only explains it.</p>
   </div>
 </div>
 
@@ -83,7 +83,7 @@ function addMsg(text, who) {
 }
 
 async function advStart() {
-  addMsg("Hi — I'll ask a few plain-English questions and recommend a Presight-approved storage setup.", 'bot');
+  addMsg("Hi — I'll ask a few plain-English questions and recommend a Presight-approved setup. First, what are you looking to set up?", 'bot');
   const d = await advCall({});
   advHandle(d);
 }
@@ -112,6 +112,8 @@ function advHandle(data) {
     advRenderBlocked(data);
   } else if (data.type === 'escalate') {
     advRenderEscalate(data);
+  } else if (data.type === 'redirect') {
+    advRenderRedirect(data);
   } else if (data.type === 'recommendation') {
     advShowReview(data.recommendation);
   }
@@ -161,6 +163,15 @@ function advRenderEscalate(data) {
   addMsg(`<b>I don't have enough to pick a standard pattern confidently.</b><br>${esc(data.message)}`, 'bot');
 }
 
+function advRenderRedirect(data) {
+  document.getElementById('advAnswerForm').style.display = 'none';
+  addMsg(
+    `<b>This isn't quite the right conversation for that.</b><br>${esc(data.message)}<br><br>` +
+    `<b>Closest match instead:</b> ${esc(data.target_pattern_name)}<br>${esc(data.target_pattern_summary)}<br><br>` +
+    `${esc(data.restart_hint)}`,
+    'bot');
+}
+
 // ── Answer summary — reviewable/correctable before the recommendation shows ──
 function advShowReview(recommendation) {
   LAST_RECOMMENDATION = recommendation;
@@ -196,6 +207,24 @@ function advConfirmReview() {
   advRenderRecommendation(LAST_RECOMMENDATION);
 }
 
+// Generic renderer for AKS/VM/Postgres/AppGW's raw catalog `design` dict —
+// too heterogeneous across services (nested lists/dicts) for a fixed table,
+// so this just recurses over whatever shape the KB pattern actually has.
+// Every value still comes straight from the KB; nothing is invented here.
+function advRenderDesignValue(val, depth) {
+  depth = depth || 0;
+  if (val === null || val === undefined) return '';
+  if (Array.isArray(val)) {
+    return '<ul style="margin:2px 0 6px 14px;">' + val.map(v =>
+      `<li>${advRenderDesignValue(v, depth + 1)}</li>`).join('') + '</ul>';
+  }
+  if (typeof val === 'object') {
+    return '<ul style="margin:2px 0 6px 14px;">' + Object.entries(val).map(([k, v]) =>
+      `<li><b>${esc(k.replace(/_/g, ' '))}:</b> ${advRenderDesignValue(v, depth + 1)}</li>`).join('') + '</ul>';
+  }
+  return esc(val);
+}
+
 // ── Recommendation — fixed section order per recommendation_template.md ──
 function advRenderRecommendation(rec) {
   const el = document.getElementById('advRecommendation');
@@ -205,7 +234,21 @@ function advRenderRecommendation(rec) {
     `<tr><td>${esc(r.setting)}</td><td style="color:#fff;">${esc(r.value)}</td><td>${esc(r.why)}</td></tr>`).join('');
 
   const requests = rec.requests.map((r, i) =>
-    `<li><b>${esc(r.label)}</b>${r.note ? ' — ' + esc(r.note) : ''}</li>`).join('');
+    `<li><b>${esc(r.label)}</b>${r.note ? ' — ' + esc(r.note) : ''}` +
+    `${r.condition_note ? `<br><span style="color:var(--text-muted);font-size:11px;">${esc(r.condition_note)}</span>` : ''}</li>`
+  ).join('');
+
+  // AKS/VM/Postgres/AppGW's raw catalog `design` dict (storage's own
+  // build_recommendation() doesn't set this key at all — its settings
+  // table above already covers the equivalent ground).
+  const designHtml = (rec.design && Object.keys(rec.design).length)
+    ? `<div class="adv-section-label">Design details</div><div class="adv-checklist">${advRenderDesignValue(rec.design)}</div>`
+    : '';
+
+  const addServicesHtml = (rec.add_services && rec.add_services.length)
+    ? `<div class="adv-section-label">You'll also need</div><ul class="adv-checklist">${
+        rec.add_services.map(s => `<li>${esc(s.replace(/_/g, ' '))}</li>`).join('')}</ul>`
+    : '';
 
   const prereqs = rec.prerequisites.length
     ? `<div class="adv-section-label">Before you start</div><ul class="adv-checklist">${
@@ -225,10 +268,19 @@ function advRenderRecommendation(rec) {
     ? `<div class="adv-section-label">Please note</div>${notes.map(n => `<div class="adv-note-box">${esc(n)}</div>`).join('')}`
     : '';
 
+  // message_ref content (e.g. the InfoSec gate) is loaded verbatim by
+  // rules_engine and must render exactly as authored — never narrated or
+  // rephrased by the LLM, so it gets its own literal heading/body/next_step
+  // block instead of being squeezed into the flag/message one-liner.
   const flagsHtml = rec.escalations.length
-    ? `<div class="adv-section-label">Flagged for review</div>${rec.escalations.map(f =>
-        `<div class="adv-flag-box"><b>${esc(f.flag)}</b> — ${esc(f.message)}</div>`).join('')}`
+    ? `<div class="adv-section-label">Flagged for review</div>${rec.escalations.map(f => f.message_ref
+        ? `<div class="adv-flag-box"><b>${esc(f.message_ref.heading || '')}</b><br>${esc(f.message_ref.body || '')}` +
+          `${f.message_ref.next_step ? `<br><br><b>Next step:</b> ${esc(f.message_ref.next_step)}` : ''}</div>`
+        : `<div class="adv-flag-box"><b>${esc(f.flag || f.id)}</b> — ${esc(f.message)}</div>`
+      ).join('')}`
     : '';
+
+  const openLabel = rec.request_type === 'other' ? 'Open the request (as "Other")' : 'Open the request';
 
   el.innerHTML = `
     <div class="adv-glass">
@@ -250,14 +302,16 @@ function advRenderRecommendation(rec) {
       <div class="adv-section-label">Requests you'll need to raise</div>
       <ol class="adv-checklist">${requests}</ol>
 
+      ${designHtml}
       ${prereqs}
       ${prefilled}
       ${mustProvide}
       ${notesHtml}
       ${flagsHtml}
+      ${addServicesHtml}
 
       <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
-        <button class="btn btn-glow" onclick="advOpenRequest()"><i class="bi bi-box-arrow-up-right me-1"></i>Open the Storage Account request</button>
+        <button class="btn btn-glow" onclick="advOpenRequest()"><i class="bi bi-box-arrow-up-right me-1"></i>${esc(openLabel)}</button>
         <span style="font-size:11px;color:var(--text-muted);">Review everything before submitting — nothing is submitted automatically.</span>
       </div>
 

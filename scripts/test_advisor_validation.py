@@ -26,7 +26,9 @@ from advisor.pattern_matcher import score
 from advisor.rules_engine import evaluate_full, evaluate_blockers
 from advisor.question_engine import (next_question, record_answer, is_complete,
                                       _normalize_options, _normalize_skip_if, _service_questions)
-from advisor.prefill import build_prefill, build_prefill_aks, build_prefill_vm
+from advisor.prefill import (build_prefill, build_prefill_aks, build_prefill_vm,
+                             build_prefill_postgres, build_prefill_appgw)
+from advisor.recommendation import build_recommendation_generic, build_redirect_response
 from advisor.diagram_builder import render as render_diagram
 from advisor import services as advisor_services
 from pathlib import Path
@@ -604,5 +606,66 @@ aks_diag_nogpu = render_diagram(catalog["aks_private_standard"], {"vnet_name": "
 check("AKS diagram: GPU node stripped when gpu_required=false",
       'GPU["GPU node pool' not in aks_diag_nogpu and "SN --- GPU" not in aks_diag_nogpu
       and "class GPU warn" not in aks_diag_nogpu)
+
+# ── prefill.py: Postgres/AppGW -> RequestType.OTHER (no dedicated type yet) ─
+print("\nprefill.py: Postgres/AppGW compose into RequestType.OTHER's description")
+pg_answers = {
+    "subscription_available": True, "purpose": "app database", "consumer": ["aks"],
+    "managed_preference": "managed", "size_estimate": "100 GB, ~200 connections", "ha_requirement": "unsure",
+    "rpo_rto": "1 hour RPO, 4 hour RTO", "environment": "prd", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "MyApp", "owner_email": "a@b.com", "criticality": "high",
+}
+pg_result = evaluate_full(POSTGRES, pg_answers)
+p_pg = build_prefill_postgres(catalog[pg_result["selection"]["winner"]], pg_answers, pg_result)
+check("Postgres: request_type is 'other' (no dedicated RequestType yet)", p_pg["request_type"] == "other")
+check("Postgres: description composed (no per-field prefill possible on this form)",
+      "description" in p_pg["fields"] and len(p_pg["fields"]["description"]) > 100)
+check("Postgres: description states the dedicated-type-coming note",
+      "doesn't have a dedicated request type" in p_pg["fields"]["description"])
+check("Postgres: description surfaces the derived HA decision (prd+unsure->zone_redundant)",
+      "zone_redundant" in p_pg["fields"]["description"])
+check("Postgres: description includes the full user_must_provide checklist inline",
+      "server_name" in p_pg["fields"]["description"] and "key_vault_name" in p_pg["fields"]["description"])
+check("Postgres: priority derived high for prd", p_pg["fields"]["priority"] == "high")
+check("Postgres: no fields invented beyond description/priority (RequestType.OTHER's only two fields)",
+      set(p_pg["fields"].keys()) == {"description", "priority"})
+
+appgw_answers = {
+    "subscription_available": True, "backend": "aks", "routing_need": "single_backend",
+    "public_hostname": "app.presight.ai", "audience": "internal staff, low volume",
+    "exposure": "public_internet", "environment": "prd", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "MyApp", "owner_email": "a@b.com", "criticality": "high",
+}
+appgw_result = evaluate_full(APPGW, appgw_answers)
+p_appgw = build_prefill_appgw(catalog[appgw_result["selection"]["winner"]], appgw_answers, appgw_result)
+check("AppGW: request_type is 'other' (no dedicated RequestType yet)", p_appgw["request_type"] == "other")
+check("AppGW: description surfaces InfoSec onboarding requirement", "InfoSec" in p_appgw["fields"]["description"])
+check("AppGW: description surfaces the public hostname", "app.presight.ai" in p_appgw["fields"]["description"])
+check("AppGW: priority derived high for prd", p_appgw["fields"]["priority"] == "high")
+
+# ── recommendation.py: generic builder + redirect response ────────────────
+print("\nrecommendation.py: generic builder (AKS) + redirect response (Postgres self_managed)")
+rec_aks = build_recommendation_generic(catalog[aks_result["selection"]["winner"]], aks_answers,
+                                        aks_result, p_aks)
+check("generic recommendation: security_floor becomes the settings table",
+      any(r["setting"] == "Private Api Server" for r in rec_aks["table_rows"]))
+check("generic recommendation: raw design dict passed through, not flattened away",
+      "node_pools" in rec_aks["design"])
+check("generic recommendation: required_requests always shown, condition surfaced as a caveat",
+      any(r.get("condition_note", "").startswith("Applies when:") for r in rec_aks["requests"]))
+check("generic recommendation: add_services carried through", "add_services" in rec_aks)
+
+redirect_result = evaluate_full(POSTGRES, {
+    "subscription_available": True, "purpose": "app database", "consumer": ["aks"],
+    "managed_preference": "self_managed", "size_estimate": "10 GB", "ha_requirement": "single",
+    "rpo_rto": "1 day", "environment": "dev", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "App", "owner_email": "a@b.com", "criticality": "low",
+})
+redirect_answers = {"managed_preference": "self_managed", "purpose": "app database"}
+redirect_resp = build_redirect_response(redirect_result, catalog, redirect_answers)
+check("redirect response targets vm_workload_standard", redirect_resp["target_pattern_id"] == "vm_workload_standard")
+check("redirect response never fabricates VM-shaped fields — only summary + restart hint",
+      set(redirect_resp.keys()) == {"redirect", "target_pattern_id", "target_pattern_name",
+                                     "target_pattern_summary", "message", "restart_hint", "captured_so_far"})
 
 print(f"\n{passed} checks passed.")
