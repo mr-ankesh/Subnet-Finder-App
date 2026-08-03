@@ -59,6 +59,7 @@ CATEGORIES = {
     "teams":         {"title": "Teams",                "desc": "The requester teams. A team is mandatory when raising a request, and a requester can see every ticket raised by their team."},
     "approvals":     {"title": "Approvals",            "desc": "Optional approval flow: hold selected request types until the requester's line manager approves. Approval routing relies on the manager attribute flowing from Azure Entra ID into Keycloak and out as a token claim — enabling the feature runs a dependency check and auto-disables if the prerequisites aren't met."},
     "agent":         {"title": "AI Agent / LLM",      "desc": "Provider and model used by the requester & admin chat agents. Changes apply to the next conversation turn — no restart needed."},
+    "advisor":       {"title": "Advisor",              "desc": "The AI Architecture Advisor's persistent conversational chat — history, free-form Q&A, resume. Uses the same AI Agent / LLM provider configured above; these settings only control the chat's own limits and lifecycle."},
     "auth":          {"title": "Authentication",      "desc": "Keycloak-ready SSO configuration. Values are stored now; enforcement ships with the integration (see docs/KEYCLOAK.md for the step-by-step guide) — login stays password-based until then."},
     "safety":        {"title": "Safety",              "desc": "Guard rails for Azure execution."},
 }
@@ -404,6 +405,20 @@ SETTINGS_SPEC = {
                              help="Only used when the endpoint is Azure OpenAI (*.azure.com)."),
     "OPENAI_MODEL":       _f("agent", "Model / deployment name", "gpt-4o",
                              help="OpenAI model, Azure deployment name, or your on-premise model tag (e.g. qwen3:30b)."),
+
+    # ── Advisor (persistent chat) ──
+    "ADVISOR_CHAT_HISTORY_ENABLED": _f("advisor", "Enable persistent chat history", "true", type="bool",
+                                       help="On: /advisor is the conversation-list-and-resume chat. Off: the "
+                                            "original single-shot guided flow, unchanged, no history."),
+    "ADVISOR_MAX_MESSAGES_PER_CONVERSATION": _f("advisor", "Max messages per conversation", "200", type="int",
+                                                help="Once reached, the conversation is marked complete and the "
+                                                     "user is prompted to start a new one — keeps a single "
+                                                     "conversation from growing unbounded."),
+    "ADVISOR_CONTEXT_WINDOW_TURNS": _f("advisor", "LLM context window (turns)", "20", type="int",
+                                       help="How many recent turns are sent to the LLM for classification/"
+                                            "narration. Older turns are summarised, not truncated mid-conversation."),
+    "ADVISOR_RETENTION_DAYS": _f("advisor", "Conversation retention (days)", "0", type="int",
+                                 help="Conversations older than this are no longer listed. 0 = keep indefinitely."),
 
     # ── Authentication (Keycloak-ready; not enforced yet) ──
     "AUTH_PROVIDER":          _f("auth", "Auth provider", "local", options=["local", "keycloak"],

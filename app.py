@@ -508,15 +508,22 @@ def _chat_owner(kind: str) -> str:
 
 
 def _advisor_owner_key() -> str:
-    """Stable per-user key for the advisor's persistent conversations. Uses the
-    Keycloak 'sub' claim under SSO — not email or display name, since both can
-    change while 'sub' doesn't — falling back to sso_email/sso_user only if a
-    token somehow omitted it. Local dev has no Keycloak at all, so it falls
-    back to the admin name, matching _chat_owner's own local-dev behaviour."""
+    """Stable per-user key for the advisor's persistent conversations. Uses
+    the Keycloak 'sub' claim under SSO — not email or display name, since
+    both can change while 'sub' doesn't — falling back to sso_email/sso_user
+    only if a token somehow omitted it.
+
+    The advisor is requester-facing (@require_login, not @require_admin —
+    "a requester unsure what to ask for"), so its local-dev/non-SSO fallback
+    mirrors _chat_owner("requester")'s anonymous per-session chat_uid, NOT
+    _chat_owner("admin")'s single shared "admin" string — the latter would
+    make every unauthenticated local session collapse onto one identity and
+    see each other's conversations, which is exactly the cross-owner leak
+    item 3's verification checks for."""
     if session.get("sso"):
         return (session.get("sso_sub") or session.get("sso_email")
                 or session.get("sso_user") or "sso-user")
-    return session.get("admin_name") or "admin"
+    return _chat_owner("requester")
 
 
 def _sso_identity(client_name: str = "", client_email: str = ""):
@@ -2228,7 +2235,91 @@ def requester_page():
 @app.route("/advisor")
 @require_login
 def advisor_page():
-    return render_template("advisor.html")
+    if cfg.ADVISOR_CHAT_HISTORY_ENABLED:
+        from advisor import conversations as advisor_conversations
+        owner = _advisor_owner_key()
+        convs = advisor_conversations.list_conversations(owner)
+        return render_template("advisor.html", chat_history_enabled=True,
+                               conversations=convs, conversation=None, messages=None,
+                               conversation_state=None)
+    return render_template("advisor.html", chat_history_enabled=False)
+
+
+@app.route("/advisor/c/<int:conversation_id>")
+@require_login
+def advisor_conversation_page(conversation_id):
+    from advisor import conversations as advisor_conversations
+    owner = _advisor_owner_key()
+    if not advisor_conversations.owns(conversation_id, owner):
+        return render_template("advisor.html", chat_history_enabled=True,
+                               conversations=advisor_conversations.list_conversations(owner),
+                               conversation=None, messages=None, conversation_state=None,
+                               not_found=True), 404
+    conv = advisor_conversations.get_conversation(conversation_id)
+    messages = advisor_conversations.list_messages(conversation_id)
+    state = advisor_conversations.get_state(conversation_id)
+    convs = advisor_conversations.list_conversations(owner)
+    return render_template("advisor.html", chat_history_enabled=True, conversations=convs,
+                           conversation=conv, messages=messages, conversation_state=state)
+
+
+@app.route("/api/advisor/conversations", methods=["POST"])
+@require_login
+def api_advisor_conversations_create():
+    from advisor import conversations as advisor_conversations, orchestrator as advisor_orchestrator
+    data = request.get_json(force=True) or {}
+    mode = data.get("mode")
+    if mode not in advisor_conversations.VALID_MODES:
+        return jsonify({"ok": False, "data": None, "error": "mode must be 'service' or 'environment'."}), 400
+    try:
+        owner = _advisor_owner_key()
+        cid = advisor_conversations.create_conversation(owner, mode, service=data.get("service"))
+        first = advisor_orchestrator.start_conversation(cid, mode)
+        return jsonify({"ok": True, "data": {"conversation_id": cid, **first}})
+    except Exception as exc:
+        log.exception("advisor conversation create failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
+
+
+@app.route("/api/advisor/conversations/<int:conversation_id>", methods=["DELETE"])
+@require_login
+def api_advisor_conversations_delete(conversation_id):
+    from advisor import conversations as advisor_conversations
+    owner = _advisor_owner_key()
+    deleted = advisor_conversations.delete_conversation(conversation_id, owner)
+    if not deleted:
+        return jsonify({"ok": False, "data": None, "error": "Conversation not found."}), 404
+    return jsonify({"ok": True, "data": {"deleted": True}})
+
+
+@app.route("/api/advisor/conversations/<int:conversation_id>/messages", methods=["POST"])
+@require_login
+def api_advisor_conversations_turn(conversation_id):
+    from advisor import conversations as advisor_conversations, orchestrator as advisor_orchestrator
+    owner = _advisor_owner_key()
+    if not advisor_conversations.owns(conversation_id, owner):
+        return jsonify({"ok": False, "data": None, "error": "Conversation not found."}), 404
+    conv = advisor_conversations.get_conversation(conversation_id)
+    data = request.get_json(force=True) or {}
+    text = data.get("text", "")
+    question_id = data.get("question_id")
+    is_chip = bool(data.get("is_chip"))
+    chip_value = data.get("chip_value")
+
+    max_msgs = int(cfg.ADVISOR_MAX_MESSAGES_PER_CONVERSATION or 200)
+    if conv["message_count"] >= max_msgs:
+        return jsonify({"ok": False, "data": None,
+                        "error": "This conversation has reached its message limit — please start a new one."}), 400
+    try:
+        result = advisor_orchestrator.process_turn(conversation_id, conv["mode"], text, question_id,
+                                                     is_chip=is_chip, chip_value=chip_value)
+        if result["type"] == "conflict":
+            return jsonify({"ok": False, "data": None,
+                            "error": "This conversation was updated elsewhere — please reload."}), 409
+        return jsonify({"ok": True, "data": result})
+    except Exception as exc:
+        log.exception("advisor conversation turn failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
 
 
 def _advisor_find_question_by_id(service, qid):
