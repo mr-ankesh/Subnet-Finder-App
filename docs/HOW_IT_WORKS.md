@@ -132,7 +132,13 @@ by reading the hub VNET (read-only, works even in dry-run).
    public, an ordered build-wave sequence) rather than selecting a catalog
    pattern — still hands off the same way, into the same per-request-type
    forms, just several of them in sequence instead of one. See `CLAUDE.md`
-   → "Environment composer" for the full design.
+   → "Environment composer" for the full design. With `ADVISOR_CHAT_HISTORY_ENABLED`
+   on (Settings → Advisor), `/advisor` is a persistent, resumable conversation
+   rather than a single-shot flow — history, free-form "what does X mean?"
+   mid-intake, and correcting an earlier answer, for both the single-service
+   and environment paths above. Off, it's the original single-shot flow,
+   unchanged. See `CLAUDE.md` → "Persistent, conversational chat" for the
+   full design.
 1. **Submit** — requester uses the form or the AI chat agent. Both paths hit
    the same validated creation code (subnet fit, FQDN-only application
    rules, ports/protocol parsing — bad input is rejected at submission, not

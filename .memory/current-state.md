@@ -1,6 +1,6 @@
 # Current State
 
-> Last updated: 2026-08-03. Update this file at the end of every session
+> Last updated: 2026-08-04. Update this file at the end of every session
 > (see maintenance rules in `CLAUDE.md` → "Session Memory Protocol").
 
 ## Development Status
@@ -16,8 +16,12 @@ committed 2026-08-03 (`1aca22a`/`cc1e58c`/`1c70a91`). Azure CNI Overlay
 correction applied across both the single-service and composer KBs
 (`ce7874b`/`d27d4cb`/`7bf8459`). Environment composer (Phase 3 — whole-
 environment design, not pattern selection) committed 2026-08-03
-(`2298611`/`6fde2de`/`9da0fe1`/`5144094`/`7e67cae`) — see "Features In
-Progress" below for the full breakdown. Remaining uncommitted changes are
+(`2298611`/`6fde2de`/`9da0fe1`/`5144094`/`7e67cae`). Advisor converted to a
+persistent, conversational chat with history (resume, free-form Q&A
+mid-intake, correcting an earlier answer) — committed 2026-08-04
+(`7250095`/`abbc024`/`e930961`/`b6adea0`/`27adfd7`/`93f97e7`) — see
+"Features In Progress" below for the full breakdown. Remaining uncommitted
+changes are
 the unrelated cosmetic/infra items noted below (predate all advisor work).
 `main` is the only branch; commits go straight to it.
 
@@ -208,6 +212,71 @@ negative case, both verified to pass exactly).
   correctly (including the InfoSec box and the diagram's Cloudflare
   subgraph), repeat for an internal-only environment to confirm those
   sections are absent.
+
+### Persistent conversational chat — fully committed (`7250095`/`abbc024`/`e930961`/`b6adea0`/`27adfd7`/`93f97e7`)
+
+Third build on the advisor this cycle: converts it from a single-shot
+guided flow into a real, resumable conversation with history — for BOTH
+the single-service and environment-composer modes above. Additive, not a
+rewrite: `advisor/session_store.py` and every route from the two phases
+above are untouched; `ADVISOR_CHAT_HISTORY_ENABLED` (Settings → Advisor)
+switches which UI `/advisor` renders. See `CLAUDE.md` → "Persistent,
+conversational chat" for the full design.
+
+- New `advisor/conversations.py` (3 raw-SQL tables: `advisor_conversations`/
+  `advisor_messages`/`advisor_state`, cascade delete, optimistic
+  concurrency via a `version` column), `advisor/orchestrator.py` (the
+  state machine — reuses `question_engine.py`/`advisor/composer/intake.py`
+  entirely unchanged; the LLM only classifies a turn and narrates
+  free-form answers, never advances the pending-question pointer),
+  `advisor/glossary.py` (loads the new `advisor_kb/glossary.yaml`, 51
+  terms/83 aliases), `advisor/freeform.py` (grounded Q&A: glossary → 
+  catalog → platform_constants, labelled presight_standard/general_azure/
+  outside_scope, never invents a Presight practice, never recomputes a
+  CIDR).
+- 5 new/changed routes (`/advisor` branches on the setting, `/advisor/c/<id>`,
+  `POST /api/advisor/conversations`, `DELETE .../<id>`,
+  `POST .../<id>/messages`); `config.py` gained an Advisor settings
+  category (4 entries); `session["sso_sub"]` now captured in the OIDC
+  callback for stable per-user ownership.
+- `templates/advisor.html` gained a sidebar (conversations grouped Today/
+  This week/Older, mode badge) + transcript UI with guided/freeform turns
+  visually distinguished, entirely inside an `ADVISOR_CHAT_HISTORY_ENABLED`
+  branch — the old single-shot markup/JS is untouched in its own branch.
+- `scripts/test_advisor_conversations.py` (new, 38 checks covering all 19
+  spec verification items) + `test_advisor_validation.py` unaffected (232
+  checks still passing).
+- **Verified for real, not reasoned about**: schema creation + CRUD +
+  optimistic concurrency + cascade delete ran against BOTH SQLite and a
+  real local Postgres 18 instance (Homebrew, no Docker daemon available in
+  this environment) with identical results. Full conversation lifecycles
+  (create → turn → resume) verified live via HTTP against the running dev
+  server for both modes, including the environment-mode resume carrying
+  the complete canonical positive plan (arithmetic, Pod CIDR paragraph,
+  InfoSec section, all 7 waves).
+- **Three real bugs found and fixed during this build** (see
+  `architecture-decisions.md` 2026-08-04 entries): `classify_turn` crashed
+  on any synthetic/dynamic question via an unguarded `.get()` on `None`,
+  only "working" because the broad exception handler caught it and fell
+  back to guided by accident; `save_state()`'s optional fields defaulted to
+  `None` instead of "leave unchanged," so any call that only meant to
+  touch `answers_json` silently wiped an already-stored recommendation;
+  `_advisor_owner_key()`'s local-dev fallback initially copied
+  `_chat_owner("admin")`'s single shared identity instead of
+  `_chat_owner("requester")`'s per-session one — a real cross-owner
+  conversation leak caught live (the advisor is requester-facing, not
+  admin-only) and fixed before this reached the UI-verification pass.
+- **Browser verification**: genuinely attempted, not just re-checked for
+  availability — `pip install playwright` succeeded, but `playwright
+  install chromium` never completed after 35+ minutes (retried its own
+  download at least once) in this sandboxed environment's network and was
+  killed rather than left running indefinitely. No Docker daemon and no
+  pre-installed browser either. UI verification that did complete instead:
+  full HTTP round-trip for both modes including the environment-mode
+  resume bootstrap, a `node --check` syntax pass on the extracted inline
+  JS, and a hand-verified Jinja if/else/endif balance check — NOT an
+  actual rendered-page/click-through pass. See `next-actions.md` for the
+  specific manual checklist.
 
 ### Resource Relationship Graph — fully committed (`66824be`, `5b12f9f`, `9fff6b1`)
 

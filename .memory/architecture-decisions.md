@@ -746,3 +746,75 @@ migration, and `scripts/sqlite_to_postgres.py` needs no new entry, unlike
 every genuinely new raw-SQL table added in prior phases (see the
 `subscription_inventory`/`budget_alert_state`/`agent_chats` precedent in
 `CLAUDE.md`'s "Two DB backends" section).
+
+## 2026-08-04 — Persistent chat: the state machine owns the pending-question pointer, the LLM never advances it
+
+**Decision:** Every state transition in the advisor's new persistent
+conversation (`advisor/orchestrator.py`) goes through `question_engine.py`
+(service mode) or `advisor/composer/intake.py` (environment mode) — the
+same pure-function engines the original single-shot flow already used,
+completely unchanged. The LLM is consulted in exactly two places
+(`classify_turn()`, `advisor.freeform.answer()`), and neither is ever
+allowed to record an answer the underlying engine didn't validate, move
+the pending-question pointer, skip a question, or invent a number.
+`classify_turn()`'s job is narrowly "is this turn guided, freeform, or
+both" — nothing more; the actual recording/advancing always happens via
+`record_answer()`/`next_question()`.
+
+**Why:** free-form chat is exactly where the advisor's core contract
+("Rules decide. LLM explains.") is easiest to accidentally violate — a
+general-knowledge model asked to help mid-conversation will happily
+narrate something that contradicts a rule outcome, or "helpfully" infer
+that the next question can be skipped. Keeping the state machine as the
+sole owner of the pointer means a classification mistake can, at worst,
+cause one extra clarifying turn — it can never corrupt the underlying
+answers or desynchronize the conversation from what was actually recorded.
+
+**Classification-failure fallback, and why it's tested as TWO separate
+failure modes, not one.** Any classifier exception, timeout, or malformed
+JSON response falls back to treating the turn as a guided answer for the
+pending question. This is deliberately verified as a DISTINCT test from
+"the whole LLM provider is dead": killing `prompts.call_llm`
+unconditionally (item 13) exercises the same fallback for a different
+reason (nothing works at all) than breaking ONLY the classification call
+while narration would still succeed if reached (item 14) — collapsing
+these into one test would have missed a real bug found during this build
+(see below), since the two failure paths went through different code.
+
+**Bug found: `classify_turn` crashed on every synthetic/dynamic question**
+(the inventory confirm-back turn, a correction confirmation, an
+environment composer `ask:` follow-up) via an unguarded
+`pending_question.get(...)` call when `pending_question` was `None` — it
+only "worked" because the broad `except Exception` caught the
+`AttributeError` and fell back to guided, which happened to be the
+correct behavior anyway, but for the wrong reason and with a misleading
+log message masking what actually failed. Fixed by making
+`pending_question is None` an explicit, intentional guided-always branch,
+same treatment as `type: text_parsed` — both are cases where "did the user
+mean something else instead" isn't a meaningful classification to make.
+
+**Bug found: `conversations.save_state()`'s optional fields defaulted to
+`None` instead of "leave unchanged".** Every call updated
+`pending_question_id`/`selected_pattern`/`recommendation_json`/
+`prefill_payload_json` unconditionally — a call that only meant to persist
+`answers_json` (e.g. flagging a pending correction) silently wiped an
+already-stored recommendation and the current pending question, since
+omitting a kwarg is indistinguishable from passing `None` in Python.
+Caught live: confirming a correction on an already-completed conversation
+first appeared to lose its recommendation before the user had even
+answered the confirmation. Fixed with a private `_UNSET` sentinel default
+and a read-merge inside `save_state()` — each call now only touches the
+fields it explicitly passes, verified by re-running the correction flow
+and confirming the recommendation survives right up until an explicit
+"yes" actually invalidates it.
+
+**Bug found (not the orchestrator's — a genuine security-relevant one):
+`_advisor_owner_key()`'s local-dev fallback copied `_chat_owner("admin")`'s
+single shared `"admin"` identity instead of `_chat_owner("requester")`'s
+per-session `chat_uid`.** The advisor is requester-facing
+(`@require_login`, not `@require_admin`), so every unauthenticated local
+session collapsed onto the same owner key and could open each other's
+conversations by ID — caught live while smoke-testing item 3's
+cross-owner-denial check (a second `requests.Session()` was getting a 200
+with the first session's transcript, not a 404). Fixed to mirror the
+requester fallback; reverified with two separate sessions.

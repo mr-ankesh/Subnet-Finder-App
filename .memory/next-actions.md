@@ -2,7 +2,7 @@
 
 > Prioritized, actionable only. Completed items are removed (not archived —
 > history lives in `daily/`/`weekly`/`monthly` and `architecture-decisions.md`).
-> Last updated: 2026-08-03 (environment composer / Phase 3 session).
+> Last updated: 2026-08-04 (persistent conversational chat session).
 
 ## P0 — Ship-blocking
 
@@ -10,25 +10,39 @@ None currently.
 
 ## P1 — Follow-up
 
-1. Visually confirm the Advisor's chat UI in an actual browser — for all
-   five selectable single-service options AND the new environment-composer
-   mode. No headless-browser tool was reached for in this session (same
-   standing gap as the Resource Relationship Graph, still unresolved:
-   `npm ls puppeteer playwright` empty, no `chromium`/`google-chrome`
-   binary). Verification was via `scripts/test_advisor_validation.py` (232
-   checks, up from 63) plus real HTTP-level end-to-end runs against the
-   live Flask dev server (a full AKS conversation through diagram+prefill
-   handoff, a Postgres self_managed redirect, an AppGW public-exposure
-   InfoSec-gate render, and — new this round — the full environment-composer
-   flow for both the public and internal-only canonical cases through all 4
-   `/api/advisor/environment/*` routes) — not an actual rendered page in a
-   browser. Specifically worth a look: the service-selection chip menu, the
-   "you'll also need" (add_services) section, the generic recursive
-   `design` dict renderer, the verbatim InfoSec-gate box (both the
-   single-service AppGW one and the environment composer's), the mode
-   picker cards, the environment plan's subnet table/arithmetic
-   block/Pod-CIDR paragraph/wave table, and the Mermaid diagram render for
-   both the environment_full.mmd public and internal-only variants.
+1. Visually confirm the Advisor's chat UI in an actual browser — all five
+   single-service options, the environment-composer mode, AND (new this
+   round) the persistent-conversation chat (sidebar + transcript +
+   resume). A headless browser was genuinely ATTEMPTED this round, not
+   just checked for: `pip install playwright` succeeded, but `playwright
+   install chromium` never completed after 35+ minutes in this sandboxed
+   environment's network (it retried its own download at least once) and
+   was killed rather than left running — same standing gap as the
+   Resource Relationship Graph, now confirmed as a real install failure,
+   not just "not found". Next session: try again with more time budgeted,
+   or from an environment with faster/unrestricted network egress.
+   Verification so far: `scripts/test_advisor_validation.py` (232 checks)
+   + `scripts/test_advisor_conversations.py` (38 checks, new) + real
+   HTTP-level end-to-end runs against the live Flask dev server for every
+   flow — not an actual rendered page in a browser. Manual click-through
+   checklist for whenever a browser is available:
+   - Sidebar: conversations actually group under Today/This week/Older
+     correctly (not just by creation order), mode badge shows Svc/Env
+     correctly, delete removes the row without a page reload glitch.
+   - Transcript: scrolls to the latest message, guided vs. freeform turns
+     are visually distinguishable at a glance (not just in the DOM), long
+     recommendation content doesn't break the layout.
+   - Chips render correctly for yes_no/single_choice questions and free
+     text is always available alongside them; the working indicator shows
+     during a real (slow) LLM call, not just instantly.
+   - Recommendation re-renders identically on a fresh page load (resume)
+     as it did live — both modes, including the environment plan's subnet
+     table/arithmetic/Pod CIDR paragraph/InfoSec box/wave table.
+   - The Mermaid diagram render (existing gap, still open) for both
+     `environment_full.mmd` variants.
+   - The mode-picker cards and "you'll also need" (add_services) section
+     from the six-service/environment-composer rounds — still unverified
+     visually from those earlier sessions too.
 2. Provision a real LLM provider with a valid `AGENT_PROVIDER` key/license
    for the advisor to actually use — every response so far has fallen back
    to the deterministic path (correct behavior, but the "Why this pattern"
@@ -118,6 +132,27 @@ None currently.
     failure after the storage account exists, CMK/user-assigned-identity
     deploys, and the object-replication/private-endpoint best-effort steps —
     none of these were covered by the 2026-08-01 VM/Storage real E2E pass.
+19. Migrate the original single-shot advisor routes (`/api/advisor/chat`,
+    `/diagram`, `/prefill`, and the four `/environment/*`) onto the new
+    `advisor/conversations.py` schema, deprecating `advisor/session_store.py`
+    entirely. Deliberately NOT done in the persistent-chat build — that
+    build was explicitly additive (new tables, new routes, `advisor_sessions`
+    and every existing route untouched) specifically to avoid rewriting seven
+    routes that had just been verified live. Once this migration happens,
+    `session_store.py` can be deleted and the `?advisor_session=<id>` prefill
+    handoff should be re-pointed at the new schema.
+20. Move the raw-SQL table inventory currently living only in
+    `scripts/sqlite_to_postgres.py`'s `TABLES` list into a proper
+    `RAW_SQL_TABLES` constant in `db_backend.py`, with the migration script
+    importing/reading from there instead of maintaining its own copy. That
+    script is otherwise dead code now that prod is already Postgres — a dead
+    script being the sole authoritative inventory of every raw-SQL table only
+    works while everyone remembers it's there and remembers to update it.
+    This has already caused real gaps before (`subscription_inventory`,
+    `budget_alert_state`, `agent_chats` each went missing from it until
+    someone noticed) and the three new `advisor_conversations`/
+    `advisor_messages`/`advisor_state` tables just added to it are exactly
+    the kind of addition that's easy to forget next time.
 
 ## P2 — Ongoing / standing
 

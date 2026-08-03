@@ -878,6 +878,104 @@ literal acceptance test (positive **and** negative case, both must pass);
   a parallel entry point to `render()` since there's no single catalog
   pattern to key off), `/requests`.
 
+#### Persistent, conversational chat — an additive layer, not a rewrite
+
+`advisor/conversations.py` + `advisor/orchestrator.py` + `advisor/glossary.py`
++ `advisor/freeform.py` turn the advisor into a real conversation: history,
+resume, free-form "what does X mean?" mid-intake, and correcting an earlier
+answer. This is deliberately **additive** — `advisor/session_store.py` and
+every route built in the six-service and environment-composer phases above
+are completely untouched. `ADVISOR_CHAT_HISTORY_ENABLED` (Settings →
+Advisor) switches which UI `/advisor` renders: on, the new conversation-
+list-and-chat; off, the original single-shot flow, byte-for-byte as it
+always was. Migrating the old routes onto the new schema is a deliberate
+follow-up, not part of this build.
+
+- **Three raw-SQL tables** (`advisor_conversations`/`advisor_messages`/
+  `advisor_state`, same `db_backend`/`ensure_table()` pattern as `chats.py`)
+  — `advisor_messages`/`advisor_state` reference `advisor_conversations`
+  with `ON DELETE CASCADE`, so deleting a conversation cleans up both with
+  no orphaned rows. `advisor_state.version` implements optimistic
+  concurrency: a conditional `UPDATE ... WHERE version = ?` rejects a stale
+  write from a second tab rather than corrupting state — verified directly
+  that `cursor.rowcount` reports this identically on `psycopg` and
+  `sqlite3` before relying on it, via `db_backend._Result`'s new `rowcount`
+  property. `save_state()`'s four optional fields
+  (`pending_question_id`/`selected_pattern`/`recommendation`/
+  `prefill_payload`) default to a private `_UNSET` sentinel, not `None` —
+  a real bug caught while building this: a plain `None` default meant any
+  call that only meant to touch `answers_json` (e.g. flagging a pending
+  correction) silently wiped an already-stored recommendation.
+- **`kb_version` is a single hand-bumped constant**
+  (`conversations.KB_VERSION`), not a live aggregate of every KB file's own
+  `kb_version:` field — `catalog_loader`'s `lru_cache` means a running
+  process serves whatever it loaded at start regardless of what's recorded
+  here, and there's no versioned storage of past KB content to actually
+  replay a conversation against. This field survives a resume and is never
+  recomputed on read; it does **not** pin runtime behaviour across a KB
+  edit + process restart — an honest scope limit, not a hidden gap.
+- **The state machine owns the pending-question pointer — the LLM never
+  advances it.** `advisor/orchestrator.py` reuses `question_engine.py`
+  (service mode) and `advisor/composer/intake.py` (environment mode)
+  entirely unchanged for every state transition; the LLM is consulted in
+  exactly two narrow places (`classify_turn()`, `advisor.freeform.answer()`)
+  and neither can record an answer the underlying engine didn't validate,
+  skip a question, or invent a number.
+  - `classify_turn()` (guided/freeform/both) is skipped entirely — treated
+    as deterministically guided — for chip clicks, `text_parsed` questions
+    (the environment composer's inventory parse), and any synthetic/
+    dynamic question with no static definition (the inventory confirm-back
+    turn, a correction confirmation, a composer `ask:` follow-up). Any
+    classifier exception, timeout, or malformed JSON falls back to guided —
+    the guided flow works with the LLM completely dead, verified
+    explicitly and kept as a **distinct** test from "only the classifier is
+    broken" (the latter still exercises real narration if reached).
+  - A freeform turn answers from `advisor.freeform`, then **re-asks the
+    unchanged pending question**, tagged `mode="guided"` — it's the state
+    machine speaking, not freeform narration. `advisor_state
+    .pending_question_id` comes out byte-identical before and after,
+    asserted directly in tests, not just implied by "the question shows
+    again."
+  - **Correction detection runs BEFORE classification**, not after — a
+    deterministic regex + number/keyword extractor, so "actually, make it
+    20 VMs" is caught by rules rather than depending on an LLM correctly
+    recognizing it as freeform. A detected correction never mutates
+    `answers_json` immediately: it produces a confirmation turn and stores
+    the proposed change in `advisor_state` itself (survives a reload, not a
+    module variable) until an explicit yes. Confirming a correction that
+    invalidates an existing recommendation **recomputes** it through
+    `rules_engine.evaluate_full` / `composition_engine.evaluate_full` +
+    `network_planner` — never patches the old numbers.
+- **`advisor/glossary.py`** loads `advisor_kb/glossary.yaml` (51 terms, 83
+  aliases) — whole-phrase match first, then a whole-word-overlap fallback
+  so full-sentence questions ("what does a private endpoint do?") still
+  resolve. Returns `None`, never a guess, when nothing matches.
+- **`advisor/freeform.py`** answers in a fixed lookup order — glossary,
+  then the active service's catalog `when_to_use` text, then
+  `platform_constants.yaml` — every statement labelled
+  `presight_standard`/`general_azure`/`outside_scope`. Two hard rules
+  enforced structurally, not by prompt wording: an LLM narration pass may
+  only rephrase already-retrieved KB text (quoted back into the prompt as
+  facts it must not contradict), with a verbatim-text fallback if it's
+  unavailable or fails; and a question with no KB match returns
+  `outside_scope` **without ever calling the LLM** — the only way to
+  structurally guarantee "never invent a Presight practice not in the KB"
+  rather than trusting a model not to free-associate. Environment-mode
+  CIDR/subnet-size questions ("why is the AKS subnet only a /26?") are
+  checked *before* the glossary (a generic word like "subnet" would
+  otherwise short-circuit into a bare definition) and answered from
+  `network_sizing.yaml`'s own reasoning text with the figure inserted from
+  the caller's already-computed `network_plan` — never recomputed.
+- **`_advisor_owner_key()`** uses the Keycloak `sub` claim under SSO (now
+  captured as `session["sso_sub"]` in the OIDC callback) — not email or
+  display name, since both can change while `sub` doesn't. Its local-dev
+  fallback mirrors `_chat_owner("requester")`'s anonymous per-session
+  `chat_uid`, **not** `_chat_owner("admin")`'s single shared `"admin"`
+  string — a real cross-owner leak caught live while smoke-testing: the
+  advisor is requester-facing (`@require_login`, not `@require_admin`), so
+  the admin-style fallback collapsed every unauthenticated local session
+  onto one identity, letting them open each other's conversations.
+
 ### Separate credentials per concern
 
 Four independent service-principal configs, intentionally isolated so a

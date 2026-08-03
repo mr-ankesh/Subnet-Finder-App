@@ -1,16 +1,16 @@
-# Graph Report - Subnet-finder-app  (2026-08-04)
+# Graph Report - Subnet-finder-app  (2026-08-03)
 
 ## Corpus Check
-- 90 files · ~277,014 words
+- 85 files · ~262,859 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1752 nodes · 3652 edges · 104 communities (98 shown, 6 thin omitted)
-- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 15 edges (avg confidence: 0.52)
+- 1663 nodes · 3394 edges · 88 communities (81 shown, 7 thin omitted)
+- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 12 edges (avg confidence: 0.53)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `93f97e71`
+- Built from commit: `7e67cae3`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -21,16 +21,16 @@
 - notifications.py
 - add_firewall_network_rule
 - reachability.py
-- app.py
+- require_login
 - route
 - azure_tools.py
-- record
+- app.py
 - _network_client
 - _get_credential
-- admin_azure_action
+- record
 - agent_admin.py
 - datetime
-- optimize.py
+- config.py
 - create_spoke_vnet
 - _compute_client
 - netdiag.py
@@ -42,11 +42,11 @@
 - auth_oidc.py
 - Architecture
 - settings_store.py
-- prompts.py
+- recommendation.py
 - composition_engine.py
 - network_planner.py
 - 2026-08-01
-- SpokeRequest
+- Approval
 - RequestType
 - RequestProxy
 - models.py
@@ -58,9 +58,9 @@
 - Keycloak (OIDC) Integration Guide
 - deploy.sh
 - require_itadmin
-- orchestrator.py
+- SpokeRequest
 - Architecture Decisions
-- Approval
+- can_decide
 - changes.py
 - Migration notes — adding services to the existing advisor
 - Azure access required by AlMadar 360
@@ -68,7 +68,7 @@
 - Current State
 - Project Overview
 - test_storage_validation.py
-- _auto_advance
+- current_actor
 - Production Deployment (Docker / Kubernetes)
 - GPU Utilisation Dashboard — Prerequisites & Plan
 - Network Copilot — Brand & Motion System
@@ -92,26 +92,10 @@
 - search.py
 - Environment recommendation template
 - composer/__init__.py
-- conversations.py
-- db_utils.py
-- _create_service_request
-- freeform.py
-- evaluate_safe
-- agent_requester.py
-- diagram_builder.py
-- recommendation.py
-- auth_callback
-- get_composer_file
-- chats.py
-- glossary.py
-- _import_inventory
-- test_advisor_conversations.py
-- env_prefill.py
-- 2026-08-04
-- test_advisor_validation.py
+- rules_engine.py
 - catalog_loader.py
 - prefill.py
-- question_engine.py
+- test_advisor_validation.py
 - pattern_matcher.py
 - AlMadar AI Architecture Advisor — Knowledge Base (Storage V1)
 - Recommendation output template
@@ -120,37 +104,37 @@
 - Catalog schema
 
 ## God Nodes (most connected - your core abstractions)
-1. `require_login()` - 47 edges
-2. `_guard()` - 45 edges
+1. `_guard()` - 45 edges
+2. `require_login()` - 43 edges
 3. `record()` - 43 edges
 4. `_network_client()` - 40 edges
 5. `_is_not_found()` - 35 edges
 6. `require_admin()` - 34 edges
 7. `require_superadmin()` - 33 edges
-8. `Architecture Decisions` - 29 edges
+8. `Architecture Decisions` - 28 edges
 9. `current_actor()` - 27 edges
 10. `2026-08-01` - 27 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `api_advisor_chat()` --calls--> `build_blocked_response()`  [EXTRACTED]
+  app.py → advisor/recommendation.py
+- `api_advisor_chat()` --calls--> `detect_public_access_request()`  [EXTRACTED]
+  app.py → advisor/rules_engine.py
 - `_SkipMigration` --uses--> `Approval`  [INFERRED]
-  app.py → models.py
-- `_SkipMigration` --uses--> `RequestStatus`  [INFERRED]
   app.py → models.py
 - `_SkipMigration` --uses--> `RequestType`  [INFERRED]
   app.py → models.py
 - `_SkipMigration` --uses--> `SpokeRequest`  [INFERRED]
   app.py → models.py
-- `add_route_to_table()` --calls--> `_norm()`  [INFERRED]
-  azure_tools.py → db_backend.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (104 total, 6 thin omitted)
+## Communities (88 total, 7 thin omitted)
 
 ### Community 0 - "insert_returning_id"
-Cohesion: 0.17
-Nodes (8): _EmptyCursor, insert_returning_id(), _norm(), INSERT that returns the new row id on both backends., Normalise a cell so raw callers see the SQLite-era shape (str timestamps)., Eager, backend-neutral result: dict rows materialised at fetch time., Rows affected by the last UPDATE/DELETE — verified identical on both psycopg…, _Result
+Cohesion: 0.20
+Nodes (7): _EmptyCursor, insert_returning_id(), _norm(), INSERT that returns the new row id on both backends., Normalise a cell so raw callers see the SQLite-era shape (str timestamps)., Eager, backend-neutral result: dict rows materialised at fetch time., _Result
 
 ### Community 1 - "_guard"
 Cohesion: 0.05
@@ -161,8 +145,8 @@ Cohesion: 0.11
 Nodes (32): _cols(), _compute_summary(), configured(), cost_by_dimension(), cost_by_resource(), cost_daily(), _descendants(), _headers() (+24 more)
 
 ### Community 3 - "notifications.py"
-Cohesion: 0.09
-Nodes (49): _adaptive_card(), _compose_email(), draft_budget_alert(), _draft_email(), draft_threshold_alert(), _email_case(), _email_requester(), _looks_unusable() (+41 more)
+Cohesion: 0.11
+Nodes (44): _adaptive_card(), _compose_email(), draft_budget_alert(), _draft_email(), draft_threshold_alert(), _email_case(), _email_requester(), _looks_unusable() (+36 more)
 
 ### Community 4 - "add_firewall_network_rule"
 Cohesion: 0.10
@@ -172,9 +156,9 @@ Nodes (27): add_firewall_application_rule(), add_firewall_network_rule(), allow_
 Cohesion: 0.10
 Nodes (38): _classify(), configured(), _cpu_line(), health_all(), _is_ip(), _load_key(), _net_ifaces(), _num() (+30 more)
 
-### Community 6 - "app.py"
+### Community 6 - "require_login"
 Cohesion: 0.07
-Nodes (60): _advisor_environment_session(), _advisor_owner_key(), advisor_page(), agent_chat(), agent_chat_delete(), agent_chat_get(), agent_chats_list(), api_advisor_conversations_create() (+52 more)
+Nodes (37): advisor_page(), api_approval_decide(), api_approvals_pending(), api_request_approvals(), approvals_page(), azure_aks_options(), azure_disk_skus(), azure_regions() (+29 more)
 
 ### Community 7 - "route"
 Cohesion: 0.08
@@ -184,9 +168,9 @@ Nodes (44): admin_approvals_health(), admin_settings(), admin_settings_preview_n
 Cohesion: 0.08
 Nodes (33): _addr_covers(), aks_tiers(), _analyze_coverage(), assign_vm_zones(), build_vm_plan(), derive_vm_resource_names(), derive_windows_computer_name(), _extract_taken_indexes() (+25 more)
 
-### Community 9 - "record"
-Cohesion: 0.07
-Nodes (44): admin_assign_cidr_api(), admin_change_revert(), admin_changes(), admin_deallocate_api(), admin_find_subnets_api(), admin_firewall_lookup(), admin_list_requests_api(), admin_search() (+36 more)
+### Community 9 - "app.py"
+Cohesion: 0.12
+Nodes (28): admin_assign_cidr_api(), admin_change_revert(), admin_changes(), admin_deallocate_api(), admin_find_subnets_api(), admin_firewall_lookup(), admin_list_requests_api(), admin_search() (+20 more)
 
 ### Community 10 - "_network_client"
 Cohesion: 0.09
@@ -196,21 +180,21 @@ Nodes (25): add_cidr_to_nsg_rule(), add_udr_routes(), assign_route_table_to_subn
 Cohesion: 0.09
 Nodes (26): aks_source_subnet(), _diag_subs(), _get_credential(), _is_cidr(), list_keyvault_keys(), list_keyvaults(), list_locations(), list_subscriptions() (+18 more)
 
-### Community 12 - "admin_azure_action"
-Cohesion: 0.09
-Nodes (31): admin_azure_action(), admin_storage_preview(), _deploy_one(), _deploy_spoke_route_table(), _deploy_tags(), _fw_params(), For a 'required @ trigger' request type, block an Azure deploy until the line…, Parse the firewall-request details into SDK-ready parameters. ports_protocol… (+23 more)
+### Community 12 - "record"
+Cohesion: 0.07
+Nodes (45): admin_audit(), admin_azure_action(), admin_login(), _auto_advance(), _deploy_one(), _deploy_spoke_route_table(), _deploy_tags(), _done_actions() (+37 more)
 
 ### Community 13 - "agent_admin.py"
-Cohesion: 0.16
-Nodes (25): _actor(), build_system_prompt(), chat(), _chat_anthropic(), _chat_openai(), _compute_free(), _execute_tool(), _get_client() (+17 more)
+Cohesion: 0.05
+Nodes (80): _actor(), build_system_prompt(), chat(), _chat_anthropic(), _chat_openai(), _compute_free(), _execute_tool(), _get_client() (+72 more)
 
 ### Community 14 - "datetime"
 Cohesion: 0.22
 Nodes (14): assess(), _conn(), ensure_table(), evaluate_and_send(), _last_severity(), Automatic over-budget alerts for subscriptions. The hard part isn't emailing at…, Check every opted-in subscription and email escalations. Returns a report:…, Start the periodic budget checker as a daemon thread (idempotent). Runs only… (+6 more)
 
-### Community 15 - "optimize.py"
-Cohesion: 0.14
-Nodes (24): _arg(), configured(), _disk_month(), _f(), _headers(), list_subscriptions(), _metric_stats(), _pip_month() (+16 more)
+### Community 15 - "config.py"
+Cohesion: 0.08
+Nodes (33): _coerce(), Config, Central config — every value resolves live as: DB override → env var → default.…, Attribute access resolves live: DB override → env → default., _arg(), configured(), _disk_month(), _f() (+25 more)
 
 ### Community 16 - "create_spoke_vnet"
 Cohesion: 0.08
@@ -225,76 +209,72 @@ Cohesion: 0.14
 Nodes (21): _addr_in(), _clean_llm(), diagnose(), _has_cjk(), _hub_fw_ip(), _is_ip(), _is_private(), _is_private_domain() (+13 more)
 
 ### Community 19 - "approvals.py"
-Cohesion: 0.15
-Nodes (19): enabled(), has_valid_trigger_approval(), manager_seen(), _mgr_state(), needs_trigger_approval(), open_submission_gate(), policy_for(), preflight() (+11 more)
+Cohesion: 0.16
+Nodes (17): enabled(), has_valid_trigger_approval(), manager_seen(), _mgr_state(), needs_trigger_approval(), policy_for(), preflight(), Line-manager approval flow. Optional gate that holds selected request types… (+9 more)
 
 ### Community 20 - "render.py"
-Cohesion: 0.16
-Nodes (19): _env_label(), _fallback_summary(), Deterministic renderer for environment_recommendation_template.md's shape. This…, Verbatim from infosec_gate.yaml's user_message — never LLM-touched., Normalizes to {step, detail} only. One entry in network_sizing.yaml's…, Everything the frontend/template needs, fully structured — never a single…, The one paragraph an LLM narration pass may rewrite; this is the deterministic…, Never renders the Pod CIDR as a subnet row — it's returned as a separate… (+11 more)
+Cohesion: 0.08
+Nodes (35): _backend_description(), draft_brief(), _field_value(), _gate(), gate_fires(), get_message_ref(), The InfoSec public-exposure gate: detection, verbatim message rendering, and a…, heading/body/next_step, rendered verbatim — never LLM-touched. (+27 more)
 
 ### Community 21 - "require_subnet_access"
-Cohesion: 0.15
-Nodes (22): all_available(), allocate(), allocated(), allocator(), available_base_route(), candidates_from_free(), compute_free_blocks(), deallocate() (+14 more)
+Cohesion: 0.13
+Nodes (24): all_available(), allocate(), allocated(), allocator(), available_base_route(), candidates_from_free(), compute_free_blocks(), deallocate() (+16 more)
 
 ### Community 22 - "api_advisor_chat"
-Cohesion: 0.24
-Nodes (17): detect_public_access_request(), _conn(), create_session(), ensure_table(), get_session(), _now(), owns(), Persistent advisor conversation state — raw sqlite3/db_backend, same pattern as… (+9 more)
+Cohesion: 0.06
+Nodes (62): build_request_list(), _common_fields(), _known_fields_for(), Builds the ordered, prefilled request list for…, Flattens every wave's requests into one ordered list, each carrying {wave,…, _backend_label(), _engine_confirmed_uses_blob(), _escape() (+54 more)
 
 ### Community 23 - "Expected output"
 Cohesion: 0.11
 Nodes (17): Before you start, Build sequence, Changelog — 2.0.0 → 2.1.0, Components, Expected output, Hub integration, Input, Negative test — must also pass (+9 more)
 
 ### Community 24 - "auth_oidc.py"
-Cohesion: 0.13
-Nodes (18): client(), _decode_jwt_payload(), end_session_url(), groups_from_token(), init_oidc(), manager_from_token(), _metadata_url(), Keycloak (OIDC) integration — Authlib. Kept deliberately thin: the OIDC… (+10 more)
+Cohesion: 0.08
+Nodes (32): admin_logout(), _approvals_nav_ctx(), auth_callback(), auth_login(), auth_logout(), _home_endpoint(), inject_globals(), _login_endpoint() (+24 more)
 
 ### Community 25 - "Architecture"
 Cohesion: 0.07
-Nodes (28): AI agents are tool-callers, not free-form SQL/Azure access, AI Architecture Advisor: rules decide, LLM explains — not a `RequestType`, Approval flow: relationship-based routing with a dependency gate, Architecture, Auth: local password or Keycloak SSO, switched live, Azure changes: imperative SDK calls, not IaC, Budget alerts: forecast-gated, not raw-threshold, CIDR pool allocator (the app's namesake feature) (+20 more)
+Nodes (27): AI agents are tool-callers, not free-form SQL/Azure access, AI Architecture Advisor: rules decide, LLM explains — not a `RequestType`, Approval flow: relationship-based routing with a dependency gate, Architecture, Auth: local password or Keycloak SSO, switched live, Azure changes: imperative SDK calls, not IaC, Budget alerts: forecast-gated, not raw-threshold, CIDR pool allocator (the app's namesake feature) (+19 more)
 
 ### Community 26 - "settings_store.py"
 Cohesion: 0.23
 Nodes (16): all_overrides(), _conn(), _decrypt(), delete_override(), _encrypt(), ensure_table(), _fernet(), get_override() (+8 more)
 
-### Community 27 - "prompts.py"
-Cohesion: 0.18
-Nodes (15): load_text_file(), call_llm(), _get_client(), get_environment_recommendation_template(), get_environment_system_prompt(), get_recommendation_template(), get_system_prompts(), Loads the 3 system prompts verbatim from… (+7 more)
+### Community 27 - "recommendation.py"
+Cohesion: 0.09
+Nodes (31): load_text_file(), call_llm(), _get_client(), get_environment_recommendation_template(), get_environment_system_prompt(), get_recommendation_template(), get_system_prompts(), Loads the 3 system prompts verbatim from… (+23 more)
 
 ### Community 28 - "composition_engine.py"
-Cohesion: 0.22
-Nodes (17): dependency_graph(), environment_deviations(), environment_warnings(), evaluate_environment_blockers(), evaluate_full(), exposure_analysis(), infer_missing_components(), Runs advisor_kb/composer/composition_rules.yaml's 8-phase pipeline. Unlike… (+9 more)
+Cohesion: 0.13
+Nodes (30): dependency_graph(), environment_deviations(), environment_warnings(), evaluate_environment_blockers(), evaluate_full(), exposure_analysis(), infer_missing_components(), Runs advisor_kb/composer/composition_rules.yaml's 8-phase pipeline. Unlike… (+22 more)
 
 ### Community 29 - "network_planner.py"
-Cohesion: 0.15
-Nodes (26): _approx_capacity_nodes(), _bucket_lookup(), build_network_plan(), compute_vnet_plan(), mandatory_spoke_wiring(), _pe_service_names(), pod_cidr_info(), _prefix_total_usable() (+18 more)
+Cohesion: 0.13
+Nodes (29): get_platform_constants(), Shared, service-agnostic reference facts (naming pattern, DNS zones, encryption…, aks_private_zone_note(), _approx_capacity_nodes(), _bucket_lookup(), build_network_plan(), compute_vnet_plan(), mandatory_spoke_wiring() (+21 more)
 
 ### Community 30 - "2026-08-01"
 Cohesion: 0.07
 Nodes (27): 2026-08-01, Blockers, Blockers, Blockers, Blockers, Bugs Fixed, Bugs Fixed (caught during this session's own implementation, before commit), Design Decisions (+19 more)
 
-### Community 31 - "SpokeRequest"
-Cohesion: 0.19
-Nodes (9): open_trigger_gate(), Pick the approver for a new checkpoint. The requester's line manager if we have…, Recompute the cached approval_state on the request from its checkpoints., Admin-initiated: send a specific request for approval (discretion mode)., Raise a pending trigger checkpoint (called when a blocked deploy is attempted)., request_discretion_approval(), resolve_approver(), _sync_request_state() (+1 more)
-
-### Community 32 - "RequestType"
-Cohesion: 0.20
-Nodes (4): policy_matrix(), View model for the settings matrix: one row per request type., Request kinds available in the requester portal, each with its own workflow., RequestType
+### Community 31 - "Approval"
+Cohesion: 0.18
+Nodes (14): decide(), open_submission_gate(), open_trigger_gate(), Pick the approver for a new checkpoint. The requester's line manager if we have…, Recompute the cached approval_state on the request from its checkpoints., If this request's type requires approval at submission, create the checkpoint…, Admin-initiated: send a specific request for approval (discretion mode)., Raise a pending trigger checkpoint (called when a blocked deploy is attempted). (+6 more)
 
 ### Community 33 - "RequestProxy"
-Cohesion: 0.25
-Nodes (3): Thin wrapper around a sqlite3.Row dict so notifications.py can call req.field., RequestProxy, RequestStatus
+Cohesion: 0.27
+Nodes (4): policy_matrix(), View model for the settings matrix: one row per request type., Thin wrapper around a sqlite3.Row dict so notifications.py can call req.field., RequestProxy
 
 ### Community 34 - "models.py"
-Cohesion: 0.12
-Nodes (13): Exception, Sentinel to short-circuit the SQLite-only column backfill on Postgres., _SkipMigration, AppSetting, AuditLog, FwCollection, SQLAlchemy models for Spoke Request workflow and subnet inventory., Admin-editable config override (see settings_store.py, which reads/writes this… (+5 more)
+Cohesion: 0.08
+Nodes (24): admin_inventory(), _auto_migrate_excel(), fw_collections(), _import_inventory(), Exception, Bulk-load current allocations. rows = [[subnet, purpose, requested_by,…, Post-deployment onboarding: the app ships with an EMPTY inventory — the admin…, Sentinel to short-circuit the SQLite-only column backfill on Postgres. (+16 more)
 
 ### Community 35 - "resourcegraph.py"
-Cohesion: 0.07
-Nodes (43): _coerce(), Config, Central config — every value resolves live as: DB override → env var → default.…, Attribute access resolves live: DB override → env → default., _add_edge(), _arg(), build_graph(), _category_for_type() (+35 more)
+Cohesion: 0.08
+Nodes (39): _add_edge(), _arg(), build_graph(), _category_for_type(), configured(), _credential(), _expand_aks_node_rg(), _expand_pe_dns_zone_group() (+31 more)
 
 ### Community 37 - "intake.py"
-Cohesion: 0.23
-Nodes (14): _coerce(), find_question(), is_complete(), next_question(), _normalize_question(), _questions(), _questions_in_order(), Environment-mode intake flow controller —… (+6 more)
+Cohesion: 0.19
+Nodes (15): get_composer_file(), A composer/*.yaml file (e.g. infosec_gate.yaml), referenced by a decision…, _coerce(), find_question(), is_complete(), next_question(), _normalize_question(), _questions() (+7 more)
 
 ### Community 38 - "admin_settings_save"
 Cohesion: 0.25
@@ -312,17 +292,13 @@ Nodes (19): 3a. OIDC client registration (new `auth_oidc.py`), 3b. Routes (in ap
 Cohesion: 0.25
 Nodes (8): it_connector_health(), it_connector_status(), it_reachability(), it_reachability_run(), Health dashboard: are the connector VMs (primary + secondary) up?, Richer per-VM diagnostics for the dashboard's 'More status'., Guards the Reachability Tester — IT-admins OR super-admins. Open when SSO is…, require_itadmin()
 
-### Community 43 - "orchestrator.py"
-Cohesion: 0.15
-Nodes (22): new_state(), append_message(), Appends one transcript row, auto-incrementing `seq` per conversation. Sets the…, _touch(), _advance_guided(), _build_service_recommendation(), classify_turn(), detect_correction() (+14 more)
-
 ### Community 44 - "Architecture Decisions"
 Cohesion: 0.07
-Nodes (29): 2026-03-26 — AI agents are tool-callers only, never raw SQL/Azure access, 2026-03-26 — No IaC; Azure SDK calls are imperative and idempotent, 2026-07-15 → 2026-07-29 — Rebrand: Subnet Manager → Network Copilot → Presight AlMadar 360, 2026-07-18 — PostgreSQL as an optional backend, SQLite stays default, 2026-07-26 — Budget alerts are forecast-gated, not raw-threshold, 2026-07-30 — Line-manager approval routing, dependency-gated, 2026-07-31 (approx) — Password never persisted for VM auth, 2026-07-31 — VM(s) deployment: plan resolved once, persisted, resumable (+21 more)
+Nodes (28): 2026-03-26 — AI agents are tool-callers only, never raw SQL/Azure access, 2026-03-26 — No IaC; Azure SDK calls are imperative and idempotent, 2026-07-15 → 2026-07-29 — Rebrand: Subnet Manager → Network Copilot → Presight AlMadar 360, 2026-07-18 — PostgreSQL as an optional backend, SQLite stays default, 2026-07-26 — Budget alerts are forecast-gated, not raw-threshold, 2026-07-30 — Line-manager approval routing, dependency-gated, 2026-07-31 (approx) — Password never persisted for VM auth, 2026-07-31 — VM(s) deployment: plan resolved once, persisted, resumable (+20 more)
 
-### Community 45 - "Approval"
-Cohesion: 0.22
-Nodes (8): can_decide(), decide(), pending_for(), Is this actor allowed to approve/reject this checkpoint?, Record an approve/reject decision and reconcile the request status., Approvals awaiting this actor's decision (their reports' requests, plus…, Approval, A single approval checkpoint on a request — routed to the requester's line…
+### Community 45 - "can_decide"
+Cohesion: 0.50
+Nodes (4): can_decide(), pending_for(), Is this actor allowed to approve/reject this checkpoint?, Approvals awaiting this actor's decision (their reports' requests, plus…
 
 ### Community 46 - "changes.py"
 Cohesion: 0.33
@@ -341,8 +317,8 @@ Cohesion: 0.22
 Nodes (8): 1. The one-paragraph answer, 2. Why not ARM templates / Bicep / Terraform?, 3. What each admin action does in Azure, 4. Identity & permissions, 5. Request lifecycle (end to end), 6. Data & configuration, 7. Deploying the app itself, How Network Copilot Works — High-Level Architecture
 
 ### Community 50 - "Current State"
-Cohesion: 0.14
-Nodes (13): Active Priorities, AI Architecture Advisor — storage-only V1, then expanded to six services, Current Blockers, Current State, Development Status, Environment composer — Phase 3, fully committed (`2298611`/`6fde2de`/`9da0fe1`/`5144094`/`7e67cae`), Features Completed (committed, on `main`), Features In Progress (+5 more)
+Cohesion: 0.15
+Nodes (12): Active Priorities, AI Architecture Advisor — storage-only V1, then expanded to six services, Current Blockers, Current State, Development Status, Environment composer — Phase 3, fully committed (`2298611`/`6fde2de`/`9da0fe1`/`5144094`/`7e67cae`), Features Completed (committed, on `main`), Features In Progress (+4 more)
 
 ### Community 51 - "Project Overview"
 Cohesion: 0.22
@@ -352,9 +328,9 @@ Nodes (8): High-Level Architecture, Important Technologies, Important Workflows,
 Cohesion: 0.39
 Nodes (7): Validation for a Storage Account request at submission time. Offline checks…, _validate_storage_request(), base_details(), check(), main(), Assert-based coverage of Storage Account request validation…, run_validate()
 
-### Community 53 - "_auto_advance"
-Cohesion: 0.15
-Nodes (18): admin_audit(), _auto_advance(), _done_actions(), _pending_deploy_actions(), Portal actions that have succeeded for this request (dry-run included), minus…, Portal actions that must succeed before the request auto-completes., Move the status forward based on what has actually been done via the portal —…, Ordered list of required deploy steps not yet done, for the aggregated deploy.… (+10 more)
+### Community 53 - "current_actor"
+Cohesion: 0.17
+Nodes (15): current_actor(), _deployed_changes(), Escape hatch: mark a request completed when the work was done manually outside…, Run the source→destination connectivity diagnosis for a network-issue request…, Display name for the audit trail: admin's login name, or 'Admin'., What has actually been deployed for this request, derived from the audit trail:…, Undo a list of deployed changes in the given (Azure-dependency-safe) order.…, Aggregated revert for a VNET request: tear down EVERYTHING deployed for it —… (+7 more)
 
 ### Community 54 - "Production Deployment (Docker / Kubernetes)"
 Cohesion: 0.25
@@ -397,8 +373,8 @@ Cohesion: 0.33
 Nodes (5): Carry-Forward Items, Important Decisions, Major Accomplishments, Risks, Week 2026-W31 (Mon 2026-07-27 → Sun 2026-08-02)
 
 ### Community 64 - "db_backend.py"
-Cohesion: 0.25
-Nodes (9): connect(), _database_url(), Backend-agnostic database access for the raw-SQL modules (db_utils, audit,…, A wrapped connection. `with connect() as conn: conn.execute(...)`., URI for Flask-SQLAlchemy — Postgres (psycopg3 driver) or the SQLite file., URI with any password masked — for /health output., safe_uri(), sqlalchemy_uri() (+1 more)
+Cohesion: 0.23
+Nodes (10): health(), connect(), _database_url(), Backend-agnostic database access for the raw-SQL modules (db_utils, audit,…, A wrapped connection. `with connect() as conn: conn.execute(...)`., URI for Flask-SQLAlchemy — Postgres (psycopg3 driver) or the SQLite file., URI with any password masked — for /health output., safe_uri() (+2 more)
 
 ### Community 65 - "Known Issues"
 Cohesion: 0.40
@@ -436,81 +412,21 @@ Nodes (5): _conn(), global_search(), Global keyword search across requests, VNET
 Cohesion: 0.40
 Nodes (4): Environment recommendation template, Rendered shape, Rules specific to environment output, System prompt — environment composition
 
-### Community 77 - "conversations.py"
-Cohesion: 0.25
-Nodes (21): _conn(), create_conversation(), delete_conversation(), _ensure_state_row(), ensure_tables(), get_conversation(), get_state(), list_conversations() (+13 more)
-
-### Community 78 - "db_utils.py"
-Cohesion: 0.17
-Nodes (18): allocate_subnet(), Validate and allocate a subnet, writing the record to the DB., requester_vnet_created(), allocate_subnet_db(), _conn(), count_used_subnets_db(), create_spoke_request(), get_allocated_subnets_db() (+10 more)
-
-### Community 79 - "_create_service_request"
-Cohesion: 0.12
-Nodes (19): _apply_submission_gate(), _available_teams(), _cached_vm_skus(), _create_service_request(), _create_vnet_request(), _fqdn_errors(), Request-scoped memoization of list_vm_skus (a 1000+ entry resourceSkus scan) —…, If the approval flow holds this request type at submission, open the gate (sets… (+11 more)
-
-### Community 80 - "freeform.py"
-Cohesion: 0.20
-Nodes (16): get_platform_constants(), Shared, service-agnostic reference facts (naming pattern, DNS zones, encryption…, aks_private_zone_note(), answer(), _from_catalog(), _from_glossary(), _from_platform_constants(), _narrate() (+8 more)
-
-### Community 81 - "evaluate_safe"
-Cohesion: 0.20
-Nodes (16): gate_fires(), build_waves(), critical_path(), parallelism_message(), Turns advisor_kb/composer/request_sequence.yaml into the ordered, wave-based…, Returns (submittable_request_type, secondary_note|None)., Ordered list of {wave, name, parallel, depends_on, requests: [...]} — only…, _request_included() (+8 more)
-
-### Community 82 - "agent_requester.py"
-Cohesion: 0.26
-Nodes (15): chat(), _chat_anthropic(), _chat_openai(), _execute_tool(), _get_client(), Requester Agent — helps requesters submit CIDR requests, update statuses, and…, Create a VNET request via the same validated path as the form API., Create a non-VNET request via the same validated path as the form API. (+7 more)
-
-### Community 83 - "diagram_builder.py"
-Cohesion: 0.23
-Nodes (14): _backend_label(), _engine_confirmed_uses_blob(), _escape(), _illustrative_base_name(), _placeholder_values(), Renders a pattern's Mermaid diagram template (advisor_kb/diagrams/*.mmd) by…, Diagram-only illustration, never the real prefilled vm_base_name field (which…, environment_full.mmd, for the whole-environment composer — NOT tied to a single… (+6 more)
-
-### Community 84 - "recommendation.py"
-Cohesion: 0.17
-Nodes (13): build_recommendation(), build_recommendation_generic(), build_redirect_response(), _fallback_why_generic(), Assembles the final recommendation per…, Generic (service-agnostic) version of build_recommendation()'s requests-list…, Same shape and spirit as build_recommendation() (storage), generalized for…, A `redirect` escalation (currently only Postgres's self_managed ->… (+5 more)
-
-### Community 85 - "auth_callback"
-Cohesion: 0.13
-Nodes (15): admin_login(), admin_logout(), _approvals_nav_ctx(), auth_callback(), auth_login(), auth_logout(), _home_endpoint(), inject_globals() (+7 more)
-
-### Community 86 - "get_composer_file"
-Cohesion: 0.22
-Nodes (13): get_composer_file(), A composer/*.yaml file (e.g. infosec_gate.yaml), referenced by a decision…, _backend_description(), draft_brief(), _field_value(), _gate(), get_message_ref(), The InfoSec public-exposure gate: detection, verbatim message rendering, and a… (+5 more)
-
-### Community 87 - "chats.py"
-Cohesion: 0.38
-Nodes (10): append_messages(), _conn(), create_chat(), delete_chat(), ensure_table(), list_chats(), _now(), Persistent agent chats — conversations survive across sessions and devices so… (+2 more)
-
-### Community 88 - "glossary.py"
-Cohesion: 0.36
-Nodes (8): all_terms(), find_term(), _glossary(), _index(), _normalize(), Loads advisor_kb/glossary.yaml — the grounding source for "what does X mean?"…, normalized alias/term text -> term dict. Longer keys first isn't needed here…, Matches `query` against every term name and alias. Whole-phrase match on the…
-
-### Community 89 - "_import_inventory"
-Cohesion: 0.25
-Nodes (8): admin_inventory(), _auto_migrate_excel(), _import_inventory(), Bulk-load current allocations. rows = [[subnet, purpose, requested_by,…, Post-deployment onboarding: the app ships with an EMPTY inventory — the admin…, One-time migration: if subnets.xlsx exists and subnet_records table is empty,…, get_pool_key(), Return the pool key ('10.110' / '10.119') for a subnet, or None.
-
-### Community 91 - "env_prefill.py"
-Cohesion: 0.47
-Nodes (5): build_request_list(), _common_fields(), _known_fields_for(), Builds the ordered, prefilled request list for…, Flattens every wave's requests into one ordered list, each carrying {wave,…
-
-### Community 92 - "2026-08-04"
-Cohesion: 0.40
-Nodes (4): 2026-08-04, Key Decisions, Open Items, Work Completed
-
-### Community 94 - "test_advisor_validation.py"
-Cohesion: 0.12
-Nodes (28): get_catalog(), get_rules(), Process-wide cached catalog — static config, safe to cache per the module…, apply_set(), evaluate(), _quote_bare_enums(), Shared restricted-expression evaluator for the small condition language used…, Evaluate a KB condition string against `namespace` (field name -> value, values… (+20 more)
+### Community 94 - "rules_engine.py"
+Cohesion: 0.14
+Nodes (24): get_rules(), apply_set(), evaluate(), _quote_bare_enums(), Shared restricted-expression evaluator for the small condition language used…, Evaluate a KB condition string against `namespace` (field name -> value, values…, Parse and apply one or more `field = value` assignments from the KB's `set:`…, YAML-style lowercase true/false -> Python True/False. Must run only on unquoted… (+16 more)
 
 ### Community 104 - "catalog_loader.py"
-Cohesion: 0.21
-Nodes (15): AdvisorKBError, get_questions(), load_catalog(), _load_yaml(), load_yaml_file(), Exception, Loads and validates the AI Architecture Advisor knowledge base (advisor_kb/).…, Pattern `design.inherits: <base_pattern_id>` (e.g. aks_gpu_nodepool inheriting… (+7 more)
+Cohesion: 0.18
+Nodes (18): AdvisorKBError, get_catalog(), get_mapping(), get_questions(), load_catalog(), _load_yaml(), load_yaml_file(), Exception (+10 more)
 
 ### Community 109 - "prefill.py"
-Cohesion: 0.17
-Nodes (24): get_mapping(), AttrDict, Dict that also supports attribute access (derived.lifecycle_to_archive,…, build_prefill(), build_prefill_aks(), build_prefill_appgw(), build_prefill_postgres(), build_prefill_vm() (+16 more)
-
-### Community 112 - "question_engine.py"
 Cohesion: 0.19
-Nodes (14): _coerce_value(), find_question(), is_complete(), next_question(), _questions_in_order(), Ask-order flow control for advisor_kb/questions/<service>_questions.yaml:…, Records a (already-normalized) answer, applying default_if_unknown, queuing any…, `service` may be None (only the service-selection question is findable before a… (+6 more)
+Nodes (20): build_prefill(), build_prefill_aks(), build_prefill_appgw(), build_prefill_postgres(), build_prefill_vm(), _common_tag_fields(), _compose_business_justification(), _compose_description_block() (+12 more)
+
+### Community 112 - "test_advisor_validation.py"
+Cohesion: 0.17
+Nodes (15): _coerce_value(), find_question(), is_complete(), next_question(), _normalize_question(), _questions_in_order(), Ask-order flow control for advisor_kb/questions/<service>_questions.yaml:…, Records a (already-normalized) answer, applying default_if_unknown, queuing any… (+7 more)
 
 ### Community 123 - "pattern_matcher.py"
 Cohesion: 0.39
@@ -537,24 +453,24 @@ Cohesion: 0.40
 Nodes (4): Catalog schema, `match` scoring, Rules that apply to every pattern, `status` semantics
 
 ## Knowledge Gaps
-- **265 isolated node(s):** `deploy.sh script`, `2026-07-18 — PostgreSQL as an optional backend, SQLite stays default`, `2026-03-26 — No IaC; Azure SDK calls are imperative and idempotent`, `2026-07-30 — Line-manager approval routing, dependency-gated`, `2026-07-26 — Budget alerts are forecast-gated, not raw-threshold` (+260 more)
+- **259 isolated node(s):** `deploy.sh script`, `2026-07-18 — PostgreSQL as an optional backend, SQLite stays default`, `2026-03-26 — No IaC; Azure SDK calls are imperative and idempotent`, `2026-07-30 — Line-manager approval routing, dependency-gated`, `2026-07-26 — Budget alerts are forecast-gated, not raw-threshold` (+254 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **6 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **7 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `render_name()` connect `admin_azure_action` to `azure_tools.py`, `_guard`, `app.py`, `route`?**
-  _High betweenness centrality (0.023) - this node is a cross-community bridge._
-- **Why does `sanitize()` connect `admin_azure_action` to `azure_tools.py`, `_guard`, `app.py`?**
-  _High betweenness centrality (0.021) - this node is a cross-community bridge._
-- **Why does `RequestType` connect `RequestType` to `RequestProxy`, `models.py`, `app.py`, `db_utils.py`, `evaluate_safe`, `approvals.py`?**
-  _High betweenness centrality (0.014) - this node is a cross-community bridge._
+- **Why does `render_name()` connect `record` to `azure_tools.py`, `app.py`, `_guard`, `route`?**
+  _High betweenness centrality (0.028) - this node is a cross-community bridge._
+- **Why does `sanitize()` connect `record` to `azure_tools.py`, `app.py`, `_guard`?**
+  _High betweenness centrality (0.024) - this node is a cross-community bridge._
+- **Why does `evaluate_safe()` connect `composition_engine.py` to `test_advisor_validation.py`, `prefill.py`, `rules_engine.py`?**
+  _High betweenness centrality (0.010) - this node is a cross-community bridge._
 - **What connects `deploy.sh script`, `2026-07-18 — PostgreSQL as an optional backend, SQLite stays default`, `2026-03-26 — No IaC; Azure SDK calls are imperative and idempotent` to the rest of the system?**
-  _265 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _259 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `_guard` be split into smaller, more focused modules?**
   _Cohesion score 0.05423728813559322 - nodes in this community are weakly interconnected._
 - **Should `costmgmt.py` be split into smaller, more focused modules?**
   _Cohesion score 0.10606060606060606 - nodes in this community are weakly interconnected._
 - **Should `notifications.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.08735150244584207 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.11414141414141414 - nodes in this community are weakly interconnected._
