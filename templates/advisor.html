@@ -31,6 +31,7 @@
   </div>
 
   <div id="advRecommendation" style="display:none;"></div>
+  <div id="advEnvPlan" style="display:none;"></div>
 </div>
 {% endblock %}
 
@@ -64,14 +65,39 @@
   .adv-cost-band { font-size:11px; padding:2px 9px; border-radius:10px; border:1px solid var(--border); color:var(--text-muted); }
   #advDiagramWrap { margin-top:16px; }
   #advDiagramWrap .mermaid { background:rgba(255,255,255,.02); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  .adv-mode-picker { display:flex; gap:12px; flex-wrap:wrap; margin:14px 0 20px; }
+  .adv-mode-card { flex:1; min-width:220px; text-align:left; cursor:pointer; border:1px solid var(--border);
+                   background:rgba(255,255,255,.04); border-radius:12px; padding:16px 18px; color:var(--text);
+                   transition:background .12s,border-color .12s; }
+  .adv-mode-card:hover { background:rgba(57,135,229,.12); border-color:rgba(57,135,229,.4); }
+  .adv-mode-card b { display:block; color:#fff; font-size:14px; margin-bottom:4px; }
+  .adv-mode-card span { font-size:12px; color:var(--text-muted); }
+  .adv-net-table { width:100%; border-collapse:collapse; font-size:12.5px; margin:10px 0; }
+  .adv-net-table th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--text-muted); padding:6px 8px; border-bottom:1px solid var(--border); }
+  .adv-net-table td { padding:6px 8px; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:top; }
+  .adv-arith-line { font-size:13px; color:#fff; background:rgba(57,135,229,.08); border:1px solid rgba(57,135,229,.25); border-radius:8px; padding:10px 13px; margin:8px 0; }
+  .adv-pod-cidr { font-size:12.5px; color:var(--text-dim); line-height:1.6; margin:8px 0 14px; }
+  .adv-wave-badge { display:inline-block; min-width:20px; text-align:center; font-size:11px; font-weight:700; color:#fff; background:rgba(57,135,229,.25); border-radius:20px; padding:2px 8px; margin-right:8px; }
+  .adv-infosec-box { border:1px solid rgba(239,68,68,.35); background:rgba(239,68,68,.06); border-radius:12px; padding:16px 18px; margin:12px 0; }
+  .adv-infosec-box h4 { color:#fff; margin:0 0 8px; font-size:14px; }
+  .adv-infosec-box p { font-size:12.5px; color:var(--text-dim); line-height:1.7; }
 </style>
 <script>
 let SESSION_ID = null;
 let QA_HISTORY = [];   // [{id, question, answerLabel}]
 let LAST_RECOMMENDATION = null;
 let LAST_SESSION_FOR_DIAGRAM = null;
+let ADV_MODE = null;   // 'service' | 'environment' — chosen before any API call is made
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// Light markdown-lite for infosec_gate.yaml's user_message.body (paragraphs +
+// **bold**) — the single-service AppGW flow renders the same message_ref
+// content plain-escaped with no line breaks; this environment section shows
+// much more of it at once, so a minimal bold/paragraph pass is worth it here.
+function mdLite(s) {
+  return esc(s).split(/\n\s*\n/).map(p => p.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')).join('<br><br>');
+}
 
 function addMsg(text, who) {
   const chat = document.getElementById('advChat');
@@ -82,16 +108,35 @@ function addMsg(text, who) {
   div.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
-async function advStart() {
-  addMsg("Hi — I'll ask a few plain-English questions and recommend a Presight-approved setup. First, what are you looking to set up?", 'bot');
+function advStart() {
+  addMsg("Hi — I can help two ways: walk through one specific service, or design a whole environment at once. Which would you like?", 'bot');
+  const wrap = document.createElement('div');
+  wrap.className = 'adv-mode-picker';
+  wrap.innerHTML = `
+    <div class="adv-mode-card" onclick="advChooseMode('service')">
+      <b>A single service</b>
+      <span>Storage, Kubernetes, VMs, Database or Application Gateway — one guided conversation, one recommendation.</span>
+    </div>
+    <div class="adv-mode-card" onclick="advChooseMode('environment')">
+      <b>A whole environment</b>
+      <span>Describe everything you need at once ("10 VMs, a cluster, a database") and get one coherent architecture with a real network plan.</span>
+    </div>`;
+  document.getElementById('advChat').appendChild(wrap);
+}
+
+async function advChooseMode(mode) {
+  ADV_MODE = mode;
+  document.querySelectorAll('.adv-mode-picker').forEach(el => el.remove());
+  addMsg(mode === 'environment' ? 'A whole environment, please.' : 'A single service, please.', 'user');
   const d = await advCall({});
   advHandle(d);
 }
 
 async function advCall(body) {
   body.session_id = SESSION_ID;
+  const endpoint = ADV_MODE === 'environment' ? '/api/advisor/environment/chat' : '/api/advisor/chat';
   try {
-    const resp = await fetch('/api/advisor/chat', {
+    const resp = await fetch(endpoint, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const d = await resp.json();
@@ -116,6 +161,9 @@ function advHandle(data) {
     advRenderRedirect(data);
   } else if (data.type === 'recommendation') {
     advShowReview(data.recommendation);
+  } else if (data.type === 'ready') {
+    addMsg("That's everything I need — working out the architecture…", 'bot');
+    advEnvFetchPlan();
   }
 }
 
@@ -127,12 +175,13 @@ function advAskQuestion(q) {
   document.getElementById('advAnswerForm').style.display = '';
   document.getElementById('advReview').style.display = 'none';
   document.getElementById('advRecommendation').style.display = 'none';
+  document.getElementById('advEnvPlan').style.display = 'none';
   document.getElementById('advQuestionText').textContent = q.question;
   document.getElementById('advWhyWeAsk').textContent = q.why_we_ask || '';
   const optsDiv = document.getElementById('advOptions');
   optsDiv.innerHTML = (q.options || []).map((o, i) =>
     `<span class="adv-chip" onclick="advAnswerChip(${i})">${esc(o.label)}</span>`).join('');
-  document.getElementById('advFreeText').value = '';
+  document.getElementById('advFreeText').value = q.default_value || '';
   document.getElementById('advAnswerForm').scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
@@ -345,6 +394,150 @@ async function advRequestDiagram() {
     mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
     mermaid.run({ nodes: wrap.querySelectorAll('.mermaid') });
   }
+}
+
+// ── Environment composer (Phase 3) — whole-environment plan ────────────────
+async function advEnvFetchPlan() {
+  const resp = await fetch('/api/advisor/environment/plan', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: SESSION_ID }),
+  });
+  const d = await resp.json();
+  if (!d.ok) { addMsg('Could not build the plan: ' + esc(d.error || 'unknown error'), 'bot'); return; }
+  if (d.data.type === 'blocked') { addMsg(`<b>I can't design this environment yet.</b><br>${esc(d.data.message)}`, 'bot'); return; }
+  advRenderEnvPlan(d.data.plan);
+}
+
+function advRenderEnvPlan(plan) {
+  document.getElementById('advAnswerForm').style.display = 'none';
+  const el = document.getElementById('advEnvPlan');
+  el.style.display = '';
+
+  const compRows = (plan.components.rows || []).map(r =>
+    `<tr><td><b>${esc(r.added.replace(/_/g, ' '))}</b></td><td>${esc(r.why)}</td></tr>`).join('');
+  const componentsHtml = plan.components.count
+    ? `<div class="adv-section-label">Components I've added</div>
+       <p style="font-size:12.5px;color:var(--text-dim);">I've added ${plan.components.count} thing${plan.components.count === 1 ? '' : 's'} you didn't ask for, because the rest depends on ${plan.components.count === 1 ? 'it' : 'them'}:</p>
+       <table class="adv-net-table"><tbody>${compRows}</tbody></table>`
+    : '';
+  const openQHtml = plan.components.open_question
+    ? `<div class="adv-note-box">I also need to ask: <b>${esc(plan.components.open_question)}</b></div>` : '';
+
+  const subnetRows = plan.network_plan.subnet_rows.map(s =>
+    `<tr><td><code>${esc(s.name)}</code></td><td>${esc(s.purpose)}</td><td><b style="color:#fff;">${esc(s.size)}</b></td><td>${esc(s.usable)}</td><td style="font-size:11.5px;">${esc(s.basis)}</td></tr>`).join('');
+  const tightFitHtml = plan.network_plan.tight_fit_caveat
+    ? `<div class="adv-note-box">${esc(plan.network_plan.tight_fit_caveat)}</div>` : '';
+  const podCidrHtml = plan.network_plan.pod_cidr_paragraph
+    ? `<div class="adv-pod-cidr"><b style="color:#fff;">Pod networking is separate.</b> ${esc(plan.network_plan.pod_cidr_paragraph)}</div>` : '';
+
+  const privRows = plan.private_connectivity.rows.map(r =>
+    `<tr><td>${esc(r.service)}</td><td><code>${esc(r.sub_resource)}</code></td><td style="font-size:11.5px;">${esc(r.dns_zone)}</td></tr>`).join('');
+  const privExtra = plan.private_connectivity.extra_zone_note
+    ? `<p style="font-size:11.5px;color:var(--text-muted);">${esc(plan.private_connectivity.extra_zone_note)}</p>` : '';
+
+  const publicAccessHtml = plan.public_access ? `
+    <div class="adv-infosec-box">
+      <h4>${esc(plan.public_access.heading)}</h4>
+      <p>${mdLite(plan.public_access.body)}</p>
+      <p style="font-size:12px;color:#fff;"><b>Exactly ${plan.public_access.public_ip_count} public IP</b> — on the ${esc(plan.public_access.public_ip_location)}, nowhere else.</p>
+      <p style="font-style:italic;">${esc(plan.public_access.next_step)}</p>
+    </div>` : '';
+
+  const waveRows = plan.build_sequence.rows.map(w =>
+    `<tr><td><span class="adv-wave-badge">${w.wave}</span></td><td>${esc(w.requests)}</td><td style="font-size:11px;color:var(--text-muted);">${esc(w.note || '')}</td></tr>`).join('');
+
+  const securityHtml = `<ul class="adv-checklist">${plan.security_posture.map(b => `<li>${esc(b)}</li>`).join('')}</ul>`;
+
+  const beforeYouStartHtml = `<ul class="adv-checklist">${plan.before_you_start.map(i =>
+    `<li>${i.done ? '✅' : '⬜'} ${esc(i.text)}</li>`).join('')}</ul>`;
+
+  const devWarnHtml = (plan.deviations.concat(plan.warnings)).map(n =>
+    `<div class="adv-note-box">${esc(n.state || n.message)}</div>`).join('');
+
+  const hubHtml = `<ul class="adv-checklist">${plan.hub_integration.map(h =>
+    `<li><b>${esc(h.step)}</b>${h.detail ? ' — ' + esc(h.detail) : ''}</li>`).join('')}</ul>`;
+
+  el.innerHTML = `
+    <div class="adv-glass">
+      <div class="p-eyebrow" style="margin-bottom:6px;">Recommended Presight Architecture</div>
+      <h3 style="color:#fff;margin:0 0 10px;">${esc(plan.environment_label)}</h3>
+      <p style="font-size:13px;color:var(--text-dim);">${esc(plan.summary)}</p>
+
+      ${componentsHtml}
+      ${openQHtml}
+
+      <div class="adv-section-label">Network plan</div>
+      <p style="font-size:12.5px;color:var(--text-dim);">${plan.network_plan.vnet_count} spoke VNET${plan.network_plan.vnet_count === 1 ? '' : 's'} — recommended size <b style="color:#fff;">${esc(plan.network_plan.vnet_size)}</b></p>
+      <table class="adv-net-table"><thead><tr><th>Subnet</th><th>Purpose</th><th>Size</th><th>Usable</th><th>Sizing basis</th></tr></thead><tbody>${subnetRows}</tbody></table>
+      <div class="adv-arith-line">${esc(plan.network_plan.arithmetic_line)}</div>
+      ${tightFitHtml}
+      ${podCidrHtml}
+
+      <div class="adv-section-label">Hub integration</div>
+      ${hubHtml}
+
+      <div class="adv-section-label">Private connectivity</div>
+      <table class="adv-net-table"><thead><tr><th>Service</th><th>Sub-resource</th><th>Private DNS zone</th></tr></thead><tbody>${privRows}</tbody></table>
+      ${privExtra}
+
+      ${publicAccessHtml}
+
+      <div class="adv-section-label">Build sequence</div>
+      <p style="font-size:12px;color:var(--text-muted);">${esc(plan.build_sequence.parallelism_message)}</p>
+      <table class="adv-net-table"><thead><tr><th>Wave</th><th>Requests</th><th></th></tr></thead><tbody>${waveRows}</tbody></table>
+      <p style="font-size:12px;color:var(--text-dim);"><b>Critical path:</b> ${esc(plan.build_sequence.critical_path)}</p>
+
+      <div class="adv-section-label">Security posture</div>
+      ${securityHtml}
+
+      <div class="adv-section-label">Before you start</div>
+      ${beforeYouStartHtml}
+
+      ${devWarnHtml}
+
+      <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <button class="btn btn-glow" onclick="advEnvShowRequests()"><i class="bi bi-list-check me-1"></i>Show the request list</button>
+        <button class="btn" style="background:rgba(255,255,255,.05);border:1px solid var(--border);" onclick="advEnvRequestDiagram()"><i class="bi bi-diagram-2 me-1"></i>Show me the architecture diagram</button>
+      </div>
+      <div id="advEnvRequestsWrap"></div>
+      <div id="advEnvDiagramWrap"></div>
+    </div>`;
+  el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+async function advEnvShowRequests() {
+  const resp = await fetch('/api/advisor/environment/requests', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: SESSION_ID }),
+  });
+  const d = await resp.json();
+  const wrap = document.getElementById('advEnvRequestsWrap');
+  if (!d.ok) { wrap.innerHTML = `<div class="adv-note-box">Could not build the request list: ${esc(d.error || 'unknown error')}</div>`; return; }
+  const rows = d.data.requests.map(r => `
+    <tr>
+      <td><span class="adv-wave-badge">${r.wave}</span></td>
+      <td><b>${esc(r.label)}</b>${r.note ? `<br><span style="font-size:11px;color:var(--text-muted);">${esc(r.note)}</span>` : ''}</td>
+      <td style="font-size:11.5px;color:var(--text-muted);">${r.secondary_note ? esc(r.secondary_note) : esc(r.submittable_request_type)}</td>
+    </tr>`).join('');
+  wrap.innerHTML = `
+    <div class="adv-section-label">Ordered request list</div>
+    <table class="adv-net-table"><thead><tr><th>Wave</th><th>Request</th><th>Submitted as</th></tr></thead><tbody>${rows}</tbody></table>
+    <p style="font-size:11px;color:var(--text-muted);">Open each request from the requester portal in this order — waves marked with the same number can be raised in parallel.</p>`;
+  wrap.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+async function advEnvRequestDiagram() {
+  const resp = await fetch('/api/advisor/environment/diagram', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: SESSION_ID }),
+  });
+  const d = await resp.json();
+  const wrap = document.getElementById('advEnvDiagramWrap');
+  if (!d.ok) { wrap.innerHTML = `<div class="adv-note-box">Could not render the diagram: ${esc(d.error || 'unknown error')}</div>`; return; }
+  wrap.innerHTML = `<p style="font-size:11px;color:var(--text-muted);margin-top:10px;">Illustrative — final topology is confirmed by the platform team during implementation.</p>
+    <pre class="mermaid">${esc(d.data.mermaid_source)}</pre>`;
+  if (window.mermaid) {
+    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+    mermaid.run({ nodes: wrap.querySelectorAll('.mermaid') });
+  }
+  wrap.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
 advStart();

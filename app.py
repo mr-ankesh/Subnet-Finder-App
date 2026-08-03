@@ -2452,8 +2452,11 @@ def api_advisor_prefill():
 
 
 def _advisor_env_question_payload(question):
+    options = question.get("options", [])
+    if question.get("type") == "yes_no" and not options:
+        options = [{"value": True, "label": "Yes"}, {"value": False, "label": "No"}]
     return {"id": question["id"], "question": question.get("question", ""),
-            "type": question.get("type", "text"), "options": question.get("options", []),
+            "type": question.get("type", "text"), "options": options,
             "why_we_ask": question.get("why_we_ask", ""), "examples": question.get("examples", []),
             "prefill_from_session": question.get("prefill_from_session", False),
             "default_value": session.get("sso_email") if question.get("prefill_from_session") else None}
