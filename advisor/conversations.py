@@ -267,28 +267,52 @@ def get_state(conversation_id: int) -> dict:
     return d
 
 
+_UNSET = object()
+
+
 def save_state(conversation_id: int, answers: dict, expected_version: int, *,
-               pending_question_id: str = None, selected_pattern: str = None,
-               recommendation: dict = None, prefill_payload: dict = None) -> bool:
+               pending_question_id=_UNSET, selected_pattern=_UNSET,
+               recommendation=_UNSET, prefill_payload=_UNSET) -> bool:
     """Optimistic concurrency: the UPDATE's WHERE clause includes the version
     the caller last read. Returns False (never raises) if another write won
     the race in between — verified identical rowcount semantics on both
     psycopg and sqlite3 for a conditional UPDATE. Callers on False should
     re-fetch via get_state() and surface a conflict rather than retry blindly
     (two tabs open on the same conversation should see this, not silently
-    clobber each other)."""
+    clobber each other).
+
+    `pending_question_id`/`selected_pattern`/`recommendation`/`prefill_payload`
+    default to a private _UNSET sentinel, NOT None — every save_state call
+    only touches `answers_json` plus whichever of these four the caller
+    actually passed. A plain `None` default would mean any call that only
+    meant to update the answers (e.g. while detecting a pending correction)
+    silently wipes out an already-stored recommendation and pending question
+    — a real bug caught while testing the correction flow: storing
+    `pending_correction` inside `answers` cleared the just-built
+    recommendation because that save_state call didn't re-pass it."""
     ensure_tables()
     _ensure_state_row(conversation_id)
     ts = _now()
     with _conn() as conn:
+        current = conn.execute(
+            "SELECT pending_question_id, selected_pattern, recommendation_json, "
+            "prefill_payload_json FROM advisor_state WHERE conversation_id = ?",
+            (int(conversation_id),)).fetchone()
+        final_pending_question_id = (current["pending_question_id"]
+                                      if pending_question_id is _UNSET else pending_question_id)
+        final_selected_pattern = (current["selected_pattern"]
+                                   if selected_pattern is _UNSET else selected_pattern)
+        final_recommendation_json = (current["recommendation_json"] if recommendation is _UNSET
+                                      else (json.dumps(recommendation) if recommendation is not None else None))
+        final_prefill_json = (current["prefill_payload_json"] if prefill_payload is _UNSET
+                               else (json.dumps(prefill_payload) if prefill_payload is not None else None))
         res = conn.execute(
             "UPDATE advisor_state SET answers_json = ?, pending_question_id = ?, "
             "selected_pattern = ?, recommendation_json = ?, prefill_payload_json = ?, "
             "version = version + 1, updated_ts = ? "
             "WHERE conversation_id = ? AND version = ?",
-            (json.dumps(answers or {}), pending_question_id, selected_pattern,
-             json.dumps(recommendation) if recommendation is not None else None,
-             json.dumps(prefill_payload) if prefill_payload is not None else None,
+            (json.dumps(answers or {}), final_pending_question_id, final_selected_pattern,
+             final_recommendation_json, final_prefill_json,
              ts, int(conversation_id), int(expected_version)))
         return res.rowcount == 1
 
