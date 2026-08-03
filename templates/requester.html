@@ -1196,6 +1196,7 @@
                         <option value="Standard_ZRS">Standard_ZRS</option>
                         <option value="Standard_RAGRS">Standard_RAGRS</option>
                         <option value="Premium_LRS">Premium_LRS</option>
+                        <option value="Premium_ZRS">Premium_ZRS</option>
                       </select>
                     </div>
                     <div class="col-md-4">
@@ -3312,6 +3313,36 @@ function clearChat(){ reqNewChat(); }
 // Init: remember welcome, load past chats.
 REQ_WELCOME=document.getElementById('chatMessages').innerHTML;
 reqLoadChats();
+
+// ── AI Architecture Advisor prefill handoff ─────────────────────────────
+// Only a session id ever travels in the URL (?advisor_session=<id>); the
+// payload itself is looked up server-side and embedded here. Every field
+// this touches remains a normal, editable form input — nothing is
+// submitted automatically. See advisor_kb/mapping's prefill_contract.
+{% if advisor_prefill %}
+(function applyAdvisorPrefill() {
+  const payload = {{ advisor_prefill | tojson }};
+  selectType('storage_account_create');
+  const section = document.getElementById('section-storage_account_create');
+  if (!section) return;
+  Object.entries(payload.fields || {}).forEach(([key, value]) => {
+    if (key === 'business_justification') return;  // handled separately below
+    const el = section.querySelector(`[data-detail="${CSS.escape(key)}"]`);
+    if (!el) return;
+    if (el.type === 'checkbox') el.checked = !!value;
+    else el.value = value;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const justification = document.getElementById('g_justification');
+  if (justification && payload.fields && payload.fields.business_justification) {
+    justification.value = payload.fields.business_justification;
+  }
+  showResult('newReqResult', resultBox('info',
+    'Prefilled from the AI Architecture Advisor — review every field before submitting. ' +
+    'Nothing has been submitted yet.'));
+})();
+{% endif %}
 </script>
 
 <style>

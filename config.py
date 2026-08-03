@@ -34,7 +34,7 @@ VM_DATA_DISK_TYPES = VM_OS_DISK_TYPES + ["PremiumV2_LRS", "UltraSSD_LRS"]
 
 # Storage account kind/SKU/access-tier option sets (fixed by Azure, not fetched live).
 STORAGE_KINDS = ["StorageV2", "BlobStorage"]
-STORAGE_SKUS = ["Standard_LRS", "Standard_GRS", "Standard_ZRS", "Standard_RAGRS", "Premium_LRS"]
+STORAGE_SKUS = ["Standard_LRS", "Standard_GRS", "Standard_ZRS", "Standard_RAGRS", "Premium_LRS", "Premium_ZRS"]
 STORAGE_ACCESS_TIERS = ["Hot", "Cool"]
 
 

@@ -2186,7 +2186,219 @@ def azure_storage_keys():
 @require_login
 def requester_page():
     session.setdefault("requester_history", [])
-    return render_template("requester.html", teams=_available_teams())
+    advisor_prefill = None
+    advisor_session_id = request.args.get("advisor_session")
+    if advisor_session_id:
+        # Advisor prefill handoff: only the session id travels in the query
+        # string (never the payload itself — see advisor_kb/mapping's
+        # prefill_contract). The payload is looked up server-side and handed
+        # to the page as data; the form's own fields stay fully editable and
+        # nothing here submits anything.
+        try:
+            from advisor import session_store as advisor_session_store
+            sess = advisor_session_store.get_session(int(advisor_session_id))
+            if sess and advisor_session_store.owns(int(advisor_session_id), _chat_owner("requester")):
+                advisor_prefill = sess.get("prefill_payload")
+        except (ValueError, TypeError):
+            advisor_prefill = None
+    return render_template("requester.html", teams=_available_teams(), advisor_prefill=advisor_prefill)
+
+
+@app.route("/advisor")
+@require_login
+def advisor_page():
+    return render_template("advisor.html")
+
+
+def _advisor_find_question_by_id(qid):
+    from advisor.question_engine import find_question
+    return find_question(qid)
+
+
+def _advisor_classify_free_text(question, free_text):
+    """Best-effort mapping of a free-text answer onto one of the question's
+    options. Heuristic first (cheap, deterministic); LLM only as a fallback
+    for genuinely ambiguous text — never guesses silently past that (falls
+    back to 'unsure', which question_engine/rules_engine already handle via
+    default_if_unknown / derivations)."""
+    text = (free_text or "").strip()
+    low = text.lower()
+    if question["type"] in ("text", "email"):
+        return text
+    if any(p in low for p in ("don't know", "dont know", "not sure", "unsure", "no idea")):
+        return "unsure"
+    for opt in question.get("options", []):
+        label_low = str(opt["label"]).lower()
+        value_low = str(opt["value"]).lower()
+        if low == value_low or low == label_low or value_low in low or label_low in low:
+            return opt["value"]
+    if question["type"] == "multi_choice":
+        hits = [opt["value"] for opt in question.get("options", [])
+                if str(opt["value"]).lower() in low or str(opt["label"]).lower() in low]
+        if hits:
+            return hits
+    try:
+        from advisor import prompts
+        options_desc = "\n".join(f"- {o['value']}: {o['label']}" for o in question.get("options", []))
+        prompt_text = prompts.get_system_prompts()["question"]
+        user_content = (
+            f"Question: {question['question']}\n"
+            f"Options:\n{options_desc}\n\n"
+            f"User's free-text answer: {text!r}\n\n"
+            "Reply with ONLY the matching option's value token (nothing else). "
+            "If none match, reply with exactly: unsure"
+        )
+        reply = prompts.call_llm(prompt_text, user_content).strip().strip(".").lower()
+        valid_values = {str(o["value"]).lower() for o in question.get("options", [])}
+        if reply in valid_values:
+            for opt in question["options"]:
+                if str(opt["value"]).lower() == reply:
+                    return opt["value"]
+        return "unsure"
+    except Exception as exc:
+        log.warning("advisor: free-text classification LLM call failed, defaulting to unsure: %s", exc)
+        return "unsure"
+
+
+def _advisor_question_payload(question):
+    return {"id": question["id"], "question": question["question"], "type": question["type"],
+            "options": question.get("options", []), "why_we_ask": question.get("why_we_ask", "")}
+
+
+@app.route("/api/advisor/chat", methods=["POST"])
+@require_login
+def api_advisor_chat():
+    from advisor import session_store, question_engine, rules_engine, prefill as advisor_prefill_mod, recommendation
+    from advisor.catalog_loader import get_catalog
+
+    data = request.get_json(force=True) or {}
+    owner = _chat_owner("requester")
+    session_id = data.get("session_id")
+
+    try:
+        if session_id:
+            sess = session_store.get_session(int(session_id))
+            if not sess or not session_store.owns(int(session_id), owner):
+                return jsonify({"ok": False, "data": None, "error": "Session not found."}), 404
+            state = sess["state"]
+        else:
+            session_id = session_store.create_session(owner)
+            state = session_store.get_session(session_id)["state"]
+
+        question_id = data.get("question_id")
+        value = data.get("value")
+        free_text = data.get("free_text")
+
+        if question_id:
+            question = _advisor_find_question_by_id(question_id) or \
+                next((p for p in state.get("pending_followups", []) if p["id"] == question_id), None)
+            if free_text is not None and value is None and question:
+                if rules_engine.detect_public_access_request(free_text):
+                    state["answers"]["user_requests_public_endpoint"] = True
+                value = _advisor_classify_free_text(question, free_text)
+            state = question_engine.record_answer(state, question_id, value)
+
+            blocker = rules_engine.evaluate_blockers(state["answers"])
+            if blocker["blocked"]:
+                state["blocked"] = True
+                state["blocker_message"] = blocker["message"]
+                session_store.save_state(session_id, state)
+                rec = recommendation.build_blocked_response(blocker, state["answers"])
+                return jsonify({"ok": True, "data": {"type": "blocked", "session_id": session_id, **rec}})
+
+        next_q = question_engine.next_question(state)
+        if next_q is not None:
+            session_store.save_state(session_id, state)
+            return jsonify({"ok": True, "data": {"type": "question", "session_id": session_id,
+                                                  "question": _advisor_question_payload(next_q)}})
+
+        # Question flow exhausted -> run the full deterministic pipeline.
+        result = rules_engine.evaluate_full(state["answers"])
+        if result["blocked"]:
+            session_store.save_state(session_id, state)
+            rec = recommendation.build_blocked_response(result["blocker"], state["answers"])
+            return jsonify({"ok": True, "data": {"type": "blocked", "session_id": session_id, **rec}})
+
+        selection = result["selection"]
+        if selection["outcome"] == "ask_tiebreak":
+            state["pending_followups"] = state.get("pending_followups", []) + [{
+                "id": "_tiebreak", "question": selection["question"], "type": "text", "options": [],
+            }]
+            session_store.save_state(session_id, state)
+            return jsonify({"ok": True, "data": {"type": "question", "session_id": session_id,
+                                                  "question": {"id": "_tiebreak", "question": selection["question"],
+                                                               "type": "text", "options": [], "why_we_ask": ""}}})
+        if selection["outcome"] == "no_match" or not selection.get("winner"):
+            session_store.save_state(session_id, state)
+            return jsonify({"ok": True, "data": {
+                "type": "escalate", "session_id": session_id,
+                "message": selection.get("message", "Unable to match a standard pattern."),
+                "captured_so_far": {k: v for k, v in state["answers"].items() if v not in (None, "", [])},
+            }})
+
+        catalog = get_catalog()
+        pattern = catalog[selection["winner"]]
+        prefill_payload = advisor_prefill_mod.build_prefill(pattern, state["answers"], result)
+        rec = recommendation.build_recommendation(pattern, state["answers"], result, prefill_payload)
+
+        state["derived"] = result["derived"]
+        state["escalations"] = result["escalations"]
+        state["deviations"] = result["deviations"]
+        state["warnings"] = result["warnings"]
+        state["selected_pattern"] = pattern["id"]
+        session_store.save_state(session_id, state)
+        session_store.save_prefill(session_id, prefill_payload)
+
+        return jsonify({"ok": True, "data": {"type": "recommendation", "session_id": session_id,
+                                              "recommendation": rec}})
+    except Exception as exc:
+        log.exception("advisor chat failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
+
+
+@app.route("/api/advisor/diagram", methods=["POST"])
+@require_login
+def api_advisor_diagram():
+    from advisor import session_store, diagram_builder
+    from advisor.catalog_loader import get_catalog
+
+    data = request.get_json(force=True) or {}
+    owner = _chat_owner("requester")
+    session_id = data.get("session_id")
+    try:
+        sess = session_store.get_session(int(session_id)) if session_id else None
+        if not sess or not session_store.owns(int(session_id), owner):
+            return jsonify({"ok": False, "data": None, "error": "Session not found."}), 404
+        state = sess["state"]
+        pattern_id = state.get("selected_pattern")
+        if not pattern_id:
+            return jsonify({"ok": False, "data": None, "error": "No recommendation yet for this session."}), 400
+        pattern = get_catalog()[pattern_id]
+        source = diagram_builder.render(pattern, state["answers"], state.get("derived", {}))
+        return jsonify({"ok": True, "data": {"mermaid_source": source}})
+    except Exception as exc:
+        log.exception("advisor diagram failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
+
+
+@app.route("/api/advisor/prefill", methods=["POST"])
+@require_login
+def api_advisor_prefill():
+    from advisor import session_store
+
+    data = request.get_json(force=True) or {}
+    owner = _chat_owner("requester")
+    session_id = data.get("session_id")
+    try:
+        sess = session_store.get_session(int(session_id)) if session_id else None
+        if not sess or not session_store.owns(int(session_id), owner):
+            return jsonify({"ok": False, "data": None, "error": "Session not found."}), 404
+        if not sess.get("prefill_payload"):
+            return jsonify({"ok": False, "data": None, "error": "No recommendation yet for this session."}), 400
+        return jsonify({"ok": True, "data": {"url": url_for("requester_page", advisor_session=session_id)}})
+    except Exception as exc:
+        log.exception("advisor prefill failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
 
 
 @app.route("/requester/clear", methods=["POST"])

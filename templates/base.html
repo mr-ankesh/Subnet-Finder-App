@@ -49,7 +49,7 @@
           {% if is_admin %}
           {# Nav is grouped by use case: Operations · ZPA Analyzer · Governance.
              New features slot into the matching group's dropdown below. #}
-          {% set ops_eps = ['requests_list', 'subnet_allocator', 'allocator', 'requester_page', 'agent_page', 'admin_changes'] %}
+          {% set ops_eps = ['requests_list', 'subnet_allocator', 'allocator', 'requester_page', 'advisor_page', 'agent_page', 'admin_changes'] %}
           {% set gov_eps = ['subscription_inventory_page', 'cost_dashboard', 'optimize_dashboard', 'resource_graph_page'] %}
           <a href="{{ url_for('segment_select') }}" class="nav-link {% if request.endpoint == 'segment_select' %}active{% endif %}">
             <i class="bi bi-house"></i> Home
@@ -64,6 +64,7 @@
               <a href="{{ url_for('requests_list') }}" class="nav-link {% if request.endpoint == 'requests_list' %}active{% endif %}"><i class="bi bi-list-task"></i> Tickets</a>
               <a href="{{ url_for('subnet_allocator') }}" class="nav-link {% if request.endpoint in ('subnet_allocator', 'allocator') %}active{% endif %}"><i class="bi bi-hdd-network"></i> Subnet Allocator</a>
               <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}"><i class="bi bi-person"></i> Request Center</a>
+              <a href="{{ url_for('advisor_page') }}" class="nav-link {% if request.endpoint == 'advisor_page' %}active{% endif %}"><i class="bi bi-stars"></i> AI Architecture Advisor</a>
               <a href="{{ url_for('agent_page') }}" class="nav-link {% if request.endpoint == 'agent_page' %}active{% endif %}"><i class="bi bi-robot"></i> Admin Agent</a>
               <a href="{{ url_for('admin_changes') }}" class="nav-link {% if request.endpoint == 'admin_changes' %}active{% endif %}"><i class="bi bi-arrow-counterclockwise"></i> Changes</a>
             </div>
@@ -135,6 +136,9 @@
           {% if is_requester or not sso %}
           <a href="{{ url_for('requester_page') }}" class="nav-link {% if request.endpoint == 'requester_page' %}active{% endif %}">
             <i class="bi bi-person"></i> Request Center
+          </a>
+          <a href="{{ url_for('advisor_page') }}" class="nav-link {% if request.endpoint == 'advisor_page' %}active{% endif %}">
+            <i class="bi bi-stars"></i> AI Architecture Advisor
           </a>
           <a href="{{ url_for('help_requester') }}" class="nav-link {% if request.endpoint == 'help_requester' %}active{% endif %}">
             <i class="bi bi-book"></i> Guide

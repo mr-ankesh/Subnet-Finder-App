@@ -1,0 +1,4 @@
+# Vendored third-party assets — not this repo's own code, just noise in the
+# knowledge graph (a single minified library inflates node/edge counts and
+# gets mis-clustered against unrelated application code).
+static/vendor/
