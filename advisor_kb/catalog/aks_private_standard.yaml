@@ -4,9 +4,9 @@ name: Private AKS Cluster (Standard Tier)
 service: aks_cluster
 status: approved
 summary: >
-  Default Presight pattern for containerised workloads. Private API server, Azure CNI into
-  an onboarded spoke subnet, system + user node pools, egress via hub firewall, no public
-  node IPs.
+  Default Presight pattern for containerised workloads. Private API server, Azure CNI
+  Overlay into an onboarded spoke subnet, system + user node pools, egress via hub firewall,
+  no public node IPs.
 when_to_use:
   - containerised application workloads
   - microservices platforms
@@ -26,9 +26,15 @@ design:
     Standard includes an SLA-backed control plane. Free has no SLA — sandbox only. Premium
     adds a longer support window; select only for a specific version-support requirement.
   api_server_access: private
-  network_plugin: Azure CNI
+  network_plugin: Azure CNI Overlay
   network_plugin_note: >
-    Azure CNI assigns a VNET IP per pod, so the subnet must be sized for pods, not nodes.
+    Pods get addresses from a separate overlay Pod CIDR (Presight default: 10.244.0.0/16),
+    not the VNET subnet — only nodes consume subnet IPs. This is the Presight default
+    (Settings → AKS Defaults: Network plugin mode = overlay) and replaces classic
+    VNET-integrated Azure CNI, whose per-pod VNET IP consumption was a recurring subnet-
+    exhaustion problem. The Pod CIDR itself still needs planning: it must not collide with
+    the VNET, hub, VPN, ZPA or any peered range across the estate, since traffic can still
+    need to route correctly if the cluster's network posture changes later.
   node_pools:
     system:
       purpose: Kubernetes system components only
@@ -79,7 +85,8 @@ required_requests:
   - {order: 5, type: zpa_rnd_routing, label: ZPA Routing, condition: engineers need kubectl access}
 prerequisites:
   - An Azure subscription. If absent, request it from the HALO portal first.
-  - An onboarded spoke VNET with a dedicated AKS subnet, correctly sized for pods.
+  - An onboarded spoke VNET with a dedicated AKS subnet, correctly sized for nodes (Azure
+    CNI Overlay means pods use a separate Pod CIDR, not the subnet).
   - Key Vault Premium with an RSA-HSM key and a user-assigned managed identity.
   - An Azure Container Registry, or a request to create one.
 diagram: aks_private.mmd
@@ -89,3 +96,4 @@ source:
   - {doc: Vitruvian_BoQ_Azure, section: "3. Azure Kubernetes Service", states: "System node pool and user node pools; Standard tier SLA-backed control plane; ACR attached for private image pulls; azurefile-csi-premium and azure-disk-zrs-retain storage classes; autoscaler enabled; OS disk upgraded from default S4 to at least P10."}
   - {doc: Vitruvian_BoQ_Azure, section: "6. Networking", states: "NAT Gateway provides outbound connectivity for AKS nodes without exposing public IPs; Private Link secures connectivity to PostgreSQL, Redis, Blob and ACR."}
   - {doc: DMZ-Landing-Zone-Design-Document, section: "Network Policy Implementation", states: "Default deny at namespace level; allow intra-namespace pod communication; restrict egress to approved targets."}
+  - {doc: "Presight AlMadar 360 — Settings → AKS Defaults (config.py)", section: "AKS_NETWORK_PLUGIN / AKS_NETWORK_PLUGIN_MODE / AKS_POD_CIDR", states: "Live app default: network plugin azure, plugin mode overlay, pod CIDR 10.244.0.0/16 — not a cited design document, but the portal's own actual deploy-time default, confirmed against the running app rather than assumed."}

@@ -28,10 +28,20 @@ from advisor.question_engine import (next_question, record_answer, is_complete,
                                       _normalize_options, _normalize_skip_if, _service_questions)
 from advisor.prefill import (build_prefill, build_prefill_aks, build_prefill_vm,
                              build_prefill_postgres, build_prefill_appgw)
+from advisor import recommendation as advisor_recommendation
 from advisor.recommendation import build_recommendation_generic, build_redirect_response
 from advisor.diagram_builder import render as render_diagram
 from advisor import services as advisor_services
 from pathlib import Path
+
+# This suite's own contract (see module docstring) is "no LLM needed" — the
+# "Why this pattern" prose is the one deliberately LLM-authored piece, with a
+# documented deterministic fallback if the provider is unavailable. Whatever
+# AGENT_PROVIDER this DB happens to have configured live must never make this
+# offline suite depend on real network reachability (a live-but-slow endpoint
+# hung this suite for 60s+ with zero timeout), so call_llm is forced to raise
+# immediately — exercising exactly the fallback path this suite should cover.
+advisor_recommendation.prompts.call_llm = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no LLM in tests"))
 import re
 
 STORAGE = "storage_account"
@@ -457,11 +467,17 @@ check("#3 GPU quota escalation flagged as longest lead time",
           for e in r_gpu["escalations"]))
 r_nogpu = evaluate_full(AKS, {**aks_base, "gpu_required": False})
 check("#4 AKS without GPU -> aks_private_standard", r_nogpu["selection"]["winner"] == "aks_private_standard")
-check("#5 AKS CNI pod-IP subnet-sizing warning present",
-      any("pod" in w.lower() and ("ip" in w.lower() or "address" in w.lower()) for w in r_nogpu["warnings"]))
+check("#5 AKS CNI Overlay / Pod CIDR sizing warning present",
+      any("overlay" in w.lower() and "pod cidr" in w.lower() for w in r_nogpu["warnings"]))
 check("aks_gpu_nodepool inherited aks_private_standard's design (design.inherits resolved)",
       "inherits" not in catalog["aks_gpu_nodepool"]["design"] and
       catalog["aks_gpu_nodepool"]["design"].get("tier") == catalog["aks_private_standard"]["design"].get("tier"))
+check("aks_private_standard's design recommends Azure CNI Overlay, not classic CNI",
+      catalog["aks_private_standard"]["design"]["network_plugin"] == "Azure CNI Overlay")
+check("aks_gpu_nodepool inherits the Overlay recommendation too (design.inherits, not restated)",
+      catalog["aks_gpu_nodepool"]["design"]["network_plugin"] == "Azure CNI Overlay")
+check("AKS mapping locks network_plugin_mode=overlay",
+      get_mapping(AKS)["locked_fields"]["network_plugin_mode"]["value"] == "overlay")
 
 # ── add_service accumulation: multiple derivations must not overwrite ─────
 print("\nrules_engine: add_service accumulates across escalations + derivations")

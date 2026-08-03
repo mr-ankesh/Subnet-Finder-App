@@ -13,6 +13,7 @@ prefill_contract:
 locked_fields:
   private_cluster: {value: true, reason: Presight standard}
   network_plugin: {value: azure, reason: Azure CNI is the Presight pattern}
+  network_plugin_mode: {value: overlay, reason: "Azure CNI Overlay is the Presight default (Settings -> AKS Defaults) -- pods use a separate Pod CIDR instead of consuming VNET subnet IPs, avoiding classic CNI's subnet-exhaustion problem."}
   network_policy: {value: enabled}
   public_node_ips: {value: false}
   encryption: {value: CMK}

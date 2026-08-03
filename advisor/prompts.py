@@ -50,10 +50,22 @@ def _get_client():
     if _client is not None and _client_fingerprint == fingerprint:
         return _client
     _client_fingerprint = fingerprint
+    # The advisor's whole "AI enhances, never gates" guarantee depends on a
+    # slow/unreachable provider failing FAST so callers fall back to the
+    # deterministic path — found live during the six-service expansion's
+    # verification: an internal-network-only endpoint hung well past even
+    # the 60s client timeout that was already set, because the SDK's default
+    # automatic retries (max_retries=2) each get their own timeout budget.
+    # A short timeout with no retries is what "never gates" actually needs
+    # here — this is a single best-effort narration call, not a
+    # user-facing chat turn worth retrying.
+    _TIMEOUT_SECONDS = 15
+
     provider = cfg.AGENT_PROVIDER.lower()
     if provider == "anthropic":
         import anthropic
-        _client = anthropic.Anthropic(api_key=cfg.ANTHROPIC_API_KEY)
+        _client = anthropic.Anthropic(api_key=cfg.ANTHROPIC_API_KEY,
+                                       timeout=_TIMEOUT_SECONDS, max_retries=0)
     elif provider in ("openai", "byom"):
         from openai import AzureOpenAI, OpenAI
         if provider == "byom" and not cfg.OPENAI_BASE_URL:
@@ -61,9 +73,11 @@ def _get_client():
                                "set it in Settings → AI Agent / LLM.")
         if cfg.OPENAI_BASE_URL and "azure.com" in cfg.OPENAI_BASE_URL:
             _client = AzureOpenAI(azure_endpoint=cfg.OPENAI_BASE_URL, api_key=cfg.OPENAI_API_KEY,
-                                   api_version=cfg.OPENAI_API_VERSION)
+                                   api_version=cfg.OPENAI_API_VERSION,
+                                   timeout=_TIMEOUT_SECONDS, max_retries=0)
         else:
-            kwargs = {"api_key": cfg.OPENAI_API_KEY or "not-needed", "timeout": 60}
+            kwargs = {"api_key": cfg.OPENAI_API_KEY or "not-needed",
+                      "timeout": _TIMEOUT_SECONDS, "max_retries": 0}
             if cfg.OPENAI_BASE_URL:
                 kwargs["base_url"] = cfg.OPENAI_BASE_URL
             _client = OpenAI(**kwargs)

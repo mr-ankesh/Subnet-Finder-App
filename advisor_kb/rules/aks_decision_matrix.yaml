@@ -58,8 +58,10 @@ warnings:
   - id: cni_sizing
     when: "always"
     message: >
-      Azure CNI consumes one VNET IP per pod, not per node. The subnet must be sized for
-      pods — a 6-node cluster at 30 pods per node needs roughly 186 addresses.
+      Presight's default is Azure CNI Overlay — pods get addresses from a separate Pod CIDR
+      (default 10.244.0.0/16), not the VNET subnet, so the AKS subnet only needs to be sized
+      for nodes. Still confirm the overlay Pod CIDR doesn't overlap the hub, VPN, ZPA or any
+      other spoke before the cluster is created.
   - id: subnet_immutable
     when: "always"
     message: >
