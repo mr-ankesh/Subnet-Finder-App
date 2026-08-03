@@ -39,3 +39,9 @@ data/*.log
 # Local Helm value overrides — CONTAIN SECRETS, never commit
 helm/**/*-values.yaml
 my-values.yaml
+
+# Graphify — commit the map, not the machinery
+graphify-out/cache/
+graphify-out/cost.json
+graphify-out/.graphify_python
+graphify-out/.graphify_analysis.json
