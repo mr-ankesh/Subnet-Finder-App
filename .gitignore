@@ -45,3 +45,6 @@ graphify-out/cache/
 graphify-out/cost.json
 graphify-out/.graphify_python
 graphify-out/.graphify_analysis.json
+
+# Claude Code — shared hooks tracked, personal settings not
+.claude/settings.local.json
