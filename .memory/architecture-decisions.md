@@ -621,3 +621,128 @@ weaker experience than storage/AKS/VM's field-by-field prefill — accepted
 as the explicitly-chosen interim state per the user's instruction, with the
 mapping files' `user_must_provide` blocks already positioned as the future
 field spec once dedicated types exist.
+
+## 2026-08-03 — Environment composer (Phase 3): the LLM never computes a CIDR
+
+**Decision:** `network_planner.py` is the sole source of every subnet size,
+VNET size, address count, and utilisation percentage in the environment
+composer. The LLM narration pass (`render.render_summary`, the only place
+an LLM may touch this feature's output) is structurally forbidden from
+producing a number — it only ever rewrites the opening summary paragraph
+of an already-fully-computed plan, never a table, never a figure. Every
+other section (subnet table, arithmetic line, Pod CIDR paragraph, wave
+table, InfoSec section) is assembled deterministically in `render.py` from
+`network_planner`/`composition_engine`/`sequencer`'s structured output,
+with nothing left for an LLM to decide — the same pattern already proven
+for the single-service advisor's settings table, just applied to something
+that's computed rather than merely selected.
+
+**Why:** this plan goes to TechOps for real CIDR approval. An explaining
+model reaches for a rounder number; TechOps rejects a figure that doesn't
+match its own derivation. A wrong CIDR here is a routing incident, not a
+cosmetic mismatch — qualitatively higher stakes than every prior advisor
+phase, where the LLM's job was narrating a *selected* catalog pattern
+rather than a *computed* arithmetic result.
+
+**How enforced:** verified two ways. (1) `scripts/test_advisor_validation.py`
+forces `prompts.call_llm` to raise (an existing suite-wide monkeypatch from
+the six-service build) and confirms the plan still renders correctly from
+the deterministic path — the "forced LLM failure" check. (2) A dedicated
+arithmetic-integrity check compares the renderer's own output string
+byte-for-byte against `network_planner.build_network_plan()`'s structured
+return for the same inputs, and both `network_sizing.yaml` canonical
+examples are reproduced by reading the YAML's own `canonical_examples`
+block directly (not hand-copied expected numbers), so a future change to
+the KB's own worked figures would immediately surface as a test failure
+rather than silently drifting out of sync.
+
+## 2026-08-03 — Environment composer: AKS subnet sizing needs two separate formulas, not one
+
+**Decision:** `network_planner.size_aks_subnet()` computes two genuinely
+different numbers and returns both under distinct names, rather than
+picking one formula and deriving the other from it:
+- **Size selection** (`size`/`total`/`usable`): a bucket-table lookup
+  against `network_sizing.yaml`'s `snet_aks.sizing_table` by node count
+  ("up to 10 nodes" → `/26`). This reproduces the table's own pre-baked
+  `min_addresses` column via `floor(0.33 * bucket_ceiling)` (e.g.
+  `floor(0.33*10)=3` → the table's `18`).
+- **Prose headroom figure** (`actual_surge`/`actual_min_addresses`): a
+  *live* computation from the real node count using different rounding —
+  `surge = max(1, round(0.33 * node_count))`,
+  `min_addresses = node_count + surge + 5`. For 6 nodes:
+  `round(1.98) = 2`, `6+2+5 = 13`, matching `worked_example.md`'s "6 nodes
+  + surge headroom ≈ 13 today" exactly. `floor` on the same input would
+  give `12`, one address short of the acceptance test's own figure.
+
+**Why:** these answer different questions. The bucket table's job is
+picking a size that won't need re-provisioning as the cluster grows
+(deliberately generous, keyed to a ceiling); the prose's job is explaining
+*today's* headroom in terms the requester actually asked about (keyed to
+the real count they gave). Collapsing them into one formula produces a
+number that's right for one purpose and silently wrong — or unverifiable
+against the acceptance test — for the other. This was flagged as a live
+risk by a second-opinion review before implementation (the exact
+observation: "two different surge computations, one for the size lookup
+and one for the prose — make the planner return both as distinct named
+fields so the test can assert each against its own source") and confirmed
+necessary once the actual arithmetic was traced through by hand against
+`worked_example.md`'s stated figures.
+
+## 2026-08-03 — Environment composer: `snet_pe`'s `recommended_default` override is a judgment call, documented as one
+
+**Decision:** `network_sizing.yaml`'s `snet_pe` subnet has both a raw
+per-count `sizing_table` ("up to 10 endpoints" → `/28`) AND a
+`recommended_default: "/27"` with the stated reason "private endpoints
+accumulate — every new PaaS service adds one." `network_planner.size_pe_subnet()`
+always prefers `recommended_default` when present, falling back to the
+bucket table only if a future KB revision removes the override. The
+canonical worked example (4 endpoints → `/27`, not the naive per-count
+`/28`) confirms this reading is the intended one.
+
+**Why:** resolving an ambiguous KB structure silently (picking whichever
+number "worked" for the test) would hide a real interpretive choice from
+whoever maintains this KB next. Documenting it as a deliberate override —
+with the reasoning inline in the code comment — means a future KB author
+who changes `recommended_default` sees exactly what depends on it, instead
+of rediscovering the override mechanism from scratch.
+
+## 2026-08-03 — Environment composer: intake is its own flow controller, not a 6th `SERVICE_FILES` entry
+
+**Decision:** `advisor/composer/intake.py` does NOT register `"environment"`
+as a service in `catalog_loader.SERVICE_FILES`, and does not route through
+`question_engine.py`'s per-service question walk, despite reusing its
+`_normalize_options`/`_normalize_skip_if` helpers as plain functions.
+
+**Why:** `SERVICE_FILES` is a load-time contract for services that
+ultimately select a `RequestType` via catalog pattern matching — the
+environment composer does neither (there is no single pattern; the
+environment IS the composition). Forcing it in would mean
+`get_mapping("environment")` needing a fake mapping file,
+`_select_pattern` needing a special-case to never actually select
+anything, and `services.is_valid()` needing a carve-out — every future
+reader of that machinery would have to hold "except this one isn't really
+a service" in their head. The environment composer also needs three
+mechanics `question_engine.py` genuinely doesn't have: `type: text_parsed`
+inventory parsing with mandatory confirm-back, and `ask:` follow-up
+questions injected dynamically from `composition_engine.infer_missing_components`
+rather than existing in any static question bank. A dedicated, small flow
+controller was cheaper and clearer than bending the existing one to fit a
+shape it wasn't designed for — flagged as the right call by a second
+opinion during planning before any code was written.
+
+## 2026-08-03 — Environment composer: session storage needed no new table
+
+**Decision:** `session_store.create_session()` gained an optional `mode`
+parameter (`"single_service"` default, `"environment"` for the composer),
+stored *inside* the existing JSON `state` blob rather than as a new
+column or a new table.
+
+**Why:** `advisor_sessions.state` was already schema-free (a single JSON
+column: answers, derived values, selected pattern, whatever a given
+conversation needs) — nothing in the table definition assumed a
+single-service shape. The environment composer's state (parsed inventory,
+`resolved_asks`, `pending_confirm`) fits the same column without a
+migration, and `scripts/sqlite_to_postgres.py` needs no new entry, unlike
+every genuinely new raw-SQL table added in prior phases (see the
+`subscription_inventory`/`budget_alert_state`/`agent_chats` precedent in
+`CLAUDE.md`'s "Two DB backends" section).

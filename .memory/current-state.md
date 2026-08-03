@@ -12,7 +12,11 @@ Active development. Storage Account feature committed (`8ef4ef2`,
 2026-08-03 (`4ccd9d8`/`4ca0053`/`90ddc17`/`72d27c9`, plus KB duplicate-dir
 cleanup `f06285c`). Advisor expanded from storage-only to six services
 (Storage/AKS/VM/Postgres/AppGW selectable, Key Vault reference-only) —
-committed 2026-08-03 (`1aca22a`/`cc1e58c`/`1c70a91`) — see "Features In
+committed 2026-08-03 (`1aca22a`/`cc1e58c`/`1c70a91`). Azure CNI Overlay
+correction applied across both the single-service and composer KBs
+(`ce7874b`/`d27d4cb`/`7bf8459`). Environment composer (Phase 3 — whole-
+environment design, not pattern selection) committed 2026-08-03
+(`2298611`/`6fde2de`/`9da0fe1`/`5144094`/`7e67cae`) — see "Features In
 Progress" below for the full breakdown. Remaining uncommitted changes are
 the unrelated cosmetic/infra items noted below (predate all advisor work).
 `main` is the only branch; commits go straight to it.
@@ -126,6 +130,84 @@ Vault reference-only) — committed `1aca22a`/`cc1e58c`/`1c70a91`:**
   `zpa_rnd_access` are required but missing from the KB's own
   `user_must_provide`; `gpu_node_pool`/VM's curated-image transform have no
   backing form field or data source — never guessed, only checklist notes.
+
+### Environment composer — Phase 3, fully committed (`2298611`/`6fde2de`/`9da0fe1`/`5144094`/`7e67cae`)
+
+Third advisor mode, reachable from `/advisor`'s mode picker: describe a
+whole environment ("10 VMs, 1 AKS cluster, 1 managed PostgreSQL, public")
+and get one COMPUTED architecture (network arithmetic, inferred components,
+an InfoSec gate, an ordered build sequence) instead of a selected catalog
+pattern. See `CLAUDE.md` → "Environment composer" for the full design.
+`composer/worked_example.md` is the literal acceptance test (positive +
+negative case, both verified to pass exactly).
+
+- New package `advisor/composer/` (7 files: `inventory_parser`,
+  `network_planner`, `composition_engine`, `sequencer`, `infosec`, `intake`,
+  `render`, `env_prefill` — 8 actually, listed individually below), reusing
+  `advisor_kb/composer/`'s already-existing KB content (`environment_questions
+  .yaml`, `network_sizing.yaml`, `composition_rules.yaml`, `infosec_gate.yaml`,
+  `request_sequence.yaml`, `worked_example.md`, `environment_recommendation_
+  template.md`, `diagrams/environment_full.mmd`).
+- `network_planner.py` (highest-risk module — TechOps approves the CIDR off
+  its output): reproduces both `network_sizing.yaml` canonical examples
+  exactly, including the strictly-greater-than-75% utilisation flag (positive
+  example lands on exactly 75.0%, must not trip) and two deliberately separate
+  AKS sizing formulas (bucket lookup for the actual size vs. a live
+  actual-node-count formula for the "N nodes + surge headroom ≈ M today"
+  prose — different rounding, different inputs, never merged). Pod CIDR is
+  always a separate non-subnet field.
+- `composition_engine.py` runs `composition_rules.yaml`'s 8-phase pipeline
+  (no `pattern_selection` phase — there's no single pattern here);
+  `sequencer.py` turns `request_sequence.yaml` into ordered build waves with
+  real service labels (never bare "Other", even though `postgres_create`/
+  `app_gateway`/`private_endpoint` aren't real `RequestType`s);
+  `infosec.py` reuses the AppGW gate's verbatim-`message_ref` rendering
+  discipline.
+- `intake.py` is its own flow controller (NOT a 6th `SERVICE_FILES` entry) —
+  handles `type: text_parsed` inventory parsing + mandatory confirm-back,
+  and dynamically-injected `ask:` follow-ups question_engine.py has no
+  concept of.
+- `session_store.create_session(mode="environment")` — no schema change,
+  the `state` column was already a schema-free JSON blob.
+- 4 new routes, all `{ok, data, error}`: `/api/advisor/environment/chat`
+  (Q&A only), `/plan` (idempotent, recomputed fresh every call — no module-
+  state cache, 3 replicas in prod), `/diagram`
+  (`diagram_builder.render_environment()`), `/requests` (deliberately does
+  NOT re-run each embedded service's own full pattern-selection pipeline —
+  environment intake never asks the fields those need; uniform tag+known-
+  field prefill instead).
+- `templates/advisor.html` mode picker + environment-mode plan renderer
+  (subnet table, arithmetic block, Pod CIDR paragraph, hub integration,
+  private connectivity table, InfoSec box, build-sequence wave table,
+  security posture, before-you-start checklist).
+- `scripts/test_advisor_validation.py` grew from 175 to 232 checks (all
+  27 spec items: positive/negative canonical cases, arithmetic integrity
+  compared byte-for-byte against the planner's own structured output, both
+  network_sizing.yaml canonical_examples reproduced by reading the YAML
+  directly, a forced-LLM-failure fallback check, regression greps for
+  classic-CNI phrasing and the retired `aks_cni_sizing` warning id).
+- **Verified live against the running dev server** (not just the assert
+  suite): full HTTP round-trip through all 4 routes for both the positive
+  (public, 10 VMs/1 AKS/1 Postgres) and negative (internal-only) canonical
+  cases, reproducing `worked_example.md`'s arithmetic/components/waves/
+  InfoSec section exactly.
+- Two real bugs found and fixed during this build: (1) the subscription/
+  sovereignty blocker was only checked once intake finished, not after
+  every answer like the single-service flow — moved to fire immediately;
+  (2) `environment_full.mmd`'s internal-only edge-stripping regex had a
+  newline-boundary-consumption bug where three consecutive substitutions
+  sharing consumable newlines meant only the first/last edge in a block
+  got removed, leaving an orphan `AGW --> AKS` reference — fixed by
+  switching to line-anchored `MULTILINE` matching.
+- **No headless browser available** in this environment (checked:
+  `npm ls puppeteer playwright` empty, no `chromium`/`google-chrome`
+  binary) — the UI was verified via HTTP round-trip + a `node --check`
+  syntax pass on the extracted inline JS, NOT a true visual click-through.
+  Manual verification still needed: load `/advisor`, pick "a whole
+  environment", walk the intake chat, confirm the plan section renders
+  correctly (including the InfoSec box and the diagram's Cloudflare
+  subgraph), repeat for an internal-only environment to confirm those
+  sections are absent.
 
 ### Resource Relationship Graph — fully committed (`66824be`, `5b12f9f`, `9fff6b1`)
 

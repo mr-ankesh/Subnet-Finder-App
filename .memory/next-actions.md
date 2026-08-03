@@ -2,7 +2,7 @@
 
 > Prioritized, actionable only. Completed items are removed (not archived —
 > history lives in `daily/`/`weekly`/`monthly` and `architecture-decisions.md`).
-> Last updated: 2026-08-03.
+> Last updated: 2026-08-03 (environment composer / Phase 3 session).
 
 ## P0 — Ship-blocking
 
@@ -10,17 +10,25 @@ None currently.
 
 ## P1 — Follow-up
 
-1. Visually confirm the Advisor's chat UI in an actual browser for all five
-   selectable services — no headless-browser tool was reached for in this
-   session (same standing gap as the Resource Relationship Graph);
-   verification was via `scripts/test_advisor_validation.py` (172 checks,
-   up from 63) plus real HTTP-level end-to-end runs against the live Flask
-   dev server (a full AKS conversation through diagram+prefill handoff, a
-   Postgres self_managed redirect, an AppGW public-exposure InfoSec-gate
-   render) — not an actual rendered page in a browser. Specifically worth a
-   look: the service-selection chip menu as the first step, the "you'll
-   also need" (add_services) section, the generic recursive `design` dict
-   renderer for AKS/VM/Postgres/AppGW, and the verbatim InfoSec-gate box.
+1. Visually confirm the Advisor's chat UI in an actual browser — for all
+   five selectable single-service options AND the new environment-composer
+   mode. No headless-browser tool was reached for in this session (same
+   standing gap as the Resource Relationship Graph, still unresolved:
+   `npm ls puppeteer playwright` empty, no `chromium`/`google-chrome`
+   binary). Verification was via `scripts/test_advisor_validation.py` (232
+   checks, up from 63) plus real HTTP-level end-to-end runs against the
+   live Flask dev server (a full AKS conversation through diagram+prefill
+   handoff, a Postgres self_managed redirect, an AppGW public-exposure
+   InfoSec-gate render, and — new this round — the full environment-composer
+   flow for both the public and internal-only canonical cases through all 4
+   `/api/advisor/environment/*` routes) — not an actual rendered page in a
+   browser. Specifically worth a look: the service-selection chip menu, the
+   "you'll also need" (add_services) section, the generic recursive
+   `design` dict renderer, the verbatim InfoSec-gate box (both the
+   single-service AppGW one and the environment composer's), the mode
+   picker cards, the environment plan's subnet table/arithmetic
+   block/Pod-CIDR paragraph/wave table, and the Mermaid diagram render for
+   both the environment_full.mmd public and internal-only variants.
 2. Provision a real LLM provider with a valid `AGENT_PROVIDER` key/license
    for the advisor to actually use — every response so far has fallen back
    to the deterministic path (correct behavior, but the "Why this pattern"
@@ -44,10 +52,20 @@ None currently.
    own question bank would need to be written) or stays reference-only
    permanently — currently reference-only per an explicit choice this
    session, not a gap that needs closing on its own timeline.
-6. The environment composer (`advisor_kb/composer/`, minus `infosec_gate.yaml`
-   which is already used) is Phase 3 — cross-service "whole environment"
-   recommendations, `add_service`-driven auto-continuation into a second
-   service's own conversation, etc. Explicitly out of scope for this round.
+6. Cross-service `add_service`-driven auto-continuation (e.g. AKS flagging
+   AppGW as a companion service actually launching that service's OWN
+   guided conversation, rather than just listing it as "you'll also need")
+   remains out of scope — noted but not built in the environment composer
+   either, which instead computes the full cross-service plan directly
+   from one intake rather than chaining conversations.
+7. `env_prefill.py`'s per-wave-item prefill is deliberately shallow (tag
+   fields + a handful of directly-collected answers, not a real
+   pattern-selected settings table) — see `CLAUDE.md` → "Environment
+   composer" for why. If this proves insufficient in practice, the
+   alternative is asking each embedded service's own full question set
+   during the environment intake too, which conflicts with the intake's
+   explicit "deliberately short" design goal — worth a product decision,
+   not a silent code change.
 8. Fix the concentric layout's "hairball" density on denser Resource
    Relationship Graph queries. A real Puppeteer screenshot of the
    whole-subscription query (42 nodes, 35 edges) showed everything clustered
@@ -114,5 +132,3 @@ None currently.
 - GPU utilization dashboard — prerequisites documented in
   `docs/GPU_UTILIZATION.md`, nothing implemented yet. Needs a decision on
   metrics pipeline (Azure Managed Prometheus recommended) before work starts.
-- AI Architecture Advisor Phase 3 — the "whole environment" composer
-  (`advisor_kb/composer/`, cross-service auto-continuation) — see P1 item 6.

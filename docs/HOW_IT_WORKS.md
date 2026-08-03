@@ -125,7 +125,14 @@ by reading the hub VNET (read-only, works even in dry-run).
    1 exactly like a human filling the form themselves; every prefilled field
    stays editable and nothing is submitted until the requester does so from
    the normal form. See `CLAUDE.md` → "AI Architecture Advisor" for the full
-   design.
+   design. `/advisor`'s mode picker offers a second path alongside the
+   single-service one above: describing a whole environment ("10 VMs, a
+   cluster, a database") instead of one resource. That path COMPUTES a
+   network plan (real subnet arithmetic, an InfoSec gate when exposure is
+   public, an ordered build-wave sequence) rather than selecting a catalog
+   pattern — still hands off the same way, into the same per-request-type
+   forms, just several of them in sequence instead of one. See `CLAUDE.md`
+   → "Environment composer" for the full design.
 1. **Submit** — requester uses the form or the AI chat agent. Both paths hit
    the same validated creation code (subnet fit, FQDN-only application
    rules, ports/protocol parsing — bad input is rejected at submission, not

@@ -775,6 +775,109 @@ covered it, are untouched; `scripts/test_advisor_validation.py` grew to 172.
   whatever shape it finds). Every value still comes straight from the KB
   pattern's own YAML — nothing invented in either module.
 
+#### Environment composer: whole-environment design, not pattern selection
+
+`advisor/composer/` + `advisor_kb/composer/` (Phase 3) is a third mode
+alongside the single-service advisor above, reachable from `/advisor`'s
+mode picker ("a single service" vs. "a whole environment"). Every other
+advisor component SELECTS one catalog pattern; this one COMPOSES several —
+the user describes an environment ("10 VMs, 1 AKS cluster, 1 managed
+PostgreSQL, publicly hosted") and gets one coherent architecture with real
+network arithmetic, not a picked-from-a-list recommendation. Same
+non-negotiable, with a sharper edge: "Rules decide. LLM explains. Forms
+validate. Azure deploys." — here the LLM narrates *computed* numbers, never
+*selected* ones, so an explaining model reaching for a rounder figure would
+be a real defect, not a style nit. `composer/worked_example.md` is the
+literal acceptance test (positive **and** negative case, both must pass);
+`composer/network_sizing.yaml` is the sole source of sizing arithmetic.
+
+- **`network_planner.py` is the highest-risk module in the whole advisor
+  feature** — its output goes to TechOps for CIDR approval. Every subnet
+  size is a bucket-table lookup or an explicit KB override (`snet_pe`'s
+  `recommended_default: "/27"` overrides the naive "up to 10 endpoints ->
+  /28" lookup, with the reason "private endpoints accumulate" — a genuine
+  KB judgment call, documented as one, not silently resolved). The AKS
+  subnet carries **two intentionally separate numbers**: a bucket lookup by
+  node count decides the actual subnet size ("up to 10 nodes" -> `/26`,
+  already correct for the worked example's 6 nodes with no override
+  needed), while a *different*, live formula
+  (`surge = max(1, round(0.33 * node_count))`, `node_count + surge + 5`)
+  produces the "6 nodes + surge headroom ≈ 13 today" prose — different
+  rounding, different inputs, never collapsed into one function. VNET
+  utilisation is flagged `strictly greater than 75%` — the canonical
+  example lands on exactly 75.0% and must NOT trip it; implementing this as
+  `>=` is the single most likely regression in this module. The Pod CIDR
+  (Azure CNI Overlay's separate `10.244.0.0/16` address space) is always
+  returned as its own non-subnet field — inserting it into the subnet list
+  or the VNET arithmetic is a named regression, not a style choice.
+- **`composition_engine.py`** runs `composition_rules.yaml`'s 8-phase
+  pipeline (blockers -> infer components -> exposure analysis -> network
+  plan -> dependency graph -> shared services -> deviations -> warnings) —
+  a different shape from the single-service `rules_engine.py` (no
+  `pattern_selection` phase at all, since there's no single pattern here).
+  `infer_missing_components` splits silent `add:` results (Key Vault, ACR,
+  AppGW-for-public — shown in the recommendation's "Components" table) from
+  a single pending `ask:` follow-up at a time (`storage_for_aks`) — an
+  explicit `_resolved_asks` marker distinguishes "asked and answered no"
+  from "never asked", since a "no" answer leaves the target count at 0,
+  identical to "never asked" otherwise. `pe_subnet`'s own `add: snet_pe`
+  rule is deliberately never surfaced as an "inferred component" — the
+  subnet itself still appears in the network plan, but a subnet isn't a
+  service a user recognizes as new work the way a whole Key Vault is, and
+  `worked_example.md`'s Components table confirms exactly 3 rows, not 4.
+- **`intake.py` is its own flow controller, not a 6th entry in
+  `catalog_loader.SERVICE_FILES`.** The environment composer doesn't select
+  a `RequestType` via pattern matching, and needs three mechanics
+  `question_engine.py` doesn't have: `type: text_parsed` (regex-based
+  inventory parsing in `inventory_parser.py`, **always** confirmed back to
+  the user before designing anything from it — a wrong parse is caught by
+  the human, never trusted silently), a confirm-back turn, and dynamically
+  injected `ask:` follow-ups from `composition_engine.infer_missing_components`
+  that only exist once the static question list is exhausted.
+- **`sequencer.py`** turns `request_sequence.yaml` into ordered, filtered
+  build waves. `postgres_create`/`app_gateway`/`private_endpoint` aren't
+  real `RequestType`s (checked directly against `models.RequestType.ALL`) —
+  every wave item keeps its KB semantic label as the PRIMARY label with the
+  real submittable type (`RequestType.OTHER` where nothing dedicated
+  exists) as secondary detail, so the wave table never renders bare
+  "Other" rows.
+- **`infosec.py`** reuses the exact `message_ref`-verbatim-rendering
+  discipline proven for the single-service AppGW gate — `infosec_gate.yaml`'s
+  `user_message` is never LLM-touched, which is what structurally
+  guarantees "never suggest a workaround / promise a timeline" rather than
+  relying on prompt wording. Its InfoSec-brief draft recovers
+  `public_hostname`/`audience` from the intake's one combined
+  `public_details` free-text answer (the brief template wants them
+  separate — a genuine KB-vs-question-bank mismatch, same class as
+  Phase 2's field-name mismatches) and renders any field the intake never
+  asks individually (`pii_present`, `auth_model`, ...) as an explicit
+  "not yet provided" placeholder — never invented, never silently dropped.
+- **`render.py`** is the deterministic markdown-shape renderer — every
+  number comes straight from `network_planner`/`composition_engine`/
+  `sequencer`'s structured output, never recomputed. An LLM narration pass
+  may rewrite only the opening summary paragraph (the one place "explain,
+  don't compute" is safe); every table, the Pod CIDR paragraph, and the
+  InfoSec section render regardless of whether an LLM is configured at all.
+- **Session storage needed no new table.** `session_store.py`'s
+  `advisor_sessions.state` was already a schema-free JSON blob;
+  `create_session(mode="environment")` just stores a differently-shaped
+  state dict in the same column — no `sqlite_to_postgres.py` change.
+- **`env_prefill.py`'s `/api/advisor/environment/requests` deliberately
+  does NOT re-run each embedded service's own full `rules_engine.evaluate_full`
+  + `build_prefill_*` pipeline.** Those need each service's own full
+  question set answered (AKS's tier/CMK questions, VM's OS/auth-mode
+  questions, ...) that the deliberately-short environment intake never
+  asks. Every wave item instead gets the same uniform, always-safe prefill
+  (business/governance tags plus the handful of fields the environment
+  intake actually collected) rather than risking a fabricated pattern
+  selection from incomplete data.
+- **4 routes**, all `{ok, data, error}`: `/api/advisor/environment/chat`
+  (Q&A turns only), `/plan` (idempotent — recomputes fresh from persisted
+  session state on every call, nothing cached in module state, since prod
+  runs 3 replicas), `/diagram` (`diagram_builder.render_environment()`,
+  a parallel entry point to `render()` since there's no single catalog
+  pattern to key off), `/requests`.
+
 ### Separate credentials per concern
 
 Four independent service-principal configs, intentionally isolated so a
