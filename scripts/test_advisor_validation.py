@@ -32,6 +32,8 @@ from advisor import recommendation as advisor_recommendation
 from advisor.recommendation import build_recommendation_generic, build_redirect_response
 from advisor.diagram_builder import render as render_diagram
 from advisor import services as advisor_services
+from advisor.composer import inventory_parser
+from advisor.composer import network_planner
 from pathlib import Path
 
 # This suite's own contract (see module docstring) is "no LLM needed" — the
@@ -683,5 +685,88 @@ check("redirect response targets vm_workload_standard", redirect_resp["target_pa
 check("redirect response never fabricates VM-shaped fields — only summary + restart hint",
       set(redirect_resp.keys()) == {"redirect", "target_pattern_id", "target_pattern_name",
                                      "target_pattern_summary", "message", "restart_hint", "captured_so_far"})
+
+# ── Phase 3 environment composer: inventory_parser + network_planner ──────
+# Arithmetic-focused checks only (verification items #1, #3-5, #9, #15-16,
+# #18, #23-25 of the composer's 27-item spec). Reproduces both
+# advisor_kb/composer/network_sizing.yaml canonical_examples exactly, plus
+# the strictly-greater-than-75% boundary and the two distinct AKS sizing
+# formulas. Full cross-service/InfoSec/sequencer checks land in a later
+# stage once composition_engine.py/sequencer.py/infosec.py exist.
+print("\ncomposer/inventory_parser.py + composer/network_planner.py")
+
+parsed_canonical = inventory_parser.parse_inventory(
+    "10 VMs, 1 AKS cluster, 1 managed PostgreSQL. The application will be publicly hosted.")
+check("inventory_parser: canonical positive text parses to 10/1/1/0/0",
+      (parsed_canonical["vm_count"], parsed_canonical["aks_count"],
+       parsed_canonical["postgres_count"], parsed_canonical["storage_count"],
+       parsed_canonical["appgw_count"]) == (10, 1, 1, 0, 0))
+
+_positive_answers = {"vm_count": 10, "aks_count": 1, "postgres_count": 1,
+                      "storage_count": 1, "appgw_count": 0, "_aks_node_count": 6}
+_positive_inferred = {"keyvault_premium_private", "container_registry", "appgw_public_cloudflare"}
+positive_plan = network_planner.build_network_plan(_positive_answers, _positive_inferred)
+
+check("network_planner positive: subnet sizes match worked_example.md exactly",
+      [(s["id"], s["size"], s["total"]) for s in positive_plan["subnets"]] ==
+      [("snet_appgw", "/24", 256), ("snet_aks", "/26", 64),
+       ("snet_workload", "/27", 32), ("snet_pe", "/27", 32)])
+check("network_planner positive: arithmetic is 256+64+32+32=384",
+      positive_plan["arithmetic_terms"] == [256, 64, 32, 32] and positive_plan["arithmetic_sum"] == 384)
+check("network_planner positive: VNET is /23 (512), 75.0% allocated, 128 spare",
+      (positive_plan["vnet_size"], positive_plan["capacity"], positive_plan["utilisation_pct"],
+       positive_plan["spare"]) == ("/23", 512, 75.0, 128))
+check("network_planner positive: 75.0% does NOT trip the flag (strictly_greater, not >=)",
+      positive_plan["flag_tripped"] is False)
+check("network_planner positive: Pod CIDR is a separate field, never a subnet row",
+      positive_plan["pod_cidr"]["cidr"] == "10.244.0.0/16"
+      and positive_plan["pod_cidr"]["is_subnet"] is False
+      and all(s["id"] != "pod_cidr" for s in positive_plan["subnets"])
+      and "10.244" not in str(positive_plan["arithmetic_terms"]))
+check("network_planner positive: 4 private endpoints with correct DNS zones",
+      [(e["service"], e["dns_zone"]) for e in positive_plan["private_endpoints"]] == [
+          ("PostgreSQL Flexible Server", "privatelink.postgres.database.azure.com"),
+          ("Key Vault", "privatelink.vaultcore.azure.net"),
+          ("Container Registry", "privatelink.azurecr.io"),
+          ("Storage Account", "privatelink.blob.core.windows.net"),
+      ])
+
+_negative_answers = dict(_positive_answers)
+_negative_inferred = {"keyvault_premium_private", "container_registry"}  # no appgw: internal_only
+negative_plan = network_planner.build_network_plan(_negative_answers, _negative_inferred)
+
+check("network_planner negative (internal_only): snet-appgw absent",
+      all(s["id"] != "snet_appgw" for s in negative_plan["subnets"]))
+check("network_planner negative: arithmetic is 64+32+32=128",
+      negative_plan["arithmetic_terms"] == [64, 32, 32] and negative_plan["arithmetic_sum"] == 128)
+check("network_planner negative: VNET is /24 (256), not /23 not /22",
+      negative_plan["vnet_size"] == "/24" and negative_plan["capacity"] == 256)
+check("network_planner negative: Pod CIDR still stated (exposure doesn't affect it)",
+      negative_plan["pod_cidr"] is not None
+      and negative_plan["pod_cidr"]["cidr"] == "10.244.0.0/16")
+
+aks_snet = next(s for s in positive_plan["subnets"] if s["id"] == "snet_aks")
+check("AKS sizing: bucket lookup for 6 nodes gives /26 (not the actual-count prose formula)",
+      aks_snet["size"] == "/26" and aks_snet["total"] == 64)
+check("AKS sizing: prose headroom uses the DIFFERENT actual-count formula (6+2+5=13, matches worked_example)",
+      aks_snet["actual_surge"] == 2 and aks_snet["actual_min_addresses"] == 13)
+check("AKS sizing basis text never explains the subnet in terms of pods",
+      "pod" not in aks_snet["basis"].lower())
+_bucket_row_10 = network_planner._bucket_lookup(
+    network_planner._subnets_by_id()["snet_aks"]["sizing_table"], 10)
+check("AKS sizing: bucket table's OWN min_addresses (18 for 'up to 10') is a separate figure "
+      "from the actual-count prose (13) — not the same computation",
+      _bucket_row_10["min_addresses"] == 18 and aks_snet["actual_min_addresses"] != 18)
+
+pe_snet = next(s for s in positive_plan["subnets"] if s["id"] == "snet_pe")
+check("snet_pe sizing: recommended_default /27 overrides the naive 'up to 10 -> /28' bucket lookup",
+      pe_snet["size"] == "/27" and pe_snet["total"] == 32)
+
+# 385/512 = 75.195...% -> strictly > 75, must trip (one address more than the
+# canonical 384/512 = 75.0% case above, which must NOT trip).
+_just_over = network_planner.compute_vnet_plan([{"total": 257}, {"total": 64},
+                                                  {"total": 32}, {"total": 32}])
+check("Utilisation boundary: 75.195% (one address over the canonical 75.0% case) DOES trip the flag",
+      _just_over["utilisation_pct"] > 75 and _just_over["flag_tripped"] is True)
 
 print(f"\n{passed} checks passed.")
