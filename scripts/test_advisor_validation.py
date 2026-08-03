@@ -34,6 +34,9 @@ from advisor.diagram_builder import render as render_diagram
 from advisor import services as advisor_services
 from advisor.composer import inventory_parser
 from advisor.composer import network_planner
+from advisor.composer import composition_engine
+from advisor.composer import sequencer
+from advisor.composer import infosec as composer_infosec
 from pathlib import Path
 
 # This suite's own contract (see module docstring) is "no LLM needed" — the
@@ -768,5 +771,106 @@ _just_over = network_planner.compute_vnet_plan([{"total": 257}, {"total": 64},
                                                   {"total": 32}, {"total": 32}])
 check("Utilisation boundary: 75.195% (one address over the canonical 75.0% case) DOES trip the flag",
       _just_over["utilisation_pct"] > 75 and _just_over["flag_tripped"] is True)
+
+# ── Phase 3: composition_engine.py + sequencer.py + infosec.py ────────────
+# Cross-service rule evaluation, wave labelling/RequestType.OTHER mapping,
+# exposure analysis, InfoSec brief drafting. Covers verification items #6-8,
+# #10-14, #17, #19-22, #26 of the composer's 27-item spec.
+print("\ncomposer/composition_engine.py + sequencer.py + infosec.py")
+
+_env_positive = {
+    "subscription_available": True, "environment": "dev", "data_classification": "confidential",
+    "vm_count": 10, "aks_count": 1, "postgres_count": 1, "storage_count": 1, "appgw_count": 0,
+    "aks_scale": "6", "gpu_required": False, "database_criticality": "single",
+    "exposure": "public_internet", "public_details": "app.presight.ai, public customers",
+    "business_unit": "Platform", "application_name": "MyApp", "owner_email": "a@b.com",
+    "criticality": "high", "target_date": "Q3", "_resolved_asks": ["storage_for_aks"],
+}
+_env_negative = dict(_env_positive)
+_env_negative["exposure"] = "internal_only"
+
+pos_result = composition_engine.evaluate_full(_env_positive)
+neg_result = composition_engine.evaluate_full(_env_negative)
+
+check("composition_engine positive: exactly 3 inferred components, in the KB's own order",
+      [c["id"] for c in pos_result["components"]["inferred"]] ==
+      ["keyvault_premium_private", "container_registry", "appgw_public_cloudflare"])
+check("composition_engine: snet_pe/pe_subnet is never listed as an 'inferred component' "
+      "(worked_example.md's Components table has exactly 3 rows, not 4 — a subnet isn't a "
+      "service the user recognizes as new work the way a Key Vault is)",
+      all(c["id"] != "snet_pe" for c in pos_result["components"]["inferred"]))
+check("composition_engine: storage_for_aks pending_ask resolved once _resolved_asks includes it",
+      pos_result["components"]["pending_ask"] is None)
+
+check("composition_engine: storage_for_aks surfaces as pending_ask when aks>0, storage==0, unresolved",
+      composition_engine.infer_missing_components(
+          {"aks_count": 1, "storage_count": 0, "_resolved_asks": []})["pending_ask"]["id"] == "storage_for_aks")
+check("composition_engine: same ask does NOT re-fire once resolved, even though storage_count is still 0 "
+      "(a 'no' answer leaves the count at 0 — only the resolved-marker distinguishes it from 'never asked')",
+      composition_engine.infer_missing_components(
+          {"aks_count": 1, "storage_count": 0, "_resolved_asks": ["storage_for_aks"]})["pending_ask"] is None)
+
+check("exposure analysis positive: public_application, with infosec_gate.yaml's message_ref attached",
+      pos_result["exposure"]["id"] == "public_application" and "user_message" in pos_result["exposure"]["message_ref"])
+check("exposure analysis negative: fully_private, no message_ref",
+      neg_result["exposure"]["id"] == "fully_private" and "message_ref" not in neg_result["exposure"])
+
+check("environment_warnings positive: both new Overlay warnings plus surge-headroom present",
+      {"aks_overlay_sizing", "aks_surge_headroom", "pod_cidr_non_overlap"} <= {w["id"] for w in pos_result["warnings"]})
+check("environment_warnings positive: cert_ownership fires for an INFERRED AppGW "
+      "(appgw_count stayed 0 in the raw answers — only inference makes it present)",
+      "cert_ownership" in {w["id"] for w in pos_result["warnings"]})
+check("environment_warnings negative: no cloudflare/cert warnings when exposure is internal_only",
+      {"cert_ownership", "cloudflare_range_drift"}.isdisjoint({w["id"] for w in neg_result["warnings"]}))
+
+check("environment_deviations: oversized_request only fires when computed VNET is larger than /21 "
+      "(neither canonical example needs a split — both are /23 or /24)",
+      pos_result["deviations"] == [] and neg_result["deviations"] == [])
+_huge_plan = {"vnet_size": "/20"}
+check("environment_deviations: oversized_request DOES fire for a /20 (larger than /21)",
+      any(d["id"] == "oversized_request" for d in
+          composition_engine.environment_deviations({}, _huge_plan)))
+check("environment_deviations: oversized_request does NOT fire for exactly /21 (the guard, not '/21 or larger')",
+      not any(d["id"] == "oversized_request" for d in
+              composition_engine.environment_deviations({}, {"vnet_size": "/21"})))
+
+pos_waves = sequencer.build_waves(_env_positive)
+neg_waves = sequencer.build_waves(_env_negative)
+check("sequencer positive: InfoSec onboarding sits in wave 0",
+      any(r["label"] == "InfoSec public exposure onboarding" for w in pos_waves if w["wave"] == 0
+          for r in w["requests"]))
+check("sequencer positive: wave table shows real service names, never bare 'Other'",
+      all(r["label"] != "Other" for w in pos_waves for r in w["requests"]))
+check("sequencer: postgres_create/app_gateway map to RequestType.OTHER with a secondary "
+      "'no dedicated request type yet' note, label stays the semantic name",
+      all(r["submittable_request_type"] == "other" and r["secondary_note"]
+          for w in pos_waves for r in w["requests"]
+          if r["type"] in ("postgres_create", "app_gateway")))
+check("sequencer: private_endpoint rows note they're part of their parent resource's own deploy",
+      all("parent resource" in r["secondary_note"]
+          for w in pos_waves for r in w["requests"] if r["type"] == "private_endpoint"))
+check("sequencer negative (internal_only): wave 6 (public front door) entirely absent",
+      all(w["wave"] != 6 for w in neg_waves))
+check("sequencer negative: no InfoSec onboarding request anywhere",
+      all(r["label"] != "InfoSec public exposure onboarding" for w in neg_waves for r in w["requests"]))
+check("sequencer positive: critical path names InfoSec -> Cloudflare DNS",
+      "InfoSec" in sequencer.critical_path(_env_positive) and "Cloudflare" in sequencer.critical_path(_env_positive))
+check("sequencer negative: critical path has no InfoSec dependency",
+      "InfoSec" not in sequencer.critical_path(_env_negative))
+
+check("infosec.gate_fires: true only for public_internet exposure",
+      composer_infosec.gate_fires(_env_positive) is True
+      and composer_infosec.gate_fires(_env_negative) is False)
+brief = composer_infosec.draft_brief(_env_positive)
+exposure_section = next(s for s in brief["sections"] if s["heading"] == "Requested exposure")
+_hostname_field = next(f for f in exposure_section["fields"] if f["label"] == "Public hostname(s)")
+_audience_field = next(f for f in exposure_section["fields"] if f["label"] == "Expected audience")
+check("infosec.draft_brief: public_details free text is split into hostname + audience "
+      "(the KB's brief template wants them separate; the question bank asks one combined field)",
+      _hostname_field["value"] == "app.presight.ai" and _audience_field["value"] == "public customers")
+check("infosec.draft_brief: a field the intake never asks (pii_present) renders an explicit "
+      "'not yet provided' placeholder, never invented and never silently dropped",
+      any(f["value"] == "(not yet provided — confirm with the requester)"
+          for s in brief["sections"] for f in s.get("fields", [])))
 
 print(f"\n{passed} checks passed.")
