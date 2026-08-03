@@ -37,6 +37,9 @@ from advisor.composer import network_planner
 from advisor.composer import composition_engine
 from advisor.composer import sequencer
 from advisor.composer import infosec as composer_infosec
+from advisor.composer import render as composer_render
+from advisor.diagram_builder import render_environment as render_env_diagram
+from advisor.catalog_loader import get_composer_file
 from pathlib import Path
 
 # This suite's own contract (see module docstring) is "no LLM needed" — the
@@ -872,5 +875,120 @@ check("infosec.draft_brief: a field the intake never asks (pii_present) renders 
       "'not yet provided' placeholder, never invented and never silently dropped",
       any(f["value"] == "(not yet provided — confirm with the requester)"
           for s in brief["sections"] for f in s.get("fields", [])))
+
+# ── Phase 3: full render + diagram integration, arithmetic integrity, ─────
+# ── and regression checks (remaining items of the composer's 27-item spec) ─
+# Covers #9-10, #14-15, #17, #21, #23-27. Items #23 is scoped honestly in
+# its own check below: this offline suite (prompts.call_llm forced to raise,
+# see the module-level monkeypatch above) can only exercise the
+# DETERMINISTIC renderer's output against network_planner's own structured
+# numbers — that comparison is the one that must never drift, and it's the
+# only one reachable without a real LLM in an offline suite.
+print("\ncomposer: full render + diagram integration, arithmetic integrity, regressions")
+
+pos_waves = sequencer.build_waves(_env_positive)
+pos_cp = sequencer.critical_path(_env_positive)
+pos_pm = sequencer.parallelism_message()
+pos_brief = composer_infosec.draft_brief(_env_positive)
+pos_full = composer_render.render_full(_env_positive, pos_result, pos_waves, pos_cp, pos_pm, pos_brief)
+
+neg_waves = sequencer.build_waves(_env_negative)
+neg_full = composer_render.render_full(
+    _env_negative, neg_result, neg_waves, sequencer.critical_path(_env_negative), pos_pm, None)
+
+check("render positive: exactly one public IP stated explicitly, on the Application Gateway",
+      pos_full["public_access"]["public_ip_count"] == 1
+      and pos_full["public_access"]["public_ip_location"] == "Application Gateway")
+check("render positive: 75.0% utilisation shows NO next-size-up caveat",
+      pos_full["network_plan"]["tight_fit_caveat"] is None)
+_pos_body_flat = " ".join((pos_full["public_access"] or {"body": ""})["body"].split())
+check("render positive: InfoSec section present, explains the architecture (Cloudflare/WAF) "
+      "before the process (InfoSec onboarding), citing the prior origin-bypass finding exactly once",
+      pos_full["public_access"] is not None
+      and _pos_body_flat.index("Cloudflare") < _pos_body_flat.index("InfoSec onboarding")
+      and _pos_body_flat.count("bypassing the WAF") == 1)
+check("render negative: no InfoSec/public-access section at all", neg_full["public_access"] is None)
+check("render negative: zero public IPs — no public_access block to state a count from",
+      neg_full["public_access"] is None)
+
+diagram_pos = render_env_diagram(_env_positive, pos_result)
+diagram_neg = render_env_diagram(_env_negative, neg_result)
+check("diagram positive: Cloudflare/NET subgraph present", "Cloudflare" in diagram_pos and "subgraph NET" in diagram_pos)
+check("diagram positive: AKS node label says Overlay, not bare 'Azure CNI'",
+      "Azure CNI Overlay" in diagram_pos)
+check("diagram negative: NET/Cloudflare subgraph omitted entirely, no orphan CF/AGW node refs",
+      "subgraph NET" not in diagram_neg and "Cloudflare" not in diagram_neg
+      and "CF ==>" not in diagram_neg and "AGW -->" not in diagram_neg)
+check("diagram negative: no unsubstituted {TOKEN} placeholders leaked through",
+      "{ENV}" not in diagram_neg and "{VNET_CIDR}" not in diagram_neg)
+
+# Arithmetic integrity: the deterministic renderer's numbers must match
+# network_planner's own structured output byte-for-byte — never re-derived.
+_plan = pos_result["network_plan"]
+check("arithmetic integrity: rendered arithmetic line reproduces the planner's own terms/sum/size/pct/spare exactly",
+      pos_full["network_plan"]["arithmetic_line"] ==
+      f"{' + '.join(str(t) for t in _plan['arithmetic_terms'])} = {_plan['arithmetic_sum']} addresses, "
+      f"which fits a {_plan['vnet_size']} ({_plan['capacity']}) at {_plan['utilisation_pct']}% allocated, "
+      f"leaving {_plan['spare']} spare.")
+check("arithmetic integrity: rendered subnet sizes match the planner's subnet list exactly, in order",
+      [s["size"] for s in pos_full["network_plan"]["subnet_rows"]] == [s["size"] for s in _plan["subnets"]])
+
+_sizing_yaml = get_composer_file("network_sizing.yaml")
+_pub_example = _sizing_yaml["canonical_examples"]["public_environment"]
+_int_example = _sizing_yaml["canonical_examples"]["internal_only_environment"]
+check("both canonical_examples in network_sizing.yaml are reproduced exactly (public)",
+      _plan["arithmetic_sum"] == int(_pub_example["arithmetic"].split("=")[1].strip())
+      and _plan["vnet_size"] == _pub_example["vnet"]
+      and _plan["utilisation_pct"] == _pub_example["utilisation_percent"]
+      and _plan["spare"] == _pub_example["spare"])
+_neg_plan = neg_result["network_plan"]
+check("both canonical_examples in network_sizing.yaml are reproduced exactly (internal_only)",
+      _neg_plan["arithmetic_sum"] == int(_int_example["arithmetic"].split("=")[1].strip())
+      and _neg_plan["vnet_size"] == _int_example["vnet"]
+      and _neg_plan["utilisation_pct"] == _int_example["utilisation_percent"]
+      and _neg_plan["spare"] == _int_example["spare"])
+
+# advisor_recommendation.prompts.call_llm is already forced to raise at the
+# top of this suite — confirming the environment renderer's summary still
+# renders (from the deterministic fallback) rather than propagating the
+# LLM failure is exactly the "never gates" guarantee this forced failure
+# is meant to prove.
+try:
+    _llm_failure_summary = composer_render.render_summary(
+        _env_positive, pos_result["network_plan"], pos_result["exposure"])
+    _llm_fallback_ok = bool(_llm_failure_summary)
+except Exception:
+    _llm_fallback_ok = False
+check("forced LLM failure: the environment summary still renders from the deterministic path",
+      _llm_fallback_ok)
+
+_rendered_text = " ".join(str(v) for v in [
+    pos_full["summary"], pos_full["network_plan"]["arithmetic_line"],
+    pos_full["network_plan"]["pod_cidr_paragraph"] or "",
+    *[s["basis"] for s in pos_full["network_plan"]["subnet_rows"]],
+    *[w["message"] for w in pos_result["warnings"]],
+]).lower()
+check("regression: rendered output never says 'per pod', 'one ip per pod', or explains the AKS "
+      "subnet as 'larger than the node count' (the classic-CNI framing this KB was corrected away from)",
+      "per pod" not in _rendered_text and "one ip per pod" not in _rendered_text
+      and "larger than the node count" not in _rendered_text)
+
+import subprocess
+_repo_root = Path(__file__).resolve().parent.parent
+_grep = subprocess.run(["grep", "-rn", "aks_cni_sizing", str(_repo_root / "advisor_kb"),
+                        str(_repo_root / "advisor")], capture_output=True, text=True)
+_grep_lines = [l for l in _grep.stdout.splitlines() if l.strip()]
+# Only acceptable surviving references are inside a `change:`/changelog
+# narrative sentence (past tense, describing what it used to be) — never a
+# live `id:`/`when:`/`warning:` key, and never in any .py file at all. A
+# silently-renamed warning that never fires again is the failure mode this
+# check exists to catch.
+_live_reference_patterns = ("id: aks_cni_sizing", "id:aks_cni_sizing", "'aks_cni_sizing'", '"aks_cni_sizing"')
+_bad_hits = [l for l in _grep_lines
+             if l.rsplit(":", 1)[0].endswith(".py") or any(p in l for p in _live_reference_patterns)]
+check("regression: every repo reference to the retired 'aks_cni_sizing' warning id is gone "
+      "except its own changelog narrative mention (a silently-renamed warning that never "
+      "fires is the failure mode this check exists to catch)",
+      len(_grep_lines) > 0 and len(_bad_hits) == 0)
 
 print(f"\n{passed} checks passed.")

@@ -61,7 +61,7 @@ _AKS_GPU_CLASS_RE = re.compile(r'\n\s*class GPU warn\n')
 _ENV_NET_SUBGRAPH_RE = re.compile(r'\n\s*subgraph NET\[.*?\n.*?\n\s*end\n', re.DOTALL)
 _ENV_AGW_SUBGRAPH_RE = re.compile(r'\n\s*subgraph SN1\[.*?\n.*?\n\s*end\n', re.DOTALL)
 _ENV_CF_AGW_EDGES_RE = re.compile(
-    r'\n\s*(CF ==>\|"443 only"\| AGW|AGW --> AKS|AGW --> VMS)\n')
+    r'^\s*(CF ==>\|"443 only"\| AGW|AGW --> AKS|AGW --> VMS)\s*$\n?', re.MULTILINE)
 _ENV_PUB_CLASS_RE = re.compile(r'\n\s*class CF,AGW pub\n')
 
 
