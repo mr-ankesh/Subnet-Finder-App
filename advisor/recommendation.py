@@ -33,7 +33,18 @@ def _fallback_why(pattern: dict, answers: dict) -> str:
             f"{pattern['name']} is the closest match in the Presight-approved catalog: {pattern['summary'].strip()}")
 
 
-def _why_this_pattern(pattern: dict, answers: dict, rule_result: dict) -> str:
+def _fallback_why_generic(pattern: dict, answers: dict) -> str:
+    """Same spirit as _fallback_why, generalized for AKS/VM/Postgres/AppGW —
+    each service's own question bank uses a different field name for "what
+    is this for" (workload_description/vm_purpose/purpose), so this doesn't
+    assume storage's purpose/consumer vocabulary."""
+    descriptor = (answers.get("purpose") or answers.get("workload_description")
+                  or answers.get("vm_purpose") or "").replace("_", " ")
+    return (f"Based on what you described ({descriptor or 'your requirement'}), {pattern['name']} is the "
+            f"closest match in the Presight-approved catalog: {pattern['summary'].strip()}")
+
+
+def _why_this_pattern(pattern: dict, answers: dict, rule_result: dict, fallback_fn=_fallback_why) -> str:
     try:
         prompt_text = prompts.get_system_prompts()["explanation"]
         user_content = (
@@ -47,10 +58,10 @@ def _why_this_pattern(pattern: dict, answers: dict, rule_result: dict) -> str:
             "No headers, no other sections."
         )
         text = prompts.call_llm(prompt_text, user_content).strip()
-        return text or _fallback_why(pattern, answers)
+        return text or fallback_fn(pattern, answers)
     except Exception as exc:
         log.warning("advisor: explanation-stage LLM call failed, using fallback: %s", exc)
-        return _fallback_why(pattern, answers)
+        return fallback_fn(pattern, answers)
 
 
 def build_recommendation(pattern: dict, answers: dict, rule_result: dict, prefill_payload: dict) -> dict:
@@ -118,5 +129,88 @@ def build_blocked_response(blocker: dict, answers: dict) -> dict:
         "blocked": True,
         "message": blocker["message"],
         "blocker_id": blocker["blocker_id"],
+        "captured_so_far": {k: v for k, v in answers.items() if v not in (None, "", [])},
+    }
+
+
+def _requests_list_generic(pattern: dict) -> list:
+    """Generic (service-agnostic) version of build_recommendation()'s
+    requests-list builder above. New services' required_requests `condition`
+    fields are genuine plain-English prose across the whole KB (confirmed:
+    none of them are valid condition-language, e.g. "engineers need kubectl
+    access") — rather than guessing true/false and silently hiding a
+    required Azure request, every item is always shown, with its condition
+    surfaced as a visible caveat instead of used as a filter."""
+    out = []
+    for r in pattern.get("required_requests", []):
+        entry = {"label": r["label"], "note": r.get("note", "")}
+        if r.get("condition"):
+            entry["condition_note"] = f"Applies when: {r['condition']}"
+        out.append(entry)
+    return out
+
+
+def build_recommendation_generic(pattern: dict, answers: dict, rule_result: dict,
+                                  prefill_payload: dict) -> dict:
+    """Same shape and spirit as build_recommendation() (storage), generalized
+    for AKS/VM/Postgres/AppGW. Their catalog patterns' `design` dicts are too
+    heterogeneous (nested lists/dicts — see e.g. appgw's `layers` list vs
+    aks's `node_pools` dict) to force into storage's flat settings table, so
+    `security_floor` (flat scalars in every pattern) becomes the settings
+    table instead, and `design` is passed through as-is for the frontend to
+    render generically — every value still comes straight from the KB
+    pattern's own YAML, nothing invented here.
+
+    Escalations already carry any message_ref content verbatim (loaded once
+    by rules_engine, never touched by the LLM) and are passed straight
+    through unchanged, matching the guardrail that the InfoSec gate (and any
+    future message_ref) is rendered exactly as authored."""
+    security_floor = pattern.get("security_floor", {})
+    rows = [{"setting": k.replace("_", " ").title(), "value": v, "why": "Presight standard"}
+            for k, v in security_floor.items()]
+
+    fields = prefill_payload["fields"]
+    prefilled_list = [f"{k.replace('_', ' ').title()}: {v}" for k, v in fields.items()
+                       if k != "business_justification" and v not in (None, "", False)]
+
+    return {
+        "pattern_id": pattern["id"],
+        "pattern_name": pattern["name"],
+        "pattern_summary": pattern["summary"].strip(),
+        "why_this_pattern": _why_this_pattern(pattern, answers, rule_result, fallback_fn=_fallback_why_generic),
+        "table_rows": rows,
+        "design": pattern.get("design", {}),
+        "requests": _requests_list_generic(pattern),
+        "prerequisites": pattern.get("prerequisites", []),
+        "prefilled": prefilled_list,
+        "user_must_provide": prefill_payload["user_must_provide"],
+        "deviations": rule_result.get("deviations", []),
+        "warnings": rule_result.get("warnings", []),
+        "escalations": rule_result.get("escalations", []),
+        "add_services": rule_result.get("add_services", []),
+        "cost_band": pattern.get("cost_band", "$"),
+        "kb_version": pattern.get("kb_version", "2.0.0"),
+    }
+
+
+def build_redirect_response(rule_result: dict, catalog: dict, answers: dict) -> dict:
+    """A `redirect` escalation (currently only Postgres's self_managed ->
+    vm_workload_standard) redirects the WHOLE recommendation to a different
+    service's pattern. Recommendation-only: renders the target pattern's own
+    summary so the user understands what's being suggested, then asks them
+    to restart the flow on that service for a real guided intake — never
+    fabricates a cross-service prefill from answers shaped for a different
+    service (the same "never invent" restraint as the curated-VM-image gap)."""
+    redirect_esc = next(e for e in rule_result.get("escalations", []) if e.get("redirect"))
+    target_id = redirect_esc["redirect"]
+    target = catalog.get(target_id, {})
+    return {
+        "redirect": True,
+        "target_pattern_id": target_id,
+        "target_pattern_name": target.get("name", target_id),
+        "target_pattern_summary": (target.get("summary") or "").strip(),
+        "message": redirect_esc["message"],
+        "restart_hint": "Start a new conversation and choose the matching service from the menu "
+                        "for a full guided intake targeting this pattern.",
         "captured_so_far": {k: v for k, v in answers.items() if v not in (None, "", [])},
     }

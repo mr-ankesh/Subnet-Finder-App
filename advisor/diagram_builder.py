@@ -14,6 +14,18 @@ here explicitly (not as generic logic):
      API (inferred from access_protocol containing rest_sdk/blobfuse
      alongside abfs — there's no separate question for this, so this is the
      most direct signal already captured).
+  3. (six-service expansion) aks_private.mmd's GPU node-pool block is
+     removed when gpu_required is false — the same file is shared by both
+     aks_private_standard and aks_gpu_nodepool (see diagrams/README.md's own
+     "Omit GPU node when gpu_required == false" comment in that file).
+
+New placeholders for the six-service expansion: {BASE} (VM base-name
+illustration — vm_workload.mmd), {BACKEND} (AppGW's backend description),
+{HOSTNAME} (AppGW's public hostname). Like every other placeholder these
+are illustrative diagram labels, not literal recommendations — {BASE} in
+particular is never the same value as prefill.py's real vm_base_name field
+(which the advisor never sources from any answer; see prefill.py's
+docstring), just a readable stand-in for the diagram.
 
 Every substituted value is escaped (< > " `) before insertion — placeholder
 values come from user input, and the diagram is rendered client-side with
@@ -38,6 +50,10 @@ _DATALAKE_PE2_EDGES_RE = re.compile(
     r'\n\s*(SNET --- PE2|PE2 ==>.*|SNET -\.-> DNS2|DNS2 -\.-> PE2)\n')
 _DATALAKE_CLASS_RE = re.compile(r'class SA,KV sec\n\s*class PE1,PE2,DNS1,DNS2,SNET net')
 
+_AKS_GPU_NODE_RE = re.compile(r'\n\s*GPU\["GPU node pool.*?\n')
+_AKS_GPU_EDGE_RE = re.compile(r'\n\s*SN --- GPU\n')
+_AKS_GPU_CLASS_RE = re.compile(r'\n\s*class GPU warn\n')
+
 
 def _escape(value: str) -> str:
     return str(value).translate(_ESCAPE_CHARS)
@@ -57,7 +73,28 @@ def _placeholder_values(answers: dict) -> dict:
         "PROTOCOL": protocol_label or "SMB / NFS",
         "RETENTION": answers.get("retention_period") or "<retention period>",
         "END_DATE": answers.get("workload_end_date") or "<agreed end date>",
+        "BASE": _illustrative_base_name(answers),
+        "BACKEND": _backend_label(answers),
+        "HOSTNAME": answers.get("public_hostname") or "<public hostname>",
     }
+
+
+_BACKEND_LABEL = {"aks": "AKS cluster (internal)", "vm": "VM(s) (internal)",
+                  "app_service": "App Service (internal)", "other": "Backend (internal)"}
+
+
+def _backend_label(answers: dict) -> str:
+    return _BACKEND_LABEL.get(answers.get("backend"), "Backend (internal)")
+
+
+def _illustrative_base_name(answers: dict) -> str:
+    """Diagram-only illustration, never the real prefilled vm_base_name field
+    (which the advisor never sources from an answer — see prefill.py)."""
+    name = answers.get("application_name")
+    if not name:
+        return "vm"
+    slug = re.sub(r"[^A-Za-z0-9-]+", "-", name.strip().lower()).strip("-")
+    return slug[:20] or "vm"
 
 
 def _strip_zpa_subgraph(source: str) -> str:
@@ -79,6 +116,13 @@ def _strip_datalake_blob_endpoint(source: str) -> str:
     return source
 
 
+def _strip_aks_gpu_node(source: str) -> str:
+    source = _AKS_GPU_NODE_RE.sub("\n", source)
+    source = _AKS_GPU_EDGE_RE.sub("\n", source)
+    source = _AKS_GPU_CLASS_RE.sub("\n", source)
+    return source
+
+
 def render(pattern: dict, answers: dict, derived: dict) -> str:
     diagram_path = KB_ROOT / "diagrams" / pattern["diagram"]
     source = diagram_path.read_text(encoding="utf-8")
@@ -90,6 +134,10 @@ def render(pattern: dict, answers: dict, derived: dict) -> str:
     if pattern["id"] == "storage_datalake_private":
         if not _engine_confirmed_uses_blob(answers):
             source = _strip_datalake_blob_endpoint(source)
+
+    if pattern["id"] in ("aks_private_standard", "aks_gpu_nodepool"):
+        if not answers.get("gpu_required"):
+            source = _strip_aks_gpu_node(source)
 
     values = _placeholder_values(answers)
     for token, value in values.items():

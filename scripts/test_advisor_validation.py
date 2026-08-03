@@ -26,7 +26,7 @@ from advisor.pattern_matcher import score
 from advisor.rules_engine import evaluate_full, evaluate_blockers
 from advisor.question_engine import (next_question, record_answer, is_complete,
                                       _normalize_options, _normalize_skip_if, _service_questions)
-from advisor.prefill import build_prefill
+from advisor.prefill import build_prefill, build_prefill_aks, build_prefill_vm
 from advisor.diagram_builder import render as render_diagram
 from advisor import services as advisor_services
 from pathlib import Path
@@ -271,8 +271,9 @@ check("archive sku falls back to Standard_LRS (no single sku in its design)",
 print("\n#12 diagram rendering: placeholders, ZPA + datalake block-removal")
 diag_answers = {"application_name": "MyApp", "vnet_name": "vnet-x", "subnet_name": "snet-x",
                  "storage_account_name": "stgmyapp001", "environment": "prd"}
-for pid, pattern in storage_catalog.items():
-    out = render_diagram(pattern, diag_answers, {"zpa_routing_required": False})
+full_diag_answers = {**diag_answers, "backend": "aks", "public_hostname": "app.presight.ai", "gpu_required": False}
+for pid, pattern in catalog.items():
+    out = render_diagram(pattern, full_diag_answers, {"zpa_routing_required": False})
     check(f"{pid}: no raw placeholders", not re.findall(r"\{[A-Z_]+\}", out))
 
 blob = catalog["storage_blob_private_standard"]
@@ -531,5 +532,77 @@ check("malformed condition referencing a never-set field also fails closed",
       evaluate_safe("engineer_access_needed == true", {}) is False)
 check("well-formed conditions still evaluate normally through evaluate_safe",
       evaluate_safe("exposure == public_internet", {"exposure": "public_internet"}) is True)
+
+# ── prefill.py: AKS/VM real form-field translations (semantic-vocab check) ─
+print("\nprefill.py: AKS field translations against real form markup")
+aks_pattern = catalog["aks_private_standard"]
+aks_answers = {
+    "subscription_available": True, "workload_description": "internal API", "node_count": "6 nodes",
+    "gpu_required": False, "exposure": "internal_only", "persistent_storage": False,
+    "database_needed": False, "environment": "prd", "data_classification": "internal",
+    "business_unit": "Platform", "application_name": "MyApp", "owner_email": "a@b.com", "criticality": "high",
+}
+aks_result = evaluate_full(AKS, aks_answers)
+p_aks = build_prefill_aks(catalog[aks_result["selection"]["winner"]], aks_answers, aks_result)
+check("AKS: tag/name source uses real form field 'project', not nonexistent 'application_name'",
+      p_aks["fields"].get("project") == "MyApp" and "application_name" not in p_aks["fields"])
+check("AKS: node_count parsed to a leading integer from free text", p_aks["fields"]["node_count"] == "6")
+check("AKS: cmk_encryption checkbox set (real field, locked_fields: encryption CMK)",
+      p_aks["fields"]["cmk_encryption"] is True)
+check("AKS: node_pool_name flagged (required by form, missing from KB's own user_must_provide)",
+      any(i["field"] == "node_pool_name" for i in p_aks["user_must_provide"]))
+check("AKS: zpa_rnd_access flagged (same gap)",
+      any(i["field"] == "zpa_rnd_access" for i in p_aks["user_must_provide"]))
+check("AKS: no gpu_node_pool field ever written (doesn't exist on the form)",
+      "gpu_node_pool" not in p_aks["fields"])
+
+aks_gpu_answers = {**aks_answers, "gpu_required": True}
+aks_gpu_result = evaluate_full(AKS, aks_gpu_answers)
+p_aks_gpu = build_prefill_aks(catalog[aks_gpu_result["selection"]["winner"]], aks_gpu_answers, aks_gpu_result)
+check("AKS+GPU: gpu_node_pool surfaced as an informational checklist note, not a real field",
+      any(i["field"] == "gpu_node_pool" and i["blocking"] is False for i in p_aks_gpu["user_must_provide"]))
+
+print("\nprefill.py: VM field translations against real form markup")
+vm_pattern_id = "vm_workload_standard"
+vm_answers = {
+    "subscription_available": True, "vm_purpose": "batch jobs", "vm_count": 3,
+    "os_family": "windows", "sizing": "small", "data_disks": False,
+    "access_need": ["application_only"], "availability": True, "environment": "prd",
+    "data_classification": "internal", "business_unit": "Platform", "application_name": "MyApp",
+    "owner_email": "a@b.com", "criticality": "high",
+}
+vm_result = evaluate_full(VM, vm_answers)
+p_vm = build_prefill_vm(catalog[vm_result["selection"]["winner"]], vm_answers, vm_result)
+check("VM: Windows auth_mode translated to real form option 'password' (not admin_password_at_deploy)",
+      p_vm["fields"]["auth_mode"] == "password")
+check("VM: zones prefilled '1,2,3' from availability=true", p_vm["fields"]["zones"] == "1,2,3")
+check("VM: project field used (not application_name)",
+      p_vm["fields"].get("project") == "MyApp" and "application_name" not in p_vm["fields"])
+check("VM: os_image flagged as user-must-provide (no curated image list exists)",
+      any(i["field"] == "os_image" for i in p_vm["user_must_provide"]))
+check("VM: vm_base_name never invented (KB's own user_must_provide already covers it, unchanged)",
+      "vm_base_name" not in p_vm["fields"])
+
+vm_linux_answers = {**vm_answers, "os_family": "linux", "availability": False}
+vm_linux_result = evaluate_full(VM, vm_linux_answers)
+p_vm_linux = build_prefill_vm(catalog[vm_linux_result["selection"]["winner"]], vm_linux_answers, vm_linux_result)
+check("VM: Linux auth_mode translates to 'ssh_key'", p_vm_linux["fields"]["auth_mode"] == "ssh_key")
+check("VM: zones left unset when availability isn't true", "zones" not in p_vm_linux["fields"])
+
+# ── diagram_builder: new {BASE}/{BACKEND}/{HOSTNAME} placeholders ─────────
+print("\ndiagram_builder: BASE/BACKEND/HOSTNAME placeholders, GPU node strip")
+vm_diag = render_diagram(catalog["vm_workload_standard"], {"application_name": "MyApp", "vnet_name": "vnet-x"}, {})
+check("vm diagram: {BASE} substituted illustratively (not the real vm_base_name field)", "myapp" in vm_diag.lower())
+appgw_pub_diag = render_diagram(catalog["appgw_public_cloudflare"],
+                                 {"backend": "aks", "public_hostname": "app.presight.ai"}, {})
+check("appgw public diagram: {HOSTNAME} substituted", "app.presight.ai" in appgw_pub_diag)
+check("appgw public diagram: {BACKEND} substituted with backend label", "AKS cluster" in appgw_pub_diag)
+
+aks_diag_gpu = render_diagram(catalog["aks_private_standard"], {"vnet_name": "vnet-x", "gpu_required": True}, {})
+check("AKS diagram: GPU node kept when gpu_required=true", 'GPU["GPU node pool' in aks_diag_gpu)
+aks_diag_nogpu = render_diagram(catalog["aks_private_standard"], {"vnet_name": "vnet-x", "gpu_required": False}, {})
+check("AKS diagram: GPU node stripped when gpu_required=false",
+      'GPU["GPU node pool' not in aks_diag_nogpu and "SN --- GPU" not in aks_diag_nogpu
+      and "class GPU warn" not in aks_diag_nogpu)
 
 print(f"\n{passed} checks passed.")
