@@ -250,6 +250,12 @@ def compute_vnet_plan(subnets: list) -> dict:
     }
 
 
+def mandatory_spoke_wiring() -> list:
+    """The fixed hub-integration checklist for any new spoke — verbatim from
+    network_sizing.yaml, not re-authored here."""
+    return _sizing()["mandatory_spoke_wiring"]
+
+
 def build_network_plan(answers: dict, inferred_ids: set) -> dict:
     """Orchestrates the whole network plan. `answers` must carry
     `_aks_node_count` (parsed from the aks_scale answer) alongside the

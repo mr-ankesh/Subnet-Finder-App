@@ -39,6 +39,31 @@ def get_recommendation_template() -> str:
     return load_text_file("templates/recommendation_template.md")
 
 
+# environment_recommendation_template.md's heading is "## System prompt —
+# environment composition" — no trailing literal "stage" word, so it does
+# NOT match _STAGE_RE above. A dedicated regex/loader rather than a
+# generalization of get_system_prompts(), whose {classification,
+# explanation, question} triple-key check is specific to the single-service
+# template and must keep failing loudly if any of those three go missing.
+_ENV_PROMPT_RE = re.compile(
+    r"## System prompt — environment composition\s*\n+```text\n(.*?)```", re.DOTALL)
+
+
+@functools.lru_cache(maxsize=1)
+def get_environment_system_prompt() -> str:
+    text = load_text_file("templates/environment_recommendation_template.md")
+    m = _ENV_PROMPT_RE.search(text)
+    if not m:
+        raise ValueError("environment_recommendation_template.md is missing its "
+                          "'System prompt — environment composition' block")
+    return m.group(1).strip()
+
+
+@functools.lru_cache(maxsize=1)
+def get_environment_recommendation_template() -> str:
+    return load_text_file("templates/environment_recommendation_template.md")
+
+
 _client = None
 _client_fingerprint = None
 

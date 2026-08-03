@@ -2451,6 +2451,194 @@ def api_advisor_prefill():
         return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
 
 
+def _advisor_env_question_payload(question):
+    return {"id": question["id"], "question": question.get("question", ""),
+            "type": question.get("type", "text"), "options": question.get("options", []),
+            "why_we_ask": question.get("why_we_ask", ""), "examples": question.get("examples", []),
+            "prefill_from_session": question.get("prefill_from_session", False),
+            "default_value": session.get("sso_email") if question.get("prefill_from_session") else None}
+
+
+def _advisor_env_classify_free_text(question, free_text):
+    """Environment mode's equivalent of _advisor_classify_free_text, kept
+    deliberately simpler: single_choice/yes_no answers try a substring match
+    against the question's own options first; anything else (including a
+    genuinely ambiguous single_choice answer) is passed through as raw text
+    and left to intake.record_answer's own coercion — this module never
+    calls an LLM, consistent with the rest of advisor/composer/ making zero
+    LLM calls until the final narration step."""
+    text = (free_text or "").strip()
+    low = text.lower()
+    if question.get("type") == "yes_no":
+        if any(w in low for w in ("yes", "yeah", "yep", "sure", "correct", "true")):
+            return True
+        if any(w in low for w in ("no", "nope", "not needed", "false")):
+            return False
+        return text
+    for opt in question.get("options", []):
+        label_low = str(opt["label"]).lower()
+        value_low = str(opt["value"]).lower()
+        if low == value_low or low == label_low or value_low in low or label_low in low:
+            return opt["value"]
+    if any(p in low for p in ("don't know", "dont know", "not sure", "unsure", "no idea")):
+        return "unsure"
+    return text
+
+
+@app.route("/api/advisor/environment/chat", methods=["POST"])
+@require_login
+def api_advisor_environment_chat():
+    from advisor import session_store
+    from advisor.composer import intake, composition_engine
+
+    data = request.get_json(force=True) or {}
+    owner = _chat_owner("requester")
+    session_id = data.get("session_id")
+
+    try:
+        if session_id:
+            sess = session_store.get_session(int(session_id))
+            if not sess or not session_store.owns(int(session_id), owner):
+                return jsonify({"ok": False, "data": None, "error": "Session not found."}), 404
+            state = sess["state"]
+        else:
+            session_id = session_store.create_session(owner, mode="environment")
+            state = session_store.get_session(session_id)["state"]
+
+        question_id = data.get("question_id")
+        value = data.get("value")
+        free_text = data.get("free_text")
+
+        if question_id:
+            if free_text is not None and value is None:
+                question = intake.find_question(question_id)
+                if question is not None:
+                    value = _advisor_env_classify_free_text(question, free_text)
+                else:
+                    # A dynamically-injected `ask:` follow-up, or the
+                    # inventory confirm-back turn — both take raw text.
+                    value = free_text
+            state = intake.record_answer(state, question_id, value)
+
+            # Blockers (subscription / sovereignty) are re-checked after
+            # EVERY answer, not just once intake finishes — same
+            # incremental discipline as the single-service /chat route,
+            # so "no subscription" halts immediately rather than after the
+            # rest of a conversation the requester didn't need to have.
+            blockers = composition_engine.evaluate_environment_blockers(state["answers"])
+            if blockers["blocked"]:
+                session_store.save_state(session_id, state)
+                return jsonify({"ok": True, "data": {"type": "blocked", "session_id": session_id,
+                                                      "message": blockers["message"]}})
+
+        next_q = intake.next_question(state)
+        if next_q is not None:
+            session_store.save_state(session_id, state)
+            return jsonify({"ok": True, "data": {"type": "question", "session_id": session_id,
+                                                  "question": _advisor_env_question_payload(next_q)}})
+
+        session_store.save_state(session_id, state)
+        return jsonify({"ok": True, "data": {"type": "ready", "session_id": session_id}})
+    except Exception as exc:
+        log.exception("advisor environment chat failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
+
+
+def _advisor_environment_compose(state):
+    """Shared by /plan, /diagram and /requests — always recomputed fresh
+    from persisted answers (idempotent, no module-level cache; 3 replicas
+    in prod, see CLAUDE.md's local-vs-prod table), so any of the three
+    routes can be called independently, any number of times, without
+    re-running the intake conversation."""
+    from advisor.composer import composition_engine, sequencer, infosec as composer_infosec
+
+    answers = state["answers"]
+    composition = composition_engine.evaluate_full(answers)
+    if composition["blocked"]:
+        return composition, None, None, None, None
+    waves = sequencer.build_waves(answers)
+    critical_path = sequencer.critical_path(answers)
+    parallelism_message = sequencer.parallelism_message()
+    brief = composer_infosec.draft_brief(answers) if composer_infosec.gate_fires(answers) else None
+    return composition, waves, critical_path, parallelism_message, brief
+
+
+def _advisor_environment_session(session_id, owner):
+    from advisor import session_store
+    if not session_id:
+        return None, (jsonify({"ok": False, "data": None, "error": "session_id is required."}), 400)
+    sess = session_store.get_session(int(session_id))
+    if not sess or not session_store.owns(int(session_id), owner):
+        return None, (jsonify({"ok": False, "data": None, "error": "Session not found."}), 404)
+    return sess["state"], None
+
+
+@app.route("/api/advisor/environment/plan", methods=["POST"])
+@require_login
+def api_advisor_environment_plan():
+    from advisor.composer import render as composer_render
+
+    data = request.get_json(force=True) or {}
+    owner = _chat_owner("requester")
+    try:
+        state, err = _advisor_environment_session(data.get("session_id"), owner)
+        if err:
+            return err
+        composition, waves, critical_path, parallelism_message, brief = \
+            _advisor_environment_compose(state)
+        if composition["blocked"]:
+            return jsonify({"ok": True, "data": {"type": "blocked", **composition["blocker"]}})
+        full = composer_render.render_full(state["answers"], composition, waves, critical_path,
+                                            parallelism_message, brief)
+        return jsonify({"ok": True, "data": {"type": "plan", "plan": full}})
+    except Exception as exc:
+        log.exception("advisor environment plan failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
+
+
+@app.route("/api/advisor/environment/diagram", methods=["POST"])
+@require_login
+def api_advisor_environment_diagram():
+    from advisor import diagram_builder
+
+    data = request.get_json(force=True) or {}
+    owner = _chat_owner("requester")
+    try:
+        state, err = _advisor_environment_session(data.get("session_id"), owner)
+        if err:
+            return err
+        composition, *_ = _advisor_environment_compose(state)
+        if composition["blocked"]:
+            return jsonify({"ok": False, "data": None, "error": "This session is blocked."}), 400
+        source = diagram_builder.render_environment(state["answers"], composition)
+        return jsonify({"ok": True, "data": {"mermaid_source": source}})
+    except Exception as exc:
+        log.exception("advisor environment diagram failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
+
+
+@app.route("/api/advisor/environment/requests", methods=["POST"])
+@require_login
+def api_advisor_environment_requests():
+    from advisor.composer import env_prefill
+
+    data = request.get_json(force=True) or {}
+    owner = _chat_owner("requester")
+    try:
+        state, err = _advisor_environment_session(data.get("session_id"), owner)
+        if err:
+            return err
+        composition, waves, critical_path, parallelism_message, brief = \
+            _advisor_environment_compose(state)
+        if composition["blocked"]:
+            return jsonify({"ok": False, "data": None, "error": "This session is blocked."}), 400
+        ordered = env_prefill.build_request_list(state["answers"], waves)
+        return jsonify({"ok": True, "data": {"requests": ordered}})
+    except Exception as exc:
+        log.exception("advisor environment requests failed")
+        return jsonify({"ok": False, "data": None, "error": str(exc)[:300]}), 500
+
+
 @app.route("/requester/clear", methods=["POST"])
 @require_login
 def requester_clear():

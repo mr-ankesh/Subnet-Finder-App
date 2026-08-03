@@ -54,6 +54,26 @@ _AKS_GPU_NODE_RE = re.compile(r'\n\s*GPU\["GPU node pool.*?\n')
 _AKS_GPU_EDGE_RE = re.compile(r'\n\s*SN --- GPU\n')
 _AKS_GPU_CLASS_RE = re.compile(r'\n\s*class GPU warn\n')
 
+# environment_full.mmd (Phase 3, the whole-environment composer): its own
+# top-of-file comment mandates "OMIT the NET subgraph and CF/AGW entirely
+# when exposure == internal_only" — implemented as its own named strip,
+# same style as every other pattern-specific removal in this module.
+_ENV_NET_SUBGRAPH_RE = re.compile(r'\n\s*subgraph NET\[.*?\n.*?\n\s*end\n', re.DOTALL)
+_ENV_AGW_SUBGRAPH_RE = re.compile(r'\n\s*subgraph SN1\[.*?\n.*?\n\s*end\n', re.DOTALL)
+_ENV_CF_AGW_EDGES_RE = re.compile(
+    r'\n\s*(CF ==>\|"443 only"\| AGW|AGW --> AKS|AGW --> VMS)\n')
+_ENV_PUB_CLASS_RE = re.compile(r'\n\s*class CF,AGW pub\n')
+
+
+def _strip_environment_public_front_door(source: str) -> str:
+    source = _ENV_NET_SUBGRAPH_RE.sub("\n", source)
+    source = _ENV_AGW_SUBGRAPH_RE.sub("\n", source)
+    source = _ENV_CF_AGW_EDGES_RE.sub("\n", source)
+    source = _ENV_PUB_CLASS_RE.sub("\n", source)
+    source = source.replace("class PE,DNSZ,FW,SN1,SN2,SN3,SN4 net",
+                             "class PE,DNSZ,FW,SN2,SN3,SN4 net")
+    return source
+
 
 def _escape(value: str) -> str:
     return str(value).translate(_ESCAPE_CHARS)
@@ -140,6 +160,31 @@ def render(pattern: dict, answers: dict, derived: dict) -> str:
             source = _strip_aks_gpu_node(source)
 
     values = _placeholder_values(answers)
+    for token, value in values.items():
+        source = source.replace(f"{{{token}}}", _escape(value))
+
+    leftover = re.findall(r"\{[A-Z_]+\}", source)
+    assert not leftover, f"diagram_builder left unsubstituted placeholders: {leftover}"
+
+    return source
+
+
+def render_environment(answers: dict, composition: dict) -> str:
+    """environment_full.mmd, for the whole-environment composer — NOT tied
+    to a single catalog pattern (there isn't one; the environment composes
+    several), so this is a parallel entry point to render() rather than a
+    reuse of it. Only {ENV}/{VNET_CIDR} are substituted; the public
+    front-door subgraph is stripped entirely for an internal_only
+    environment, per the diagram's own top-of-file comment."""
+    diagram_path = KB_ROOT / "diagrams" / "environment_full.mmd"
+    source = diagram_path.read_text(encoding="utf-8")
+
+    if composition["exposure"].get("id") != "public_application":
+        source = _strip_environment_public_front_door(source)
+
+    env = answers.get("environment")
+    values = {"ENV": _ENV_LABEL.get(env, env) or "<environment>",
+              "VNET_CIDR": composition["network_plan"]["vnet_size"]}
     for token, value in values.items():
         source = source.replace(f"{{{token}}}", _escape(value))
 

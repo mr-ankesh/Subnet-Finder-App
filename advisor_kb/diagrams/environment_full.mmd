@@ -20,7 +20,7 @@ flowchart TB
             AGW["Application Gateway WAF v2<br/>PUBLIC IP · Cloudflare ranges only"]
         end
         subgraph SN2["snet-aks"]
-            AKS["AKS cluster<br/>private API · Azure CNI"]
+            AKS["AKS cluster<br/>private API · Azure CNI Overlay"]
         end
         subgraph SN3["snet-vm"]
             VMS["VM(s)<br/>no public IP"]

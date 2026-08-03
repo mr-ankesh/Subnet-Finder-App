@@ -50,12 +50,22 @@ def ensure_table():
                      "ON advisor_sessions(owner)")
 
 
-def create_session(owner: str) -> int:
+def create_session(owner: str, mode: str = "single_service") -> int:
+    """`mode` distinguishes a single-service advisor conversation from an
+    environment-composer one — both live in this same table/JSON blob (no
+    schema change, see the module docstring): the `state` column imposes no
+    per-mode shape, so composer/intake.py's differently-shaped state
+    (parsed inventory, resolved_asks, pending_confirm, ...) fits here
+    without a new table or a sqlite_to_postgres.py migration."""
     ensure_table()
     ts = _now()
-    initial_state = {"answers": {}, "derived": {}, "escalations": [], "warnings": [],
-                      "deviations": [], "selected_pattern": None, "blocked": False,
-                      "blocker_message": None, "current_question_id": None}
+    if mode == "environment":
+        initial_state = {"mode": "environment", "answers": {}, "pending_confirm": None,
+                          "resolved_asks": []}
+    else:
+        initial_state = {"mode": "single_service", "answers": {}, "derived": {}, "escalations": [],
+                          "warnings": [], "deviations": [], "selected_pattern": None,
+                          "blocked": False, "blocker_message": None, "current_question_id": None}
     with _conn() as conn:
         return db_backend.insert_returning_id(
             conn,
