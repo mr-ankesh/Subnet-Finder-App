@@ -1,0 +1,86 @@
+kb_version: "2.0.0"
+service: postgres_create
+conversation_rules:
+  - Ask ONE question at a time, in plain English.
+  - Never ask about public access, TLS or CMK — those are standards.
+questions:
+  - id: subscription_available
+    order: 10
+    question: "Do you already have an Azure subscription for this?"
+    type: yes_no
+    stop_if:
+      condition: "answer == false"
+      message: >
+        You'll need a subscription first — please request one through the **HALO portal**,
+        then come back with the ID.
+  - id: purpose
+    order: 20
+    question: "What will the database be used for?"
+    type: text
+  - id: consumer
+    order: 30
+    question: "What will connect to it?"
+    type: multi_choice
+    options: [aks, vm, application, analytics_tool]
+  - id: managed_preference
+    order: 40
+    question: "Do you want Azure to manage patching, backups and failover, or do you need root-level control of the server?"
+    type: single_choice
+    options:
+      - {value: managed, label: "Azure manages it"}
+      - {value: self_managed, label: "I need full control"}
+  - id: size_estimate
+    order: 50
+    question: "Roughly how much data, and how many connections?"
+    type: text
+    if_unknown: "An order of magnitude is fine — gigabytes or terabytes, tens or thousands of connections."
+  - id: ha_requirement
+    order: 60
+    question: "Does it need to survive losing an availability zone?"
+    type: single_choice
+    options:
+      - {value: single, label: "Single instance is fine"}
+      - {value: zone_redundant, label: "Zone-redundant HA"}
+      - {value: unsure, label: "Not sure"}
+    if_unknown: >
+      Development normally runs single-instance. Production normally runs zone-redundant,
+      which roughly doubles compute cost.
+  - id: rpo_rto
+    order: 70
+    question: "If it failed, how much data loss and downtime could you tolerate?"
+    type: text
+    why_we_ask: "Sets backup retention and the point-in-time restore window."
+  - id: environment
+    order: 80
+    question: "Which environment is this for?"
+    type: single_choice
+    options: [dev, tst, uat, prd, snd]
+  - id: data_classification
+    order: 90
+    question: "How would you classify the data?"
+    type: single_choice
+    options: [public, internal, confidential, restricted, restricted_sovereign, unsure]
+    default_if_unknown: confidential
+  - id: business_unit
+    order: 100
+    question: "Which business unit or project?"
+    type: text
+  - id: application_name
+    order: 110
+    question: "What's the application called?"
+    type: text
+  - id: owner_email
+    order: 120
+    question: "Who's the technical owner?"
+    type: email
+    prefill_from_session: true
+  - id: criticality
+    order: 130
+    question: "How critical is this to the business?"
+    type: single_choice
+    options: [low, medium, high, critical]
+  - id: want_diagram
+    order: 900
+    question: "Would you like a diagram of the network flow?"
+    type: yes_no
+    ask_last: true

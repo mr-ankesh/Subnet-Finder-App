@@ -1,0 +1,31 @@
+%% aks_private_standard / aks_gpu_nodepool
+%% Omit GPU node when gpu_required == false
+flowchart LR
+    ENG["Engineers"] --> ZPA["ZPA connector"]
+    ZPA --> API["Private API server"]
+    subgraph SPOKE["Spoke VNET — {VNET}"]
+        SN["snet-aks"]
+        SYS["System node pool<br/>3 nodes · CriticalAddonsOnly"]
+        USR["User node pool<br/>autoscaled"]
+        GPU["GPU node pool<br/>tainted · scale to zero"]
+        PE["snet-pe<br/>private endpoints"]
+        SN --- SYS
+        SN --- USR
+        SN --- GPU
+    end
+    subgraph DEPS["Dependencies"]
+        ACR["Container Registry<br/>privatelink.azurecr.io"]
+        KV["Key Vault Premium<br/>CMK disk encryption"]
+    end
+    FW["Hub Azure Firewall"]
+    API -.- SN
+    USR --> PE
+    PE ==> ACR
+    PE ==> KV
+    SN -->|"egress 0.0.0.0/0"| FW
+    classDef sec fill:#0b3d2e,stroke:#1f9d63,color:#e8fff4
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    classDef warn fill:#4d3b0b,stroke:#bf922a,color:#fff8e8
+    class ACR,KV sec
+    class SN,PE,API,FW net
+    class GPU warn

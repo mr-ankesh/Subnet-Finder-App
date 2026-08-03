@@ -1,0 +1,150 @@
+kb_version: "2.0.0"
+scope: environment_composer
+description: >
+  The public-exposure gate. This is the single most important governance moment in the
+  advisor. How it is worded matters — the goal is a requester who understands why the step
+  exists and engages with it early, not one who feels blocked and looks for a way around.
+
+trigger:
+  any_of:
+    - a public DNS record is required
+    - an internet-facing endpoint is required
+    - a public IP is requested on any resource
+    - the user describes the application as "public", "internet-facing", "external", or
+      "accessible from outside"
+  not_triggered_by:
+    - ZPA access for staff or engineers
+    - VPN access
+    - access from another spoke within the estate
+
+governance:
+  accountable: InfoSec
+  responsible: InfoSec
+  consulted: Project / App Team
+  informed: TechOps Int / R&D
+  blocking_scope: >
+    Blocks publication of the public DNS record. It does NOT block designing, building or
+    internally testing the Application Gateway and the application behind it.
+  ongoing: >
+    Approval is not a one-off. InfoSec conducts periodic security audits validating that
+    network configuration, routing controls and exposure points remain compliant.
+  source:
+    doc: Azure Spoke Onboarding Standards / Azure_Network_Flow_RACI_v2
+    states: >
+      Public DNS onboarding — InfoSec Responsible/Accountable, Mandatory InfoSec process,
+      Outcome: controlled public exposure. Any form of public exposure, including public DNS
+      records or internet-facing endpoints, requires formal InfoSec onboarding and approval.
+
+# ─────────────────────────────────────────────────────────────
+# The message shown to the user.
+# Written from an architecture point of view, not as a compliance warning.
+# ─────────────────────────────────────────────────────────────
+user_message:
+  heading: "Public access — how this works at Presight"
+
+  body: |
+    Your application needs to be reachable from the internet, which changes the shape of the
+    architecture rather than just adding a setting.
+
+    **The design.** Public traffic never reaches your application directly. It arrives at
+    Cloudflare, which handles public DNS, TLS, DDoS protection and a first WAF pass.
+    Cloudflare then forwards to an Azure Application Gateway running WAF v2 — a second,
+    independent inspection layer that terminates TLS again and routes to your backend. Your
+    AKS cluster, VMs and databases stay entirely private behind it, with no public IPs of
+    their own.
+
+    **The control that makes it work.** The Application Gateway's public IP accepts
+    connections only from Cloudflare's published IP ranges. Everything else is dropped. This
+    matters more than it sounds: if the origin is reachable directly, an attacker simply skips
+    Cloudflare and every protection it provides goes with it. A previous Presight security
+    assessment found exactly this — an origin IP answering on an unexpected port, bypassing
+    the WAF completely. So alongside the IP allow-list we recommend Cloudflare Authenticated
+    Origin Pulls, and closing every port on the origin that isn't serving the application.
+
+    **The part that needs people, not configuration.** Public exposure at Presight requires
+    formal InfoSec onboarding and approval. InfoSec owns the public DNS record and is
+    accountable for it — this isn't a checkbox in the request form, and it isn't something the
+    platform team can grant on their behalf.
+
+    Practically, this doesn't have to slow you down. You can design, build and test everything
+    internally in parallel; what waits on InfoSec is the moment the hostname becomes publicly
+    resolvable. The projects that run late are the ones that leave this step until the week
+    before go-live.
+
+    One thing worth knowing up front: InfoSec approval is ongoing rather than one-off. They
+    run periodic audits against the security standards to confirm the exposure still looks the
+    way it did on day one. Give this endpoint a named technical owner who expects to answer
+    those.
+
+  next_step: >
+    I've put the InfoSec onboarding first in your request list, and I've drafted the brief
+    below so you can start that conversation with most of the answers already prepared.
+
+# ─────────────────────────────────────────────────────────────
+infosec_brief_template:
+  title: "InfoSec Public Exposure Onboarding — {application_name}"
+  auto_populate_from: advisor conversation
+  sections:
+
+    - heading: Application
+      fields:
+        - {label: Application name, from: application_name}
+        - {label: Business purpose, from: purpose}
+        - {label: Business unit, from: business_unit}
+        - {label: Environment, from: environment}
+        - {label: Technical owner, from: owner_email}
+        - {label: Business owner, from: business_owner}
+        - {label: Expected go-live, from: target_date}
+
+    - heading: Requested exposure
+      fields:
+        - {label: Public hostname(s), from: public_hostname}
+        - {label: Protocols and ports, value: "HTTPS / 443 only"}
+        - {label: Expected audience, from: audience}
+        - {label: Expected traffic profile, from: traffic_estimate}
+
+    - heading: Data reachable through the endpoint
+      fields:
+        - {label: Data classification, from: data_classification}
+        - {label: Personal or regulated data, from: pii_present}
+        - {label: Authentication model, from: auth_model}
+        - {label: Authorisation model, from: authz_model}
+
+    - heading: Traffic path
+      content: |
+        Internet
+          -> Cloudflare (public DNS, TLS, WAF, DDoS, bot filtering)
+          -> Azure Application Gateway WAF v2 (public IP, Cloudflare ranges only)
+          -> {backend_description} (private, no public IP)
+      attach: The environment architecture diagram generated by the advisor.
+
+    - heading: Controls in place
+      checklist:
+        - Application Gateway NSG and WAF restrict inbound to Cloudflare IP ranges only
+        - Cloudflare Authenticated Origin Pulls enabled
+        - All non-application ports closed on the origin public IP
+        - WAF running in Prevention mode at go-live, OWASP Core Rule Set
+        - Rate limiting configured
+        - TLS 1.2 minimum, certificate held in Key Vault with a named expiry owner
+        - HTTP to HTTPS redirect enabled
+        - No backend resource holds a public IP
+        - WAF and gateway logs flowing to the Security Log Analytics Workspace and Sentinel
+        - Named owner for the Cloudflare IP allow-list refresh cadence
+
+    - heading: Ongoing commitments
+      content: |
+        - Named technical owner available for periodic InfoSec security audits
+        - Certificate expiry tracked and owned
+        - Cloudflare IP range list refreshed on an agreed cadence
+        - Any change to the exposed surface raised with InfoSec before implementation
+
+# ─────────────────────────────────────────────────────────────
+tone_rules:
+  - Explain the architecture first, the process second. People accept a gate they understand.
+  - Never call it "just a formality" or imply it can be skipped or expedited.
+  - Never promise a timeline — the advisor does not control InfoSec's queue.
+  - Do not moralise. State the control, state why it exists, move on.
+  - Reference the real prior finding (origin IP bypassing the WAF) once, as evidence, not as
+    a scare tactic.
+  - Emphasise the parallelism: building and testing continue while approval is in flight.
+  - Never suggest a workaround, a temporary public IP, or "we'll lock it down later".

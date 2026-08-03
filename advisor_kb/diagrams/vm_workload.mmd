@@ -1,0 +1,23 @@
+%% vm_workload_standard
+flowchart LR
+    ENG["Engineers"] --> ZPA["ZPA connector"]
+    subgraph SPOKE["Spoke VNET — {VNET}"]
+        SN["snet-vm"]
+        V1["{BASE}-001"]
+        V2["{BASE}-002"]
+        VN["{BASE}-NNN"]
+        SN --- V1
+        SN --- V2
+        SN --- VN
+    end
+    KV["Key Vault Premium<br/>CMK disk encryption"]
+    RSV["Recovery Services Vault<br/>VM backup"]
+    FW["Hub Azure Firewall"]
+    ZPA --> SN
+    SN -->|"egress 0.0.0.0/0"| FW
+    V1 -.-> KV
+    V1 -.-> RSV
+    classDef sec fill:#0b3d2e,stroke:#1f9d63,color:#e8fff4
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    class KV,RSV sec
+    class SN,FW net

@@ -1,0 +1,18 @@
+%% keyvault_premium_private
+flowchart LR
+    subgraph SPOKE["Spoke VNET — {VNET}"]
+        C["Consumers<br/>Storage · Disks · PostgreSQL · App Gateway"]
+        PE["snet-pe<br/>Private Endpoint · vault"]
+        C --> PE
+    end
+    DNS["privatelink.vaultcore.azure.net"]
+    KV["Key Vault Premium<br/>RSA-HSM · soft delete · purge protection<br/>public access DISABLED"]
+    UAMI["User-assigned<br/>managed identities"]
+    PE ==> KV
+    UAMI -->|"Azure RBAC"| KV
+    SPOKE -.-> DNS
+    DNS -.-> PE
+    classDef sec fill:#0b3d2e,stroke:#1f9d63,color:#e8fff4
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    class KV,UAMI sec
+    class PE,DNS net

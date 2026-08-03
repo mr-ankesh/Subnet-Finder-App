@@ -1,0 +1,71 @@
+kb_version: "2.0.0"
+service: aks_cluster
+description: >
+  Deterministic rules for AKS. Runs BEFORE the LLM; its output is authoritative. Shared
+  standards live in platform_constants.yaml and are not restated here.
+execution_order: [blockers, escalations, derivations, pattern_selection, deviations, warnings]
+
+blockers:
+  - id: no_subscription
+    when: "subscription_available == false"
+    message: >
+      You'll need an Azure subscription before anything can be provisioned. Please request
+      one through the **HALO portal**. Bring the ID back and I'll continue from here.
+    halt: true
+  - id: sovereign_data
+    when: "data_classification == restricted_sovereign"
+    message: >
+      Data under sovereignty or regulatory control follows the Confidential Corp path, with
+      its own management group, policy set and approval route. I can't recommend a standard
+      pattern for it — I'll package what you've told me for the platform and security teams.
+    halt: true
+
+escalations:
+  - id: gpu_quota
+    when: "gpu_required == true"
+    flag: GPU_QUOTA_REQUIRED
+    message: >
+      GPU quota isn't granted by default and is usually the longest lead-time item in the
+      build. I've put the quota request first in your list.
+  - id: gpu_alternative
+    when: "gpu_required == true"
+    message: >
+      Before committing to GPUs — could Azure OpenAI or Core42 Compass serve this? Both are
+      reachable over Private Link and remove the GPU infrastructure entirely. An idle GPU
+      pool is the most expensive mistake available in the estate.
+  - id: public_exposure
+    when: "exposure == public_internet"
+    flag: INFOSEC_PUBLIC_EXPOSURE
+    message: >
+      Public access means an Application Gateway with WAF behind Cloudflare, plus formal
+      InfoSec onboarding. That's a separate pattern — see appgw_public_cloudflare.
+    add_service: app_gateway
+
+derivations:
+  - {when: "gpu_required == true", set: "pattern_hint = aks_gpu_nodepool"}
+  - {when: "exposure == public_internet", set: "requires_appgw = true; infosec_gate = true"}
+  - {when: "persistent_storage == true", set: "add_service = storage_account"}
+  - {when: "database_needed == true", set: "add_service = postgres_create"}
+  - {when: "always", set: "add_service = container_registry"}
+  - {when: "always", set: "private_dns_zone = privatelink.<region>.azmk8s.io"}
+
+pattern_selection:
+  overrides:
+    - {when: "gpu_required == true", select: aks_gpu_nodepool}
+  default: aks_private_standard
+
+warnings:
+  - id: cni_sizing
+    when: "always"
+    message: >
+      Azure CNI consumes one VNET IP per pod, not per node. The subnet must be sized for
+      pods — a 6-node cluster at 30 pods per node needs roughly 186 addresses.
+  - id: subnet_immutable
+    when: "always"
+    message: >
+      Get the AKS subnet size right first time. Growing it later means rebuilding the cluster.
+  - id: os_disk
+    when: "always"
+    message: >
+      Upgrade the node OS disk from the default small Standard HDD to at least a P10 Premium
+      SSD — the default is a common source of node performance problems.

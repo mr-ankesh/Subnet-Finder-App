@@ -1,0 +1,130 @@
+kb_version: "2.0.0"
+scope: environment_composer
+description: >
+  Deterministic subnet and VNET sizing. The composer computes these arithmetically and shows
+  its working. The LLM never estimates a CIDR — a wrong CIDR is a routing incident, and
+  TechOps has to approve it anyway.
+
+ground_rules:
+  azure_reserved_per_subnet: 5
+  azure_reserved_note: >
+    Azure reserves 5 addresses in every subnet. A /28 gives 11 usable, not 16. Always size
+    against usable, not total.
+  pool_source: TechOps allocates from 10.110.0.0/16 (primary) or 10.119.0.0/16 (secondary)
+  approval: >
+    Every CIDR is reviewed and approved by TechOps before hub integration. The composer
+    proposes a size, not a specific range.
+  growth_headroom: >
+    Size for roughly double today's requirement. Subnets cannot be resized once resources are
+    deployed into them, and re-addressing a live environment is a project, not a change.
+
+vnet_count:
+  default: 1
+  default_rule: >
+    One spoke VNET per environment per subscription. Segregate with subnets and NSGs, not
+    extra VNETs — every additional VNET multiplies peering, UDR and DNS-link work.
+  add_another_vnet_when:
+    - the workload spans more than one subscription
+    - a regulatory boundary requires network-level separation
+    - a separate AKS landing zone is mandated
+    - environments must not share an address space
+  never:
+    - a VNET per application tier — that is what subnets are for
+    - a VNET in the hub — workloads never deploy into Connectivity
+
+subnets:
+  - id: snet_appgw
+    purpose: Application Gateway
+    required_when: an Application Gateway is in the environment
+    dedicated: true
+    recommended_size: "/24"
+    minimum_size: "/26"
+    sizing_note: >
+      Sized for maximum autoscale instance count plus Azure's reserved addresses. /24 is the
+      comfortable default; smaller caps how far the gateway can scale later.
+    nsg: Required — inbound 443 from Cloudflare ranges only for public gateways
+    udr_caution: >
+      App Gateway v2 subnets have constraints on forcing 0.0.0.0/0 through a firewall.
+      Confirm the supported configuration before applying the standard spoke UDR.
+
+  - id: snet_aks
+    purpose: AKS node pools
+    required_when: an AKS cluster is in the environment
+    dedicated: true
+    formula_azure_cni: "(nodes × (1 + max_pods_per_node)) + 5 reserved + growth headroom"
+    formula_note: >
+      With Azure CNI every pod takes a VNET IP, so pod count dominates. Default max pods per
+      node is 30. A 6-node cluster needs roughly 6 × 31 = 186 addresses before headroom — a
+      /24 (251 usable) fits, a /25 (123 usable) does not.
+    sizing_table:
+      - {nodes: "up to 3", max_pods: 30, min_addresses: 93, recommended: "/24"}
+      - {nodes: "up to 6", max_pods: 30, min_addresses: 186, recommended: "/24"}
+      - {nodes: "up to 12", max_pods: 30, min_addresses: 372, recommended: "/23"}
+      - {nodes: "up to 25", max_pods: 30, min_addresses: 775, recommended: "/22"}
+    recommended_default: "/23"
+    recommended_default_reason: >
+      Clusters grow. A /23 costs nothing extra today and avoids re-addressing when the node
+      count doubles.
+
+  - id: snet_workload
+    purpose: Virtual machines
+    required_when: VMs are in the environment
+    formula: "vm_count + 5 reserved + growth headroom"
+    sizing_table:
+      - {vms: "up to 10", recommended: "/27", usable: 27}
+      - {vms: "up to 25", recommended: "/26", usable: 59}
+      - {vms: "up to 55", recommended: "/25", usable: 123}
+      - {vms: "up to 120", recommended: "/24", usable: 251}
+    note: One NIC per VM. If VMs need multiple NICs, count each NIC separately.
+
+  - id: snet_pe
+    purpose: Private endpoints for all PaaS services
+    required_when: any PaaS service is in the environment
+    shared: true
+    shared_note: >
+      One private-endpoint subnet serves the whole environment — PostgreSQL, storage, Key
+      Vault, ACR and anything else. Separate subnets per service create needless work.
+    formula: "one address per private endpoint + 5 reserved + growth headroom"
+    sizing_table:
+      - {endpoints: "up to 10", recommended: "/28", usable: 11}
+      - {endpoints: "up to 25", recommended: "/27", usable: 27}
+      - {endpoints: "up to 55", recommended: "/26", usable: 59}
+    recommended_default: "/27"
+    recommended_default_reason: Private endpoints accumulate — every new PaaS service adds one.
+    policy_note: Network policies for private endpoints must be enabled on this subnet.
+
+  - id: snet_bastion
+    purpose: Azure Bastion
+    required_when: Bastion is used instead of ZPA for VM access
+    dedicated: true
+    fixed_name: AzureBastionSubnet
+    recommended_size: "/26"
+    note: >
+      Presight's standard access path is ZPA. Only include Bastion if ZPA cannot serve the
+      requirement, and expect to justify it.
+
+vnet_sizing:
+  method: >
+    Sum the address space of every required subnet, round up to the next CIDR boundary, then
+    add one size class of headroom for subnets not yet imagined.
+  worked_method:
+    - Compute each subnet's total addresses (not usable).
+    - Sum them.
+    - Round up to the nearest power of two.
+    - Add one size class where utilisation would otherwise exceed 75%.
+  reference_table:
+    - {vnet: "/24", total_addresses: 256, typical: "small VM-only environment"}
+    - {vnet: "/23", total_addresses: 512, typical: "VMs + private endpoints, no AKS"}
+    - {vnet: "/22", total_addresses: 1024, typical: "AKS + VMs + PaaS + App Gateway"}
+    - {vnet: "/21", total_addresses: 2048, typical: "large AKS or multiple node pools"}
+  guard: >
+    Requesting more than a /21 should prompt a conversation about whether the environment
+    should be split across subscriptions instead.
+
+mandatory_spoke_wiring:
+  - {step: Hub-spoke peering, owner: TechOps, note: Both directions, correct gateway transit settings}
+  - {step: Base UDR applied to spoke subnets, detail: "0.0.0.0/0 next hop Azure Firewall"}
+  - {step: Gateway route propagation disabled, detail: Mandatory on any subnet carrying a custom UDR}
+  - {step: Hub route tables updated, detail: "GatewaySubnet, Identity VNET and Security VNET each get the new spoke CIDR, next hop Azure Firewall"}
+  - {step: NSGs created and associated per subnet, detail: Required under the policy baseline}
+  - {step: Private DNS zones linked, detail: Every privatelink zone the workload resolves must be linked to the spoke}

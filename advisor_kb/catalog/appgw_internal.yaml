@@ -1,0 +1,53 @@
+kb_version: "2.0.0"
+id: appgw_internal
+name: Internal Application Gateway (WAF v2, private frontend)
+service: app_gateway
+status: approved
+summary: >
+  Layer-7 routing and WAF for applications reachable only from inside the estate — via ZPA,
+  VPN or another spoke. Private frontend IP, no public IP, no InfoSec exposure gate.
+when_to_use:
+  - internal web application or portal
+  - staff-facing dashboard reached over ZPA
+  - path-based routing across several internal backends
+  - TLS termination for internal services
+not_for:
+  - internet-facing applications  -> appgw_public_cloudflare
+  - single-backend routing where an internal load balancer suffices
+match:
+  required: {exposure: [internal_only]}
+  preferred: {protocol: [https, http], backend: [aks, vm, app_service], consumer: [end_user_zpa, internal_app]}
+  disqualify: {data_classification: [restricted_sovereign]}
+design:
+  sku: WAF_v2
+  frontend: Private IP only
+  subnet: Dedicated Application Gateway subnet, used by nothing else
+  subnet_sizing: >
+    Size for maximum instance count plus Azure's reserved addresses — /24 is comfortable.
+  waf: {mode: Prevention, ruleset: OWASP Core Rule Set}
+  tls: {min_version: "TLS 1.2", certificate_source: Key Vault, referenced by managed identity}
+  autoscale: Enabled
+  zone_redundancy: Enabled for production
+  access_path: Users reach it over ZPA or VPN; DNS resolves to the private frontend IP
+  backend_rules:
+    public_ip_on_backend: never
+    nsg: Backend subnet accepts traffic only from the Application Gateway subnet
+security_floor:
+  public_ip: false
+  waf_mode_at_golive: Prevention
+  min_tls_version: "TLS 1.2"
+  backend_public_ip: false
+required_requests:
+  - {order: 1, type: vnet_new, label: "New Subnet — dedicated Application Gateway subnet"}
+  - {order: 2, type: app_gateway, label: Application Gateway WAF v2 (internal)}
+  - {order: 3, type: dns, label: "DNS — A record in the private zone pointing at the private frontend IP"}
+  - {order: 4, type: zpa_rnd_routing, label: ZPA Routing, condition: users reach it from outside the spoke}
+prerequisites:
+  - An Azure subscription. If absent, request it from the HALO portal first.
+  - An onboarded spoke VNET with a dedicated Application Gateway subnet.
+  - A TLS certificate in Key Vault for the internal hostname.
+diagram: appgw_internal.mmd
+cost_band: "$$"
+source:
+  - {doc: G42-AzurePlatformDesign-v1.2, section: "2.4.7", states: "Azure Application Gateway as the native WAF design option in the hub-and-spoke model."}
+  - {doc: Azure Spoke Onboarding Standards, states: "Private DNS linking to Hub required for VPN/ZPA access; no InfoSec gate where there is no public exposure."}

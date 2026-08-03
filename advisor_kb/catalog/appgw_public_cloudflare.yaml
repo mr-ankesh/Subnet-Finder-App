@@ -1,0 +1,197 @@
+kb_version: "2.0.0"
+id: appgw_public_cloudflare
+name: Public Application Gateway (WAF v2) behind Cloudflare
+service: app_gateway
+status: conditional
+condition: >
+  This is the ONLY approved way to expose an application to the internet at Presight, and it
+  cannot be self-served. Public exposure — a public DNS record or an internet-facing endpoint
+  — requires formal InfoSec onboarding and approval before anything is built. The advisor
+  produces the design and the InfoSec brief; it never treats public exposure as a checkbox.
+summary: >
+  Cloudflare terminates and filters public traffic, then forwards to an Azure Application
+  Gateway WAF v2 whose public IP accepts connections only from Cloudflare IP ranges. The
+  gateway is the single internet-facing component; all backends stay private.
+
+when_to_use:
+  - a web application or API that must be reachable from the internet
+  - a public-facing portal or dashboard
+  - an externally-consumed HTTPS endpoint
+not_for:
+  - internal-only applications   -> appgw_internal
+  - engineer or staff access     -> ZPA routing, not public exposure
+  - non-HTTP protocols           -> raise with the platform team
+
+match:
+  required: {exposure: [public_internet]}
+  preferred: {protocol: [https, http], backend: [aks, vm, app_service]}
+  disqualify: {data_classification: [restricted_sovereign]}
+
+design:
+  layers:
+    - layer: 1
+      component: Cloudflare
+      role: Public DNS, TLS termination at the edge, WAF, DDoS protection, bot filtering
+      notes: >
+        The public hostname resolves to Cloudflare, never to the Azure public IP. The origin
+        address must not appear in any public DNS record.
+    - layer: 2
+      component: Azure Application Gateway WAF v2
+      role: Second WAF layer, TLS termination, path-based routing, backend health probes
+      public_ip: Yes — the only public IP in the design
+      critical_control: >
+        The gateway's NSG and WAF policy accept inbound 443 ONLY from published Cloudflare
+        IPv4 and IPv6 ranges. Everything else is denied. Without this, an attacker reaches
+        the origin directly and bypasses Cloudflare entirely.
+    - layer: 3
+      component: Backend pool
+      role: AKS ingress, VM(s) or App Service — all private, no public IPs
+      notes: Reachable only from the Application Gateway subnet.
+
+  waf:
+    mode: Prevention
+    mode_note: >
+      Start in Detection to tune out false positives, then switch to Prevention before
+      go-live. Do not stay in Detection — it logs attacks without blocking them.
+    ruleset: OWASP Core Rule Set, current version
+    custom_rules:
+      - Restrict source to Cloudflare IP ranges
+      - Rate limiting per client IP
+      - Geo-filtering where the audience is known to be regional
+    logs_to: Security Log Analytics Workspace, on to Sentinel
+
+  origin_protection:
+    ip_allowlist:
+      required: true
+      source: Cloudflare's published IP ranges
+      maintenance: >
+        Cloudflare's ranges change. Establish an owner and a refresh cadence, or the
+        allow-list silently drifts and legitimate traffic starts failing.
+    authenticated_origin_pulls:
+      recommended: true
+      what: Cloudflare presents a client certificate the gateway validates
+      why: Proves the request came from Cloudflare even if the IP allow-list is imperfect
+    close_other_ports:
+      required: true
+      why: >
+        Any other port responding on the origin public IP is a bypass path. A prior Presight
+        security assessment found a non-standard port answering on an origin IP, exposing
+        infrastructure directly to the internet and revealing internal security controls.
+
+  gateway_config:
+    sku: WAF_v2
+    subnet: Dedicated subnet, used by nothing else
+    subnet_sizing: >
+      Application Gateway v2 requires its own subnet. Size for maximum instance count plus
+      Azure's reserved addresses — /24 is the comfortable choice; smaller constrains
+      autoscale later. Confirm the current minimum against Azure documentation.
+    autoscale: Enabled, floor matching expected steady-state load
+    zone_redundancy: Enabled for production
+    tls:
+      min_version: "TLS 1.2"
+      certificate_source: Key Vault, referenced by managed identity
+      certificate_note: >
+        Certificates referenced from Key Vault rotate cleanly. One uploaded directly to the
+        gateway becomes an undocumented expiry incident waiting to happen.
+    http_to_https_redirect: Enabled
+    health_probes: Custom probes against a real application health endpoint
+
+  backend_rules:
+    public_ip_on_backend: never
+    nsg: Backend subnet accepts traffic only from the Application Gateway subnet
+    aks_ingress: Internal load balancer, not a public one
+
+security_floor:
+  cloudflare_only_ingress: true
+  waf_mode_at_golive: Prevention
+  backend_public_ip: false
+  min_tls_version: "TLS 1.2"
+  infosec_onboarding: mandatory
+  public_dns_record_owner: InfoSec
+
+infosec_gate:
+  triggered_by: Any public DNS record or internet-facing endpoint
+  accountable: InfoSec
+  responsible: InfoSec
+  consulted: Project / App Team
+  informed: TechOps Int / R&D
+  blocking: true
+  blocking_scope: >
+    Blocks publication of the public DNS record. It does NOT block designing, building or
+    internally testing the Application Gateway and the application behind it.
+  ongoing_obligation: >
+    InfoSec conducts periodic security audits against defined security standards, validating
+    that network configuration, routing controls and exposure points remain compliant over
+    time. Public exposure is an ongoing commitment, not a one-off approval.
+  brief_contents:
+    - Application name, owner and business purpose
+    - The exact public hostname(s) requested
+    - Data classification of anything reachable through the endpoint
+    - Authentication and authorisation model
+    - The full traffic path: Cloudflare -> App Gateway WAF -> backend
+    - Confirmation the origin accepts Cloudflare IP ranges only
+    - Confirmation the WAF will run in Prevention mode at go-live
+    - Certificate management approach and expiry ownership
+    - Expected traffic profile and rate-limiting thresholds
+    - Named technical and business owners for ongoing audits
+
+required_requests:
+  - order: 1
+    type: other
+    label: InfoSec public exposure onboarding
+    blocking: true
+    note: Raise first. Everything else proceeds in parallel, but go-live waits on it.
+  - order: 2
+    type: vnet_new
+    label: New Subnet — dedicated Application Gateway subnet
+  - order: 3
+    type: app_gateway
+    label: Application Gateway WAF v2
+  - order: 4
+    type: firewall_policy
+    label: NSG / WAF custom rule — restrict source to Cloudflare ranges
+  - order: 5
+    type: dns
+    label: Private DNS record for the backend
+  - order: 6
+    type: other
+    label: Cloudflare DNS record and origin configuration
+    note: Raised with the team administering Cloudflare, after InfoSec approval.
+
+prerequisites:
+  - An Azure subscription. If absent, request it from the HALO portal first.
+  - An onboarded spoke VNET with a dedicated Application Gateway subnet.
+  - A TLS certificate for the public hostname, stored in Key Vault.
+  - A decision on the public hostname, agreed with whoever owns the domain.
+  - InfoSec engaged before any public DNS record exists.
+
+diagram: appgw_public_cloudflare.mmd
+cost_band: "$$"
+
+source:
+  - doc: Azure Spoke Onboarding Standards
+    section: RACI Matrix — Network Flow Activities
+    states: >
+      Public DNS onboarding — InfoSec Responsible/Accountable, App Team Consulted, TechOps
+      Informed. Mandatory InfoSec process. Outcome: controlled public exposure.
+  - doc: Azure_Network_Flow_RACI_v2
+    states: >
+      Any form of public exposure, including public DNS records or internet-facing endpoints,
+      requires formal InfoSec onboarding and approval. InfoSec is accountable for conducting
+      periodic security audits against defined security standards, validating that deployed
+      network configurations, routing controls and exposure points remain compliant over time.
+  - doc: Vitruvian_Security_Assessment_Report_v2.0
+    section: "VULN-14 — Public IP exposed bypassing WAF protections"
+    states: >
+      The origin server's public IP was directly accessible from the internet, allowing
+      attackers to bypass all CDN and WAF protections. Remediation — origin firewall to
+      accept connections ONLY from Cloudflare IP ranges; enable Cloudflare Authenticated
+      Origin Pulls; close all unnecessary ports on the origin.
+  - doc: G42-AzurePlatformDesign-v1.2
+    section: "2.4.7 Firewall/WAF Design Options"
+    states: >
+      Hub-and-spoke with Azure Firewall and Azure Application Gateway as the native
+      Firewall/WAF design option.
+  - doc: Vitruvian_BoQ_Azure
+    section: "6. Networking"
+    states: Application Gateway WAF v2 with TLS termination and path-based routing.

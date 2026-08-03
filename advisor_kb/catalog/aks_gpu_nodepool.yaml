@@ -1,0 +1,58 @@
+kb_version: "2.0.0"
+id: aks_gpu_nodepool
+name: Private AKS with GPU Node Pool
+service: aks_cluster
+status: conditional
+condition: >
+  Only when LLM/ML inference or training must run on Presight-managed GPUs. If Azure OpenAI
+  or Core42 Compass can serve the workload, use that instead — GPU node pools are among the
+  most expensive resources in the estate and are frequently under-utilised.
+summary: The standard private AKS pattern plus a dedicated GPU node pool, tainted so only GPU workloads schedule onto it.
+when_to_use:
+  - self-hosted LLM inference (vLLM or similar)
+  - model training or fine-tuning
+  - GPU-accelerated computer vision or video analytics
+not_for:
+  - general containerised apps              -> aks_private_standard
+  - inference Azure OpenAI can serve        -> aks_private_standard + Azure OpenAI
+match:
+  required: {workload_shape: [containerised], gpu_required: [true]}
+  preferred: {consumer: [ml_inference, ml_training]}
+  disqualify: {data_classification: [restricted_sovereign]}
+design:
+  inherits: aks_private_standard
+  gpu_node_pool:
+    taint: "nvidia.com/gpu=present:NoSchedule"
+    autoscale: Scale to zero when idle, where the workload tolerates cold start
+    sku_guidance: >
+      ND / NC series. Confirm the exact SKU is available and quota-approved in UAE North
+      before committing — GPU SKUs are frequently restricted per subscription.
+    quota_warning: >
+      GPU quota is not granted by default. Raise the quota request early; it is often the
+      longest lead-time item in the whole environment.
+  alternative_first:
+    service: Azure OpenAI Service
+    access: Private endpoint via Azure Private Link
+    note: Provisioned Throughput gives predictable latency with no GPU infrastructure to manage.
+  cost_control:
+    - Scale the GPU pool to zero outside working hours where possible
+    - Track utilisation; an idle GPU pool is the single most expensive mistake available
+security_floor:
+  private_api_server: true
+  public_node_ips: false
+  network_policy: enabled
+  cmk_disk_encryption: true
+required_requests:
+  - {order: 1, type: vnet_new, label: New VNET / New Subnet, condition: no onboarded AKS subnet yet}
+  - {order: 2, type: other, label: GPU quota request, note: Raise this first — longest lead time}
+  - {order: 3, type: aks_cluster, label: AKS Cluster with GPU node pool}
+  - {order: 4, type: dns, label: "DNS — private zone links"}
+prerequisites:
+  - Everything in aks_private_standard.
+  - Approved GPU quota in the target subscription and region.
+  - A stated utilisation expectation, so the pool can be right-sized.
+diagram: aks_private.mmd
+cost_band: "$$$"
+source:
+  - {doc: Vitruvian_BoQ_Azure, section: "8. LLM / AI Inference Options", states: "A GPU node pool may be provisioned within AKS to support on-premises LLM inference via vLLM — required only if the client does not supply external LLM API endpoints. Azure OpenAI via Provisioned Throughput Units guarantees consistent inference latency; API access restricted to the internal VNet via Azure Private Link."}
+  - {doc: Vitruvian_BoQ_Azure, section: "11. Pre-Deployment Checklist", states: "Confirm Azure subscription quota for selected GPU VM SKUs in the target region."}

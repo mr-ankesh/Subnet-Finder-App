@@ -1,0 +1,52 @@
+kb_version: "2.0.0"
+id: keyvault_premium_private
+name: Key Vault Premium (Private, HSM-backed)
+service: key_vault
+status: approved
+summary: >
+  HSM-backed Key Vault holding CMK encryption keys, TLS certificates and application secrets
+  for an environment. Private endpoint only. A prerequisite for almost everything else.
+when_to_use:
+  - CMK encryption keys for storage, disks, databases
+  - TLS certificates referenced by Application Gateway
+  - application secrets and connection strings
+  - any new environment — usually the first resource to exist
+not_for:
+  - per-application secret sprawl; one vault per environment is the usual granularity
+match:
+  required: {resource_need: [key_vault]}
+  preferred: {purpose: [cmk_keys, certificates, application_secrets]}
+  disqualify: {data_classification: [restricted_sovereign]}
+design:
+  sku: Premium
+  sku_reason: Premium provides HSM-backed keys, required for RSA-HSM CMK keys.
+  key_type: RSA-HSM
+  soft_delete: enabled
+  purge_protection: enabled
+  purge_protection_note: >
+    Purge protection cannot be disabled once enabled. This is deliberate — without it a
+    deleted key can be permanently destroyed, taking every CMK-encrypted resource with it.
+  rbac_model: Azure RBAC rather than access policies
+  identity_access: User-assigned managed identities, one per consuming service
+  private_endpoint: {required: true, sub_resource: vault, dns_zone: privatelink.vaultcore.azure.net}
+  key_rotation: Automatic rotation policy per platform standard
+  security_logs_to: Security Log Analytics Workspace
+security_floor:
+  public_network_access: Disabled
+  soft_delete: enabled
+  purge_protection: enabled
+  resource_lock: CanNotDelete
+  network_default_action: Deny
+required_requests:
+  - {order: 1, type: other, label: Key Vault Premium}
+  - {order: 2, type: private_endpoint, label: Private Endpoint (vault)}
+  - {order: 3, type: dns, label: "DNS — link privatelink.vaultcore.azure.net to the spoke VNET"}
+prerequisites:
+  - An Azure subscription. If absent, request it from the HALO portal first.
+  - An onboarded spoke VNET and a subnet for private endpoints.
+diagram: keyvault_private.mmd
+cost_band: "$"
+source:
+  - {doc: G42-AzurePlatformDesign-v1.2, section: "2.5.8 BYOK with HSM & Key Vault / 2.5.9 Encryption at Rest with CMK"}
+  - {doc: G42-AzurePlatformDesign-v1.2, section: "2.2.1 DD-GOV-7", states: "Locks applied for critical resources such as Key Vaults."}
+  - {doc: G42-Azure Platform Design - Diagrams, section: Log Analytics Centralization, states: "Security-related resource logs (e.g. Key Vault) sent to Log Analytics Workspace."}

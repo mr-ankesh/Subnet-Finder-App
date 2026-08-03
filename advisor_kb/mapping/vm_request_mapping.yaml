@@ -1,0 +1,53 @@
+kb_version: "2.0.0"
+service: vm_create
+target_request_type: vm_create
+description: Maps advisor answers onto AlMadar's VM request fields. PREFILL ONLY.
+
+prefill_contract:
+  method: Server-side advisor session; open the form with ?advisor_session=<id>
+  auto_submit: false
+  editable: All prefilled fields remain editable.
+
+locked_fields:
+  public_ip: {value: false, reason: VMs never get public IPs at Presight}
+  disk_encryption: {value: CMK}
+  os_disk_type: {value: Premium_LRS, note: Right-size per workload; Premium is the default}
+
+mapped_fields:
+  vm_count: {from: vm_count}
+  os_image: {from: os_family, transform: map_to_curated_image}
+  auth_mode: {from: derived.auth_mode}
+  region: {from: region, default: uaenorth}
+  zones: {from: availability, transform: to_zone_list}
+  purpose: {from: vm_purpose}
+  business_justification:
+    compose_from: [vm_purpose, vm_count, access_need]
+    template: >
+      {vm_purpose} for {application_name}. {vm_count} VM(s), accessed by {access_labels}.
+      Recommended by AlMadar AI Architecture Advisor (pattern: {pattern_id}, KB {kb_version}).
+
+tag_mappings:
+  ApplicationName: {from: application_name}
+  BusinessUnit: {from: business_unit}
+  Criticality: {from: criticality}
+  DataClassification: {from: data_classification, transform: title_case}
+  Environment: {from: environment, transform: expand_abbreviation}
+  Owner: {from: owner_email}
+  Approver: {from: session.manager_email, optional: true}
+  ServiceClass: {skip: true, reason: Mapping unconfirmed — manual entry}
+  Sovereignty: {value: Standard}
+
+user_must_provide:
+  - {field: subscription_id, blocking: true}
+  - {field: resource_group, blocking: true}
+  - {field: vm_base_name, blocking: true, hint: "Deploy appends -001, -002 …"}
+  - {field: vnet_name, blocking: true}
+  - {field: subnet_name, blocking: true}
+  - {field: vm_size, blocking: true, hint: The form's live SKU picker filters to what's available}
+  - {field: ssh_public_key, blocking: true, condition: "os_family == linux"}
+  - {field: data_disk_config, blocking: false, condition: "data_disks == true"}
+
+follow_on_requests:
+  - {order: 1, request_type: dns, label: "DNS — A records for the VMs", include_if: "name_resolution_needed == true"}
+  - {order: 2, request_type: firewall_policy, label: "Firewall rules — egress destinations", include_if: "egress_destinations specified"}
+  - {order: 3, request_type: zpa_rnd_routing, label: "ZPA Routing — engineer access", include_if: "derived.zpa_routing_required == true"}

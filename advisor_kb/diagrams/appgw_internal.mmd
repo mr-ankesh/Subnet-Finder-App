@@ -1,0 +1,9 @@
+%% appgw_internal
+flowchart LR
+    ENG["Presight users"] --> ZPA["ZPA connector"]
+    ZPA --> SNET["snet-appgw — {VNET}"]
+    SNET --- AGW["Application Gateway WAF v2<br/>PRIVATE frontend IP<br/>Prevention mode · TLS 1.2"]
+    AGW --> BE["{BACKEND}<br/>no public IP"]
+    SNET -.->|"private DNS"| DNS["Private DNS zone<br/>A record -> private frontend IP"]
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    class AGW,SNET,DNS,BE net

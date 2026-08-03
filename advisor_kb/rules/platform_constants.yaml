@@ -1,0 +1,138 @@
+kb_version: "2.0.0"
+scope: all_services
+description: >
+  Platform-wide constants applying to EVERY service. Per-service decision matrices must not
+  restate these — the renderer injects them. Where a service genuinely deviates (e.g. archive
+  storage cannot use ZRS), the deviation is declared in that service's catalog with a reason
+  and surfaced to the user.
+  NOTE: this file is ADDITIVE. It does not replace storage_decision_matrix.yaml.
+
+topology:
+  model: hub_and_spoke
+  hub_role: >
+    The Connectivity (hub) VNET hosts the centralised Firewall/WAF, DNS and VPN/ExpressRoute
+    connectivity. Workloads live in spoke VNETs peered to it.
+  spoke_rule: Every workload VNET is a spoke. No workload deploys into the hub.
+  source: {doc: G42-AzurePlatformDesign-v1.2, section: "2.4 Azure Networking"}
+
+new_vnet_onboarding_steps:
+  description: The fixed task list TechOps executes for every new spoke.
+  steps:
+    - Create VNET and subnets
+    - Establish peering between hub and spoke
+    - Deploy base UDR for the spoke
+    - Update GatewaySubnet route table with the new VNET CIDR, next hop Azure Firewall
+    - Update Identity VNET route table with the new VNET CIDR, next hop Azure Firewall
+    - Update Security VNET route table with the new VNET CIDR, next hop Azure Firewall
+  source: {doc: Presight Hub and Spoke Model, section: "Network Change required for new VNET"}
+
+routing:
+  default_route: 0.0.0.0/0 via Azure Firewall
+  gateway_route_propagation: disabled
+  gateway_route_propagation_reason: >
+    Must be explicitly disabled on subnets using custom UDRs, to avoid unintended route
+    injection from VPN or ExpressRoute gateways and keep routing deterministic.
+  source: {doc: Azure Spoke Onboarding Standards, states: "Standard UDR definition and enforcement — default route via Firewall + VPN/ZPA. Disable Gateway Route Propagation — mandatory when UDRs are applied."}
+
+address_space:
+  pools: {primary: 10.110.0.0/16, secondary: 10.119.0.0/16}
+  allocation_authority: TechOps
+  overlap_rule: >
+    CIDR must not overlap the hub, VPN, ZPA, or any existing spoke. TechOps reviews and
+    approves every CIDR before hub integration.
+  allowed_sizes: ["/21","/22","/23","/24","/25","/26","/27","/28"]
+  source: {doc: Azure Spoke Onboarding Standards, states: "VNET CIDR Selection — Mandatory for Hub connectivity. Outcome: no CIDR overlap."}
+
+network_security:
+  public_paas_endpoints: denied
+  private_endpoint: required_for_paas
+  private_dns_integration: required
+  nsg_on_subnets: required
+  policy_basis:
+    - {initiative: Deny PaaS services with exposed public endpoints, scope: Landing Zones/Corp}
+    - {initiative: Configure Azure PaaS services to use private DNS zones, scope: Landing Zones/Corp}
+  source: {doc: G42-AzurePlatformDesign-v1.2, section: "2.2.4 Azure Policy Design"}
+
+public_exposure:
+  rule: >
+    Any form of public exposure — a public DNS record, an internet-facing endpoint, a public
+    IP — requires formal InfoSec onboarding and approval. This is a process gate, not a
+    technical toggle.
+  accountable: InfoSec
+  consulted: Project / App Team
+  informed: TechOps Int / R&D
+  ongoing: >
+    InfoSec also conducts periodic security audits against defined security standards,
+    validating that deployed network configurations, routing controls and exposure points
+    remain compliant over time.
+  source: {doc: Azure Spoke Onboarding Standards / Azure_Network_Flow_RACI_v2}
+
+encryption:
+  at_rest: CMK
+  key_vault_sku: Premium
+  key_type: RSA-HSM
+  identity_type: UserAssigned
+  key_vault_requirements: {soft_delete: enabled, purge_protection: enabled}
+  source: {doc: G42-AzurePlatformDesign-v1.2 §2.5.9 / Presight Storage Design Document §2.3}
+
+identity:
+  preferred: Managed Identity
+  rule: Use Azure Managed Identities rather than credentials in config.
+  source: {doc: G42-AzurePlatformDesign-v1.2, section: "2.3.4 Managed Identities"}
+
+dns:
+  private_zones_live_in: BU Connectivity (hub) subscription
+  linked_to: BU Connectivity VNET, then to each spoke that needs resolution
+  resolver: Azure DNS Private Resolver in each BU Connectivity VNET
+  vpn_zpa_rule: >
+    When applications require access from VPN or ZPA, private DNS zones must be linked to
+    the hub by TechOps to enable cross-network resolution.
+
+private_dns_zones:
+  blob: privatelink.blob.core.windows.net
+  file: privatelink.file.core.windows.net
+  dfs: privatelink.dfs.core.windows.net
+  postgres: privatelink.postgres.database.azure.com
+  keyvault: privatelink.vaultcore.azure.net
+  acr: privatelink.azurecr.io
+  aks: "privatelink.<region>.azmk8s.io"
+  aks_note: >
+    UNCONFIRMED — the region is embedded in the zone name. Verify the exact form against
+    current Azure documentation before relying on it.
+
+logging:
+  workspaces_per_bu: 2
+  operational_law: Non-security resource metrics and logs
+  security_law: Security-related logs consumed by Sentinel / SOC
+
+backup:
+  recovery_services_vault: {covers: [Azure VMs, SQL in Azure VMs, Azure Files], count: One per subscription}
+  backup_vault: {covers: [Azure Database for PostgreSQL, Azure Blobs, Azure Disks, Azure Kubernetes Service], count: One per subscription}
+
+region:
+  primary: uaenorth
+  primary_abbrev: aen
+  secondary: uaecentral
+  secondary_requires_justification: true
+
+naming:
+  pattern: "<type>-<project>-<env>-prs-<region>-NNN"
+  examples:
+    resource_group: rg-g100-dev-prs-aen-001
+    vnet: vnet-g100-dev-prs-aen-001
+    aks: aks-g100-dev-prs-aen-001
+    vm: vm-g100-dev-prs-aen-001
+    postgres: "rdspg<app><env>01 (observed convention)"
+  env_abbrev: {dev: dev, test: tst, uat: uat, prod: prd, sandbox: snd}
+
+locks:
+  applies_to: [Key Vaults, Storage Accounts, Critical VMs, ExpressRoute Circuit, ExpressRoute Port, ExpressRoute Gateway]
+  type: CanNotDelete
+  source: {doc: G42-AzurePlatformDesign-v1.2, section: "2.2.1 DD-GOV-7"}
+
+sovereignty:
+  standard_path: Landing Zones / Corp management group
+  confidential_path: Confidential Corp management group, separate policy set
+  advisor_rule: >
+    The advisor never designs for the Confidential Corp path. Sovereign or
+    regulator-controlled workloads are escalated to the platform and security teams.

@@ -1,0 +1,134 @@
+kb_version: "2.0.0"
+service: app_gateway
+
+conversation_rules:
+  - Ask ONE question at a time, in plain English.
+  - Exposure is the first substantive question — it determines everything else.
+  - Never ask whether they want a WAF. The WAF is not optional.
+  - Never ask them to choose between "public IP" and "private IP" — ask who needs to reach it.
+
+questions:
+
+  - id: subscription_available
+    order: 10
+    question: "Do you already have an Azure subscription for this?"
+    type: yes_no
+    stop_if:
+      condition: "answer == false"
+      message: >
+        You'll need a subscription first — please request one through the **HALO portal**,
+        then come back with the ID and I'll continue from here.
+
+  - id: exposure
+    order: 20
+    question: "Who needs to reach this application?"
+    type: single_choice
+    why_we_ask: "This is the biggest fork in the design."
+    options:
+      - value: internal_only
+        label: "Presight staff and internal systems only"
+      - value: public_internet
+        label: "Anyone on the internet"
+      - value: unsure
+        label: "I'm not sure"
+    if_unknown: >
+      If people outside Presight need to open it in a browser, it's public. If it's staff or
+      engineers connecting through ZPA, it's internal.
+
+  - id: public_hostname
+    order: 30
+    question: "What hostname will it be published on?"
+    type: text
+    skip_if: "exposure != public_internet"
+
+  - id: audience
+    order: 35
+    question: "Who's the audience, and roughly how much traffic do you expect?"
+    type: text
+    skip_if: "exposure != public_internet"
+    why_we_ask: "Feeds the InfoSec brief and the rate-limiting thresholds."
+
+  - id: backend
+    order: 40
+    question: "What's behind it — an AKS cluster, VMs, or something else?"
+    type: single_choice
+    options:
+      - {value: aks, label: "An AKS cluster"}
+      - {value: vm, label: "One or more VMs"}
+      - {value: app_service, label: "An App Service"}
+      - {value: other, label: "Something else"}
+
+  - id: routing_need
+    order: 50
+    question: "Is this routing to a single backend, or several based on the URL path?"
+    type: single_choice
+    options:
+      - {value: single_backend, label: "A single backend"}
+      - {value: path_based, label: "Several, routed by path"}
+
+  - id: certificate_status
+    order: 60
+    question: "Do you already have a TLS certificate for that hostname?"
+    type: yes_no
+    if_no: >
+      You'll need one before go-live. It should live in Key Vault rather than being uploaded
+      to the gateway directly — that way it rotates cleanly instead of becoming an
+      undocumented expiry incident.
+
+  - id: environment
+    order: 70
+    question: "Which environment is this for?"
+    type: single_choice
+    options: [dev, tst, uat, prd, snd]
+
+  - id: data_classification
+    order: 80
+    question: "How would you classify the data reachable through it?"
+    type: single_choice
+    options: [public, internal, confidential, restricted, restricted_sovereign, unsure]
+    default_if_unknown: confidential
+    if_unknown: >
+      If it exposes personal information, credentials, or anything you wouldn't want indexed
+      by a search engine, treat it as Confidential at minimum.
+
+  - id: business_unit
+    order: 90
+    question: "Which business unit or project is this for?"
+    type: text
+
+  - id: application_name
+    order: 100
+    question: "What's the application called?"
+    type: text
+
+  - id: owner_email
+    order: 110
+    question: "Who's the technical owner?"
+    type: email
+    prefill_from_session: true
+
+  - id: business_owner
+    order: 115
+    question: "And who's the business owner?"
+    type: text
+    skip_if: "exposure != public_internet"
+    why_we_ask: "InfoSec onboarding needs both a technical and a business owner named."
+
+  - id: target_date
+    order: 118
+    question: "When do you need this live?"
+    type: text
+    skip_if: "exposure != public_internet"
+    why_we_ask: "InfoSec onboarding has a lead time — worth knowing how much runway there is."
+
+  - id: criticality
+    order: 120
+    question: "How critical is this to the business?"
+    type: single_choice
+    options: [low, medium, high, critical]
+
+  - id: want_diagram
+    order: 900
+    question: "Would you like a diagram of the traffic flow?"
+    type: yes_no
+    ask_last: true

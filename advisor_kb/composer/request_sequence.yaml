@@ -1,0 +1,119 @@
+kb_version: "2.0.0"
+scope: environment_composer
+description: >
+  Turns the dependency graph into an ordered, wave-based build plan. Requests inside a wave
+  run in parallel; a wave cannot start until the previous one has landed — except long-lead
+  items, which start on day one regardless.
+
+principles:
+  - Long-lead items start immediately, in parallel with everything else.
+  - Network comes before anything that lands in it.
+  - Shared services (Key Vault, ACR) come before the workloads that consume them.
+  - DNS links come with their private endpoints, never as an afterthought.
+  - Public exposure is last, and only after InfoSec has approved.
+
+waves:
+  - wave: 0
+    name: Long-lead items — raise on day one
+    parallel: true
+    blocking_for: go-live, not for build
+    requests:
+      - type: other
+        label: InfoSec public exposure onboarding
+        include_if: "exposure == public_internet"
+        note: >
+          Does not block building. Blocks publishing the public DNS record. Raise it now and
+          the approval runs alongside the build instead of after it.
+      - type: other
+        label: GPU quota request
+        include_if: "gpu_required == true"
+        note: GPU quota is not granted by default and is frequently the longest lead time.
+      - type: other
+        label: Subscription request via HALO portal
+        include_if: "subscription_available == false"
+        note: Everything else is blocked until this exists.
+
+  - wave: 1
+    name: Network foundation
+    parallel: false
+    requests:
+      - type: vnet_new
+        label: New VNET — CIDR allocation, subnets, hub integration
+        note: >
+          One request covers CIDR allocation, subnet carving, hub peering, base UDR and the
+          hub route-table updates. TechOps approves the CIDR.
+    delivers:
+      - Spoke VNET with all subnets
+      - Hub-spoke peering both directions
+      - Base UDR, 0.0.0.0/0 via Azure Firewall
+      - Gateway route propagation disabled
+      - NSGs per subnet
+      - Hub route tables updated with the new spoke CIDR
+
+  - wave: 2
+    name: Shared services
+    parallel: true
+    depends_on: [wave 1]
+    requests:
+      - {type: other, label: Key Vault Premium, always: true, note: "Holds CMK keys and TLS certificates — almost everything downstream needs it."}
+      - {type: other, label: Azure Container Registry, include_if: "aks_count > 0"}
+      - {type: storage_account_create, label: Storage Account, include_if: "storage_count > 0"}
+
+  - wave: 3
+    name: Private connectivity for shared services
+    parallel: true
+    depends_on: [wave 2]
+    requests:
+      - {type: private_endpoint, label: "Private endpoints — Key Vault, ACR, Storage"}
+      - type: dns
+        label: "DNS — link privatelink zones for Key Vault, ACR, Storage"
+        note: >
+          Do not defer this. A private endpoint without its DNS link looks healthy and fails
+          at connection time, which is a needlessly confusing way to lose an hour.
+
+  - wave: 4
+    name: Data and compute
+    parallel: true
+    depends_on: [wave 3]
+    requests:
+      - {type: postgres_create, label: PostgreSQL Flexible Server, include_if: "postgres_count > 0"}
+      - {type: private_endpoint, label: "Private endpoint — PostgreSQL", include_if: "postgres_count > 0"}
+      - {type: dns, label: "DNS — link privatelink.postgres.database.azure.com", include_if: "postgres_count > 0"}
+      - {type: aks_cluster, label: AKS Cluster, include_if: "aks_count > 0"}
+      - {type: vm_create, label: "Virtual Machine(s)", include_if: "vm_count > 0", note: "One request covers all identically-configured VMs; numbered -001, -002, …"}
+
+  - wave: 5
+    name: Access and egress
+    parallel: true
+    depends_on: [wave 4]
+    requests:
+      - {type: firewall_policy, label: "Firewall rules — outbound destinations the workload needs"}
+      - {type: zpa_rnd_routing, label: "ZPA Routing — engineer and user access"}
+      - {type: dns, label: "DNS — A records for VMs and internal services"}
+
+  - wave: 6
+    name: Public front door
+    parallel: false
+    depends_on: [wave 4]
+    include_if: "exposure == public_internet"
+    requests:
+      - {type: app_gateway, label: Application Gateway WAF v2}
+      - {type: firewall_policy, label: "NSG / WAF custom rule — restrict inbound to Cloudflare IP ranges"}
+      - type: other
+        label: Cloudflare DNS record and origin configuration
+        gated_by: InfoSec approval from wave 0
+        note: >
+          The only step that genuinely waits. Everything up to here can be built and tested
+          internally.
+
+parallelism_summary:
+  message_to_user: >
+    Waves 0 and 1 start together. After the network lands, most of the rest can be raised in
+    parallel — the ordering matters for dependencies, not for how many tickets you can have
+    open at once.
+
+critical_path:
+  compute: >
+    The critical path is whichever is longer: (InfoSec onboarding + Cloudflare DNS) or
+    (VNET -> shared services -> compute -> App Gateway). For public applications it is almost
+    always the InfoSec path, which is precisely why it sits in wave 0.

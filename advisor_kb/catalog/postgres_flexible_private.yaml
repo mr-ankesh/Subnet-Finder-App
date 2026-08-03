@@ -1,0 +1,79 @@
+kb_version: "2.0.0"
+id: postgres_flexible_private
+name: Azure Database for PostgreSQL — Flexible Server (Private)
+service: postgres_create
+status: approved
+summary: >
+  Managed PostgreSQL with no public endpoint, reachable only over a private endpoint from
+  the spoke, CMK-encrypted, backed up to the subscription's Backup Vault.
+when_to_use:
+  - relational database for an application
+  - replacing a self-managed PostgreSQL on a VM
+  - workloads where managed backups, patching and HA are worth more than root access
+not_for:
+  - workloads needing unsupported PostgreSQL extensions  -> vm_workload_standard
+  - key/value or cache workloads                         -> Azure Cache for Redis
+match:
+  required: {data_shape: [relational]}
+  preferred: {consumer: [aks, application, vm], managed_preference: [managed]}
+  disqualify: {data_classification: [restricted_sovereign]}
+design:
+  service: Azure Database for PostgreSQL Flexible Server
+  version_guidance: >
+    Pick a version Azure currently supports and that the application has been tested against.
+    Confirm the supported list at request time rather than assuming.
+  tier_guidance:
+    burstable: Sandbox and light development only — not for production
+    general_purpose: Default for most workloads
+    memory_optimized: Analytical or memory-heavy query patterns
+  ha:
+    dev: Disabled
+    production: Zone-redundant HA
+    note: Zone-redundant HA roughly doubles compute cost. Justify it for non-production.
+  network:
+    access_model: Private endpoint
+    dns_zone: privatelink.postgres.database.azure.com
+    public_access: Disabled
+    note: >
+      Flexible Server also supports VNET injection with a delegated subnet. Presight's
+      pattern is private endpoint, consistent with the platform-wide policy. Do not mix
+      models within one environment without agreement.
+  storage:
+    type: Premium SSD
+    growth: Enable storage auto-grow
+    iops: Provisioned separately from capacity on newer tiers — size from measurement
+  encryption:
+    at_rest: CMK via Key Vault Premium and a user-assigned managed identity
+    in_transit: TLS enforced
+  auth:
+    preferred: Microsoft Entra authentication
+    fallback: Local admin, credential held in Key Vault — never in application config
+  backup:
+    vault_type: Backup Vault
+    scope: Azure Database for PostgreSQL servers
+    pitr: Enable point-in-time restore with a retention window matching the RPO
+  monitoring: {diagnostics_to: Operational Log Analytics Workspace}
+  naming_observed: "rdspg<app><env>01 — convention already in use across the estate"
+security_floor:
+  public_network_access: Disabled
+  private_endpoint: required
+  tls_enforced: true
+  encryption: CMK
+  firewall_rules_public: none
+required_requests:
+  - {order: 1, type: vnet_new, label: New VNET / New Subnet, condition: no onboarded private-endpoint subnet yet}
+  - {order: 2, type: postgres_create, label: PostgreSQL Flexible Server}
+  - {order: 3, type: private_endpoint, label: Private Endpoint (postgresqlServer)}
+  - {order: 4, type: dns, label: "DNS — link privatelink.postgres.database.azure.com", note: "Mandatory. Without it the client resolves a public name and the connection fails."}
+prerequisites:
+  - An Azure subscription. If absent, request it from the HALO portal first.
+  - An onboarded spoke VNET and a subnet for private endpoints.
+  - Key Vault Premium with an RSA-HSM key and a user-assigned managed identity.
+  - A stated RPO/RTO, so backup retention and HA can be set sensibly.
+diagram: postgres_private.mmd
+cost_band: "$$"
+source:
+  - {doc: G42-Azure Platform Design - Executive, section: Azure Backup Approach, states: "Backup Vault covers Azure Database for PostgreSQL servers."}
+  - {doc: G42-Azure Platform Design - Diagrams, section: Log Analytics Centralization, states: "Operational and performance PostgreSQL resource logs to Log Analytics Workspace."}
+  - {doc: Vitruvian_BoQ_Azure, section: "10.4 Managed Services", states: "Provision Azure Database for PostgreSQL Flexible Server with Premium SSD and provisioned IOPS; configure private endpoint."}
+  - {doc: G42-AzurePlatformDesign-v1.2, section: "2.2.4", states: "Deny PaaS services with exposed public endpoints; require private DNS integration."}

@@ -1,0 +1,85 @@
+kb_version: "2.0.0"
+service: vm_create
+conversation_rules:
+  - Ask ONE question at a time, in plain English.
+  - Never ask about disk encryption, public IPs or NSGs — those are standards.
+questions:
+  - id: subscription_available
+    order: 10
+    question: "Do you already have an Azure subscription for this?"
+    type: yes_no
+    stop_if:
+      condition: "answer == false"
+      message: >
+        You'll need a subscription first — please request one through the **HALO portal**,
+        then come back with the ID.
+  - id: vm_purpose
+    order: 20
+    question: "What will the VMs be doing?"
+    type: text
+  - id: vm_count
+    order: 30
+    question: "How many VMs do you need?"
+    type: integer
+  - id: os_family
+    order: 40
+    question: "Linux or Windows?"
+    type: single_choice
+    options: [linux, windows]
+  - id: sizing
+    order: 50
+    question: "How much CPU and memory does each one need?"
+    type: text
+    if_unknown: >
+      If you're not sure, tell me what the workload does and I'll suggest a starting size —
+      it can be changed later, unlike the network.
+  - id: data_disks
+    order: 60
+    question: "Do they need additional data disks beyond the OS disk?"
+    type: yes_no
+  - id: access_need
+    order: 70
+    question: "Who needs to connect to them?"
+    type: multi_choice
+    options: [engineers_zpa, application_only, end_users]
+  - id: availability
+    order: 80
+    question: "Does the workload need to survive losing an availability zone?"
+    type: yes_no
+    if_unknown: >
+      Only helps if the application runs across multiple VMs. A single VM is a single point
+      of failure regardless of which zone it's in.
+  - id: environment
+    order: 90
+    question: "Which environment is this for?"
+    type: single_choice
+    options: [dev, tst, uat, prd, snd]
+  - id: data_classification
+    order: 100
+    question: "How would you classify the data on them?"
+    type: single_choice
+    options: [public, internal, confidential, restricted, restricted_sovereign, unsure]
+    default_if_unknown: confidential
+  - id: business_unit
+    order: 110
+    question: "Which business unit or project?"
+    type: text
+  - id: application_name
+    order: 120
+    question: "What's the application called?"
+    type: text
+  - id: owner_email
+    order: 130
+    question: "Who's the technical owner?"
+    type: email
+    prefill_from_session: true
+  - id: criticality
+    order: 140
+    question: "How critical is this to the business?"
+    type: single_choice
+    options: [low, medium, high, critical]
+  - id: want_diagram
+    order: 900
+    question: "Would you like a diagram of the network flow?"
+    type: yes_no
+    ask_last: true

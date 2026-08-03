@@ -1,0 +1,20 @@
+%% postgres_flexible_private
+flowchart LR
+    subgraph SPOKE["Spoke VNET — {VNET}"]
+        APP["{APP}<br/>AKS / VM / application"]
+        PE["snet-pe<br/>Private Endpoint<br/>postgresqlServer"]
+        APP --> PE
+    end
+    DNS["privatelink.postgres.database.azure.com<br/>linked to spoke"]
+    PG["PostgreSQL Flexible Server<br/>public access DISABLED<br/>CMK · TLS enforced"]
+    KV["Key Vault Premium<br/>RSA-HSM key"]
+    BV["Backup Vault<br/>point-in-time restore"]
+    PE ==> PG
+    PG -->|"encrypts with"| KV
+    PG -.-> BV
+    SPOKE -.->|"name resolution"| DNS
+    DNS -.-> PE
+    classDef sec fill:#0b3d2e,stroke:#1f9d63,color:#e8fff4
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    class PG,KV,BV sec
+    class PE,DNS net

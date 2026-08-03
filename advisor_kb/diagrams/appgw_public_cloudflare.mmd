@@ -1,0 +1,25 @@
+%% appgw_public_cloudflare
+flowchart LR
+    U["Internet users"]
+    subgraph L1["Layer 1 — Cloudflare"]
+        CF["{HOSTNAME}<br/>public DNS · TLS · WAF<br/>DDoS · bot filtering"]
+    end
+    subgraph L2["Layer 2 — Azure"]
+        NSG["NSG + WAF custom rule<br/>allow Cloudflare ranges ONLY"]
+        AGW["Application Gateway WAF v2<br/>Prevention mode · OWASP CRS<br/>TLS 1.2 · cert from Key Vault"]
+        NSG --> AGW
+    end
+    subgraph L3["Layer 3 — Backend (private)"]
+        BE["{BACKEND}<br/>no public IP"]
+    end
+    BLOCK["Direct-to-origin attempt<br/>DENIED"]
+    U --> CF
+    CF ==>|"443"| NSG
+    AGW --> BE
+    BLOCK -.->|"dropped"| NSG
+    classDef pub fill:#4d1f1f,stroke:#c04a4a,color:#ffe8e8
+    classDef warn fill:#4d3b0b,stroke:#bf922a,color:#fff8e8
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    class CF,AGW pub
+    class BLOCK warn
+    class NSG,BE net

@@ -1,0 +1,150 @@
+kb_version: "2.0.0"
+scope: environment_composer
+description: >
+  Intake for a whole environment rather than a single resource. Deliberately short — the user
+  is describing an environment, not filling in a form. Depth comes from the rules.
+
+conversation_rules:
+  - Open with what they want to achieve, not with a resource list.
+  - Ask ONE question at a time.
+  - Accept a natural-language inventory ("10 VMs, a cluster and a database") and parse it.
+  - Confirm the parsed inventory back before designing.
+  - Never ask about replication, encryption, TLS or private endpoints — those are standards.
+  - Ask about exposure early; it changes the whole architecture.
+
+questions:
+  - id: environment_intent
+    order: 5
+    question: "Tell me what you're building — what's the environment for?"
+    type: text
+    examples:
+      - "A development environment for a new application"
+      - "Production hosting for a customer-facing portal"
+
+  - id: subscription_available
+    order: 10
+    question: "Do you already have an Azure subscription for this?"
+    type: yes_no
+    stop_if:
+      condition: "answer == false"
+      message: >
+        You'll need a subscription first — please request one through the **HALO portal**.
+        Bring the subscription ID back and I'll continue from here with everything you've
+        already told me.
+
+  - id: environment
+    order: 20
+    question: "Which environment is this — development, test, UAT or production?"
+    type: single_choice
+    options: [dev, tst, uat, prd, snd]
+
+  - id: resource_inventory
+    order: 30
+    question: >
+      What do you need in it? Rough numbers are fine — for example "10 VMs, one Kubernetes
+      cluster and a managed database".
+    type: text_parsed
+    parse_into:
+      vm_count: integer
+      aks_count: integer
+      postgres_count: integer
+      storage_count: integer
+      appgw_count: integer
+      other_services: list
+    confirm_back: true
+    confirm_template: "Just to confirm, I've got: {parsed_inventory}. Anything missing or wrong?"
+
+  - id: exposure
+    order: 40
+    question: "Will any part of this need to be reachable from the internet?"
+    type: single_choice
+    why_we_ask: "This is the single biggest fork in the architecture."
+    options:
+      - {value: internal_only, label: "No — internal users and systems only"}
+      - {value: public_internet, label: "Yes — a public website, portal or API"}
+      - {value: unsure, label: "I'm not sure yet"}
+    if_unknown: >
+      If people outside Presight need to reach it in a browser, it's public. If it's staff or
+      engineers who can connect through ZPA, it's internal.
+
+  - id: public_details
+    order: 45
+    question: "What hostname will it be published on, and who's the audience?"
+    type: text
+    skip_if: "exposure != public_internet"
+
+  - id: vm_purpose
+    order: 50
+    question: "What will the VMs be doing?"
+    type: text
+    skip_if: "vm_count == 0"
+
+  - id: aks_scale
+    order: 60
+    question: "Roughly how many nodes do you expect the cluster to run?"
+    type: text
+    skip_if: "aks_count == 0"
+    why_we_ask: "Node count drives the AKS subnet size, which cannot be changed later."
+    if_unknown: >
+      A starting point is fine. I'll size the subnet with headroom so the cluster can grow
+      without re-addressing.
+
+  - id: gpu_required
+    order: 65
+    question: "Does the cluster need GPUs?"
+    type: yes_no
+    skip_if: "aks_count == 0"
+
+  - id: database_criticality
+    order: 70
+    question: "Does the database need high availability, or is a single instance acceptable?"
+    type: single_choice
+    skip_if: "postgres_count == 0"
+    options:
+      - {value: single, label: "Single instance is fine"}
+      - {value: zone_redundant, label: "Zone-redundant high availability"}
+      - {value: unsure, label: "Not sure"}
+    if_unknown: >
+      For development, a single instance is normal. For production, zone-redundant HA is the
+      usual choice — it roughly doubles the compute cost, so it's worth being deliberate.
+
+  - id: data_classification
+    order: 80
+    question: "How would you classify the data in this environment?"
+    type: single_choice
+    options: [public, internal, confidential, restricted, restricted_sovereign, unsure]
+    default_if_unknown: confidential
+
+  - id: business_unit
+    order: 90
+    question: "Which business unit or project is this for?"
+    type: text
+
+  - id: application_name
+    order: 100
+    question: "What's the application or platform called?"
+    type: text
+
+  - id: owner_email
+    order: 110
+    question: "Who's the technical owner?"
+    type: email
+    prefill_from_session: true
+
+  - id: criticality
+    order: 120
+    question: "How critical is this to the business?"
+    type: single_choice
+    options: [low, medium, high, critical]
+
+  - id: target_date
+    order: 130
+    question: "When do you need this working?"
+    type: text
+    why_we_ask: "Tells me whether the long-lead items need flagging urgently."
+
+  - id: want_diagram
+    order: 900
+    question: "Would you like an architecture diagram showing how it all connects?"
+    type: yes_no
+    ask_last: true

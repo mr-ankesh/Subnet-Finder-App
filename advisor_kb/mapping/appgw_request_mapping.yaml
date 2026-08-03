@@ -1,0 +1,83 @@
+kb_version: "2.0.0"
+service: app_gateway
+target_request_type: app_gateway
+description: >
+  Maps advisor answers onto an Application Gateway request. PREFILL ONLY.
+  NOTE: if RequestType.APP_GATEWAY does not exist yet, this mapping is the specification for
+  its field set — build the request type before wiring this in.
+
+prefill_contract:
+  method: Server-side advisor session; open the form with ?advisor_session=<id>
+  auto_submit: false
+  editable: All prefilled fields remain editable.
+
+locked_fields:
+  sku: {value: WAF_v2}
+  waf_mode_at_golive: {value: Prevention}
+  min_tls_version: {value: "TLS1_2"}
+  backend_public_ip: {value: false}
+  http_to_https_redirect: {value: true}
+
+mapped_fields:
+  frontend_type: {from: derived.frontend_type}
+  public_hostname: {from: public_hostname, include_if: "exposure == public_internet"}
+  backend_type: {from: backend}
+  routing_mode: {from: routing_need}
+  source_restriction:
+    value: cloudflare_ranges
+    include_if: "exposure == public_internet"
+    note: NSG and WAF custom rule restrict inbound 443 to Cloudflare's published ranges.
+  region: {from: region, default: uaenorth}
+  business_justification:
+    compose_from: [application_name, exposure, audience]
+    template: >
+      Application Gateway for {application_name}. Exposure: {exposure_label}.
+      {audience_clause}
+      Recommended by AlMadar AI Architecture Advisor (pattern: {pattern_id}, KB {kb_version}).
+
+tag_mappings:
+  ApplicationName: {from: application_name}
+  BusinessUnit: {from: business_unit}
+  Criticality: {from: criticality}
+  DataClassification: {from: data_classification, transform: title_case}
+  Environment: {from: environment, transform: expand_abbreviation}
+  Owner: {from: owner_email}
+  Approver: {from: session.manager_email, optional: true}
+  ServiceClass: {skip: true, reason: Mapping unconfirmed — manual entry}
+  Sovereignty: {value: Standard}
+
+user_must_provide:
+  - {field: subscription_id, blocking: true}
+  - {field: resource_group, blocking: true}
+  - {field: gateway_name, blocking: true}
+  - {field: vnet_name, blocking: true}
+  - {field: appgw_subnet_name, blocking: true, hint: "Dedicated subnet, nothing else in it"}
+  - {field: certificate_keyvault_ref, blocking: true, hint: Reference from Key Vault so it rotates cleanly}
+  - {field: backend_address, blocking: true}
+  - {field: health_probe_path, blocking: false}
+
+follow_on_requests:
+  - order: 1
+    request_type: other
+    label: InfoSec public exposure onboarding
+    include_if: "exposure == public_internet"
+    blocking_for: public_dns_record
+    prefill: {description: compose_from_infosec_brief_template}
+    note: Raise first. Everything else proceeds in parallel; go-live waits on this.
+  - order: 2
+    request_type: firewall_policy
+    label: "NSG / WAF rule — restrict inbound to Cloudflare ranges"
+    include_if: "exposure == public_internet"
+  - order: 3
+    request_type: dns
+    label: "DNS — private A record for the backend"
+    always_required: true
+  - order: 4
+    request_type: other
+    label: Cloudflare DNS record and origin configuration
+    include_if: "exposure == public_internet"
+    gated_by: InfoSec approval
+  - order: 5
+    request_type: zpa_rnd_routing
+    label: "ZPA Routing — user access to the internal gateway"
+    include_if: "exposure == internal_only"

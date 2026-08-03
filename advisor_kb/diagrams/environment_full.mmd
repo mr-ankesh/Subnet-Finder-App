@@ -1,0 +1,57 @@
+%% Composer: full environment. {ENV} {VNET_CIDR}
+%% OMIT the NET subgraph and CF/AGW entirely when exposure == internal_only
+flowchart TB
+    subgraph NET["Internet"]
+        USER["External users"]
+        CF["Cloudflare<br/>public DNS · TLS · WAF · DDoS"]
+        USER --> CF
+    end
+    subgraph STAFF["Presight staff & engineers"]
+        ENG["Engineers"]
+        ZPA["ZPA connector"]
+        ENG --> ZPA
+    end
+    subgraph HUB["Connectivity hub VNET"]
+        FW["Azure Firewall"]
+        DNSZ["Private DNS zones<br/>privatelink.*"]
+    end
+    subgraph SPOKE["Spoke VNET — {ENV} · {VNET_CIDR}"]
+        subgraph SN1["snet-appgw"]
+            AGW["Application Gateway WAF v2<br/>PUBLIC IP · Cloudflare ranges only"]
+        end
+        subgraph SN2["snet-aks"]
+            AKS["AKS cluster<br/>private API · Azure CNI"]
+        end
+        subgraph SN3["snet-vm"]
+            VMS["VM(s)<br/>no public IP"]
+        end
+        subgraph SN4["snet-pe"]
+            PE["Private endpoints"]
+        end
+    end
+    subgraph PAAS["Azure PaaS — all private"]
+        PG["PostgreSQL<br/>Flexible Server"]
+        KV["Key Vault Premium<br/>RSA-HSM · CMK"]
+        ACR["Container Registry"]
+        SA["Storage Account<br/>ZRS · CMK"]
+    end
+    CF ==>|"443 only"| AGW
+    AGW --> AKS
+    AGW --> VMS
+    ZPA --> SPOKE
+    AKS --> PE
+    VMS --> PE
+    PE ==> PG
+    PE ==> KV
+    PE ==> ACR
+    PE ==> SA
+    SPOKE -.->|"peering"| HUB
+    SPOKE -.->|"0.0.0.0/0"| FW
+    SPOKE -.->|"name resolution"| DNSZ
+    DNSZ -.-> PE
+    classDef pub fill:#4d1f1f,stroke:#c04a4a,color:#ffe8e8
+    classDef sec fill:#0b3d2e,stroke:#1f9d63,color:#e8fff4
+    classDef net fill:#0b2f4d,stroke:#2a7fbf,color:#e8f4ff
+    class CF,AGW pub
+    class PG,KV,ACR,SA sec
+    class PE,DNSZ,FW,SN1,SN2,SN3,SN4 net

@@ -1,0 +1,80 @@
+kb_version: "2.0.0"
+service: app_gateway
+description: >
+  Deterministic rules for Application Gateway. The exposure answer is the single most
+  consequential branch in the whole advisor.
+execution_order: [blockers, escalations, derivations, pattern_selection, deviations, warnings]
+
+blockers:
+  - id: no_subscription
+    when: "subscription_available == false"
+    message: >
+      You'll need an Azure subscription first — please request one through the **HALO
+      portal**, then come back with the ID.
+    halt: true
+  - id: sovereign_data
+    when: "data_classification == restricted_sovereign"
+    message: >
+      Sovereign or regulator-controlled data follows the Confidential Corp path. I'll package
+      what you've told me for the platform and security teams.
+    halt: true
+  - id: public_without_cloudflare
+    when: "exposure == public_internet and user_requests_direct_public_ip == true"
+    message: >
+      A public IP that isn't behind Cloudflare isn't an approved pattern. A previous Presight
+      security assessment found an origin IP reachable directly, bypassing the WAF entirely —
+      the Cloudflare-only allow-list exists specifically to prevent that.
+    halt: true
+
+escalations:
+  - id: infosec_onboarding
+    when: "exposure == public_internet"
+    flag: INFOSEC_PUBLIC_EXPOSURE
+    blocking_for: public_dns_record
+    blocking_note: >
+      Blocks publication of the public DNS record. Does NOT block designing, building or
+      internally testing the gateway and the application behind it.
+    message_ref: infosec_gate.yaml
+
+derivations:
+  - {when: "exposure == public_internet", set: "pattern = appgw_public_cloudflare; infosec_gate = true; public_ip_count = 1; frontend_type = public"}
+  - {when: "exposure == internal_only", set: "pattern = appgw_internal; infosec_gate = false; public_ip_count = 0; frontend_type = private"}
+  - {when: "exposure == public_internet", set: "source_restriction = cloudflare_ranges"}
+  - {when: "backend == aks", set: "aks_ingress = internal_load_balancer"}
+
+pattern_selection:
+  overrides:
+    - {when: "exposure == public_internet", select: appgw_public_cloudflare}
+    - {when: "exposure == internal_only", select: appgw_internal}
+  tiebreak_questions:
+    - when: "exposure == unsure"
+      ask: >
+        If people outside Presight need to open it in a browser, it's public. If it's staff
+        or engineers connecting through ZPA, it's internal. Which is it?
+
+warnings:
+  - id: waf_mode
+    when: "always"
+    message: >
+      Start the WAF in Detection to tune out false positives, then switch to Prevention
+      before go-live. Don't stay in Detection — it logs attacks without blocking them.
+  - id: cert_ownership
+    when: "always"
+    message: >
+      Give the TLS certificate a named owner and an expiry reminder. Expired certificates on
+      a public gateway are one of the most common self-inflicted outages.
+  - id: cf_range_drift
+    when: "exposure == public_internet"
+    message: >
+      Cloudflare's published IP ranges change. The allow-list needs an owner and a refresh
+      cadence, or it silently starts dropping legitimate traffic.
+  - id: appgw_subnet
+    when: "always"
+    message: >
+      Application Gateway needs a dedicated subnet nothing else uses. Size it for maximum
+      autoscale — /24 is the comfortable default.
+  - id: appgw_udr_caution
+    when: "always"
+    message: >
+      Application Gateway v2 subnets have constraints on forcing 0.0.0.0/0 through a firewall.
+      Confirm the supported configuration before applying the standard spoke UDR to it.

@@ -1,0 +1,69 @@
+kb_version: "2.0.0"
+id: vm_workload_standard
+name: Application VM(s) — Private
+service: vm_create
+status: approved
+summary: >
+  One or more IaaS virtual machines in an onboarded spoke subnet. No public IP, egress via
+  the hub firewall, CMK-encrypted disks, backed up to the subscription's Recovery Services Vault.
+when_to_use:
+  - applications not packaged as containers
+  - lift-and-shift of an existing server workload
+  - databases or middleware that must run on a managed OS
+  - jump hosts, build agents, or self-managed clusters
+not_for:
+  - containerised workloads             -> aks_private_standard
+  - managed PostgreSQL                  -> postgres_flexible_private
+  - anything needing a public endpoint  -> appgw_public_cloudflare in front
+match:
+  required: {workload_shape: [vm_based]}
+  preferred: {consumer: [application, internal_app, database_self_managed]}
+  disqualify: {data_classification: [restricted_sovereign]}
+design:
+  os_options: [Ubuntu 24.04 LTS, Ubuntu 22.04 LTS, Windows Server 2025, Windows Server 2022]
+  sizing_guidance: >
+    Right-size from a measured requirement. D-series general purpose, E-series memory-heavy,
+    F-series compute-heavy. Reserved instances materially reduce cost for permanent workloads.
+  public_ip: never
+  nic: One per VM in the workload subnet; no public IP attached
+  nsg: The subnet's NSG applies; no per-VM NSG created
+  disks:
+    os_disk: Premium SSD, CMK-encrypted
+    data_disks: Premium SSD where IOPS matter; Standard SSD otherwise
+    encryption: CMK via Key Vault Premium and a user-assigned managed identity
+  availability:
+    zones: Spread across availability zones where the workload supports it
+    note: >
+      Zone-redundancy only helps if the application tolerates a node disappearing. A single
+      VM in a zone is still a single point of failure.
+  access:
+    admin: SSH key for Linux; no passwords stored anywhere in the portal
+    engineer_access: Via ZPA, not a public IP
+  patching: Azure Update Manager
+  monitoring: {defender_for_servers: enabled}
+  backup: {vault_type: Recovery Services Vault, policy: Platform baseline VM backup policy}
+  multi_vm_naming: "<base>-001, -002, … zero-padded; identical configuration per VM"
+security_floor:
+  public_ip: false
+  disk_encryption: CMK
+  nsg_on_subnet: required
+  default_route_via_firewall: true
+  gateway_route_propagation: disabled
+  ssh_key_only: true
+required_requests:
+  - {order: 1, type: vnet_new, label: New VNET / New Subnet, condition: no onboarded workload subnet yet}
+  - {order: 2, type: vm_create, label: Virtual Machine(s)}
+  - {order: 3, type: dns, label: "DNS — A record(s) in the private zone", condition: VMs need to be reachable by name}
+  - {order: 4, type: firewall_policy, label: Firewall rules for egress, condition: workload needs specific outbound destinations}
+  - {order: 5, type: zpa_rnd_routing, label: ZPA Routing, condition: engineers or users need to reach the VMs}
+prerequisites:
+  - An Azure subscription. If absent, request it from the HALO portal first.
+  - An onboarded spoke VNET and subnet.
+  - Key Vault Premium with an RSA-HSM key and a user-assigned managed identity.
+  - An SSH public key for Linux VMs.
+diagram: vm_workload.mmd
+cost_band: "$$"
+source:
+  - {doc: G42-AzurePlatformDesign-v1.2, section: "2.5.6 Defender for Servers / 2.5.7 VM Disk Encryption"}
+  - {doc: G42-Azure Platform Design - Executive, section: Azure Backup Approach, states: "Recovery Services Vault covers Azure VMs, SQL in Azure VMs and Azure Files."}
+  - {doc: Azure Spoke Onboarding Standards, states: "Default route via Firewall; disable gateway route propagation when UDRs applied."}

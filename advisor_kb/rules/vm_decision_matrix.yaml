@@ -1,0 +1,58 @@
+kb_version: "2.0.0"
+service: vm_create
+description: Deterministic rules for VM(s). Shared standards live in platform_constants.yaml.
+execution_order: [blockers, escalations, derivations, pattern_selection, deviations, warnings]
+
+blockers:
+  - id: no_subscription
+    when: "subscription_available == false"
+    message: >
+      You'll need an Azure subscription first — please request one through the **HALO
+      portal**. Bring the ID back and I'll continue from here.
+    halt: true
+  - id: sovereign_data
+    when: "data_classification == restricted_sovereign"
+    message: >
+      Sovereign or regulator-controlled workloads follow the Confidential Corp path. I'll
+      package what you've told me for the platform and security teams.
+    halt: true
+
+escalations:
+  - id: large_fleet
+    when: "vm_count > 20"
+    flag: FLEET_SIZE_REVIEW
+    message: >
+      That's a sizeable fleet. Worth a conversation about whether a scale set or AKS would
+      serve better — 20+ individually-managed VMs is a lot of patching surface.
+  - id: public_requested
+    when: "'end_users' in access_need and exposure == public_internet"
+    flag: INFOSEC_PUBLIC_EXPOSURE
+    message: >
+      VMs never get public IPs at Presight. Public access goes through an Application Gateway
+      behind Cloudflare, with formal InfoSec onboarding.
+    add_service: app_gateway
+
+derivations:
+  - {when: "'engineers_zpa' in access_need or 'end_users' in access_need", set: "zpa_routing_required = true"}
+  - {when: "os_family == linux", set: "auth_mode = ssh_key"}
+  - {when: "os_family == windows", set: "auth_mode = admin_password_at_deploy"}
+  - {when: "vm_count > 1", set: "naming = suffixed"}
+  - {when: "always", set: "naming = suffixed"}
+
+pattern_selection:
+  default: vm_workload_standard
+
+warnings:
+  - id: single_vm_ha
+    when: "availability == true and vm_count == 1"
+    message: >
+      Zone redundancy only helps if the application runs across multiple VMs. A single VM is
+      a single point of failure regardless of which zone it's in.
+  - id: no_public_ip
+    when: "always"
+    message: "VMs never get public IPs. Engineer access is over ZPA."
+  - id: reserved_instances
+    when: "environment == prd"
+    message: >
+      For permanently-running production VMs, reserved instances materially reduce cost.
+      Worth raising with whoever owns the budget.

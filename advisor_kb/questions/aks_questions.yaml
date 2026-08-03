@@ -1,0 +1,79 @@
+kb_version: "2.0.0"
+service: aks_cluster
+conversation_rules:
+  - Ask ONE question at a time, in plain English.
+  - Never ask about private API server, network policy or CMK — those are standards.
+questions:
+  - id: subscription_available
+    order: 10
+    question: "Do you already have an Azure subscription for this?"
+    type: yes_no
+    stop_if:
+      condition: "answer == false"
+      message: >
+        You'll need a subscription first — please request one through the **HALO portal**,
+        then come back with the ID and I'll continue from here.
+  - id: workload_description
+    order: 20
+    question: "What will run on the cluster?"
+    type: text
+  - id: node_count
+    order: 30
+    question: "Roughly how many nodes do you expect to run?"
+    type: text
+    why_we_ask: "Node count drives the subnet size, which cannot be changed once the cluster is deployed."
+    if_unknown: "A starting point is fine — I'll size with headroom so you can grow without re-addressing."
+  - id: gpu_required
+    order: 40
+    question: "Does the workload need GPUs?"
+    type: yes_no
+    if_unknown: >
+      If you're running inference or training on your own models, probably yes. If you're
+      calling Azure OpenAI, no.
+  - id: exposure
+    order: 50
+    question: "Will anything on the cluster need to be reachable from the internet?"
+    type: single_choice
+    options: [internal_only, public_internet, unsure]
+  - id: persistent_storage
+    order: 60
+    question: "Will workloads need persistent storage?"
+    type: yes_no
+  - id: database_needed
+    order: 70
+    question: "Does it need a database?"
+    type: yes_no
+  - id: environment
+    order: 80
+    question: "Which environment is this for?"
+    type: single_choice
+    options: [dev, tst, uat, prd, snd]
+  - id: data_classification
+    order: 90
+    question: "How would you classify the data?"
+    type: single_choice
+    options: [public, internal, confidential, restricted, restricted_sovereign, unsure]
+    default_if_unknown: confidential
+  - id: business_unit
+    order: 100
+    question: "Which business unit or project?"
+    type: text
+  - id: application_name
+    order: 110
+    question: "What's the application called?"
+    type: text
+  - id: owner_email
+    order: 120
+    question: "Who's the technical owner?"
+    type: email
+    prefill_from_session: true
+  - id: criticality
+    order: 130
+    question: "How critical is this to the business?"
+    type: single_choice
+    options: [low, medium, high, critical]
+  - id: want_diagram
+    order: 900
+    question: "Would you like a diagram of the network flow?"
+    type: yes_no
+    ask_last: true

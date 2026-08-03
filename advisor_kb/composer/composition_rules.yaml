@@ -1,0 +1,232 @@
+kb_version: "2.0.0"
+scope: environment_composer
+description: >
+  Cross-service rules for composing a whole environment. These run AFTER each individual
+  service pattern has been selected, and they are what turn a list of resources into an
+  architecture.
+
+execution_order:
+  - environment_blockers
+  - infer_missing_components
+  - exposure_analysis
+  - network_plan
+  - dependency_graph
+  - shared_services
+  - environment_deviations
+  - environment_warnings
+
+# ─────────────────────────────────────────────────────────────
+environment_blockers:
+  - id: no_subscription
+    when: "subscription_available == false"
+    message: >
+      You'll need an Azure subscription before any of this can be provisioned. Please request
+      one through the **HALO portal**. Bring the subscription ID back here and I'll pick up
+      exactly where we left off — nothing you've told me is lost.
+    halt: true
+
+  - id: sovereign_environment
+    when: "data_classification == restricted_sovereign"
+    message: >
+      Workloads under sovereignty or regulatory control follow the Confidential Corp path,
+      which has its own management group, policy set and approval route. I can't design that
+      here. I'll package up everything you've told me for the platform and security teams so
+      you don't have to start over.
+    halt: true
+
+# ─────────────────────────────────────────────────────────────
+# Users list what they know about. They rarely list the plumbing.
+# ─────────────────────────────────────────────────────────────
+infer_missing_components:
+  - id: key_vault_always
+    when: "always"
+    add: keyvault_premium_private
+    reason: >
+      CMK encryption, TLS certificates and application secrets all need a Key Vault Premium.
+      Everything else depends on it, so it is built first.
+    tell_user: >
+      I've added a Key Vault — it holds the encryption keys and certificates the other
+      resources need, so it has to exist before them.
+
+  - id: acr_for_aks
+    when: "aks_count > 0"
+    add: container_registry
+    reason: AKS pulls images from a private registry over a private endpoint.
+    tell_user: >
+      I've added a container registry, since your AKS cluster needs somewhere private to pull
+      images from.
+
+  - id: pe_subnet
+    when: "any PaaS service present"
+    add: snet_pe
+    reason: Every PaaS service is reached over a private endpoint, and those need a subnet.
+
+  - id: storage_for_aks
+    when: "aks_count > 0 and storage_count == 0"
+    ask: >
+      Will the cluster need persistent storage — a storage account for artefacts, logs or
+      persistent volumes? Most do.
+    reason: Do not silently add storage; ask, because it changes the request list.
+
+  - id: appgw_for_public
+    when: "exposure == public_internet and appgw_count == 0"
+    add: appgw_public_cloudflare
+    reason: >
+      Public exposure at Presight goes through Application Gateway behind Cloudflare. There is
+      no other approved path.
+    tell_user: >
+      Public access means an Application Gateway with WAF, sitting behind Cloudflare — I've
+      added it, and it comes with an InfoSec step I'll explain.
+
+  - id: bastion_or_zpa
+    when: "vm_count > 0"
+    default: ZPA
+    reason: >
+      Engineers need a way to reach the VMs. ZPA is the standard path; Bastion is the
+      exception and needs justification.
+
+# ─────────────────────────────────────────────────────────────
+exposure_analysis:
+  - id: fully_private
+    when: "exposure == internal_only"
+    outcome:
+      public_ips: 0
+      infosec_gate: false
+      access_path: ZPA or VPN, with private DNS zones linked to the hub
+    message: >
+      Everything stays private. Users and engineers reach it over ZPA, name resolution comes
+      from private DNS zones linked to the hub, and no component has a public IP.
+
+  - id: public_application
+    when: "exposure == public_internet"
+    outcome:
+      public_ips: 1
+      public_ip_location: Application Gateway frontend only
+      infosec_gate: true
+      infosec_blocking: true
+      layers: [Cloudflare, Application Gateway WAF v2, private backend]
+    enforce:
+      - Exactly one public IP in the whole environment, on the Application Gateway.
+      - Backends (AKS, VMs, PaaS) never get a public IP.
+      - Application Gateway NSG and WAF accept inbound only from Cloudflare IP ranges.
+      - WAF in Prevention mode at go-live.
+      - Public DNS record is owned and approved by InfoSec.
+    message_ref: infosec_gate.yaml
+
+  - id: mixed_exposure
+    when: "some components public, others internal"
+    outcome:
+      guidance: >
+        Expose only the front door. If one API needs to be public, that does not make the
+        database, the cluster or the storage public — they stay behind the gateway.
+      infosec_gate: true
+
+# ─────────────────────────────────────────────────────────────
+network_plan:
+  method: Apply network_sizing.yaml arithmetically. Show the working.
+  outputs:
+    - vnet_count and recommended VNET size
+    - a subnet table: name, purpose, recommended size, usable addresses, sizing basis
+    - hub integration requirement (always yes for a new spoke)
+    - the list of private DNS zones to link
+    - the list of private endpoints to create
+  show_working: true
+  show_working_reason: >
+    TechOps approves the CIDR. A number with no derivation behind it gets sent back.
+
+# ─────────────────────────────────────────────────────────────
+dependency_graph:
+  description: What must exist before what. Drives request ordering.
+  edges:
+    - {from: subscription, to: everything, type: hard}
+    - {from: vnet_and_subnets, to: [aks, vm, postgres, storage, appgw, private_endpoints], type: hard}
+    - {from: hub_peering, to: [dns_resolution, egress, zpa_access], type: hard}
+    - {from: key_vault, to: [cmk_encryption, tls_certificates], type: hard}
+    - {from: private_endpoint, to: dns_zone_link, type: hard}
+    - {from: dns_zone_link, to: application_connectivity, type: hard}
+    - {from: acr, to: aks_image_pull, type: hard}
+    - {from: infosec_approval, to: public_dns_record, type: hard_blocking}
+    - {from: appgw, to: public_traffic, type: hard}
+    - {from: gpu_quota, to: gpu_node_pool, type: hard}
+  critical_path_note: >
+    The two longest lead-time items are almost always InfoSec onboarding (for anything public)
+    and GPU quota. Both should be raised on day one, in parallel with everything else.
+
+# ─────────────────────────────────────────────────────────────
+shared_services:
+  rule: >
+    Do not propose a new instance of a shared service if one already exists for the
+    subscription or BU. Ask whether it exists rather than assuming either way.
+  services:
+    - {service: Key Vault Premium, granularity: one per environment}
+    - {service: Container Registry, granularity: one per environment, or shared across environments}
+    - {service: Log Analytics Workspaces, granularity: two per BU — Operational and Security, already_exists: true}
+    - {service: Recovery Services Vault, granularity: one per subscription, already_exists: true}
+    - {service: Backup Vault, granularity: one per subscription, already_exists: true}
+    - {service: Private endpoint subnet, granularity: one per VNET}
+    - {service: Private DNS zones, granularity: exist in the hub, linked per spoke, already_exists: true}
+
+# ─────────────────────────────────────────────────────────────
+environment_deviations:
+  - id: non_prod_ha
+    when: "environment in [dev, tst, snd] and ha_requested == true"
+    state: >
+      Zone-redundant HA roughly doubles database compute cost. It is normal to run
+      non-production without it — flagging so the cost is a decision, not a surprise.
+
+  - id: prod_no_ha
+    when: "environment == prd and ha_requested == false"
+    state: >
+      This is a production environment without zone-redundant HA on the database. That may be
+      a deliberate cost decision, but it should be an explicit one.
+
+  - id: oversized_request
+    when: "computed_vnet_size larger than /21"
+    state: >
+      This environment needs a very large address space. Worth a conversation with TechOps
+      about whether it should be split across subscriptions instead of one large spoke.
+
+# ─────────────────────────────────────────────────────────────
+environment_warnings:
+  - id: dns_not_optional
+    when: "always"
+    message: >
+      Every private endpoint needs its DNS zone linked to the VNET. Without the link, clients
+      resolve the public name, get a public IP, and the connection fails — even though the
+      private endpoint exists and looks healthy.
+
+  - id: cidr_approval
+    when: "always"
+    message: >
+      The CIDR sizes are a proposal. TechOps allocates and approves the actual range to
+      guarantee no overlap with the hub, VPN, ZPA or any existing spoke.
+
+  - id: subnet_immutable
+    when: "always"
+    message: >
+      Subnets cannot be resized once resources are deployed into them. The sizes here include
+      growth headroom for that reason.
+
+  - id: aks_cni_sizing
+    when: "aks_count > 0"
+    message: >
+      AKS with Azure CNI consumes one VNET IP per pod, not per node. That is why the AKS
+      subnet is much larger than the node count alone would suggest.
+
+  - id: gpu_quota_lead_time
+    when: "gpu_required == true"
+    message: >
+      GPU quota is not granted by default and is often the longest lead-time item in the
+      build. Raise it first.
+
+  - id: cert_ownership
+    when: "appgw_count > 0"
+    message: >
+      Give the TLS certificate a named owner and an expiry reminder. Expired certificates on a
+      public gateway are one of the most common self-inflicted outages.
+
+  - id: cloudflare_range_drift
+    when: "exposure == public_internet"
+    message: >
+      Cloudflare's published IP ranges change over time. The origin allow-list needs an owner
+      and a refresh cadence, or it drifts and starts dropping legitimate traffic.

@@ -1,0 +1,70 @@
+kb_version: "2.0.0"
+service: postgres_create
+target_request_type: postgres_create
+description: >
+  Maps advisor answers onto a PostgreSQL request. PREFILL ONLY.
+  NOTE: if RequestType.POSTGRES_CREATE does not exist yet, this mapping is the specification
+  for its field set — build the request type before wiring this in.
+
+prefill_contract:
+  method: Server-side advisor session; open the form with ?advisor_session=<id>
+  auto_submit: false
+  editable: All prefilled fields remain editable.
+
+locked_fields:
+  public_network_access: {value: Disabled, reason: Azure Policy denies public PaaS endpoints}
+  enable_private_endpoint: {value: true}
+  tls_enforced: {value: true}
+  encryption_type: {value: CMK}
+  identity_type: {value: UserAssigned}
+
+mapped_fields:
+  high_availability: {from: derived.ha_requirement}
+  compute_tier: {from: derived.compute_tier_hint}
+  private_endpoint_sub_resource: {value: postgresqlServer}
+  region: {from: region, default: uaenorth}
+  backup_retention_days: {from: rpo_rto, transform: derive_retention_days}
+  storage_auto_grow: {value: true}
+  purpose: {from: purpose}
+  business_justification:
+    compose_from: [purpose, consumer, size_estimate, rpo_rto]
+    template: >
+      {purpose} for {application_name}, accessed by {consumer_labels}. Approximate size
+      {size_estimate}. Recovery objective: {rpo_rto}.
+      Recommended by AlMadar AI Architecture Advisor (pattern: {pattern_id}, KB {kb_version}).
+
+tag_mappings:
+  ApplicationName: {from: application_name}
+  BusinessUnit: {from: business_unit}
+  Criticality: {from: criticality}
+  DataClassification: {from: data_classification, transform: title_case}
+  Environment: {from: environment, transform: expand_abbreviation}
+  Owner: {from: owner_email}
+  Approver: {from: session.manager_email, optional: true}
+  ServiceClass: {skip: true, reason: Mapping unconfirmed — manual entry}
+  Sovereignty: {value: Standard}
+
+user_must_provide:
+  - {field: subscription_id, blocking: true}
+  - {field: resource_group, blocking: true}
+  - {field: server_name, blocking: true, hint: "Observed convention: rdspg<app><env>01"}
+  - {field: vnet_name, blocking: true}
+  - {field: subnet_name, blocking: true, hint: The private-endpoint subnet}
+  - {field: compute_sku, blocking: true}
+  - {field: storage_size_gb, blocking: true}
+  - {field: postgres_version, blocking: true, hint: Confirm the version is currently supported by Azure}
+  - {field: key_vault_name, blocking: true}
+  - {field: key_name, blocking: true}
+  - {field: admin_username, blocking: true}
+
+follow_on_requests:
+  - order: 1
+    request_type: dns
+    label: "DNS — link privatelink.postgres.database.azure.com to your VNET"
+    always_required: true
+    prefill:
+      request_kind: link_hub_zone_to_vnet
+      zone_name: privatelink.postgres.database.azure.com
+    reason: >
+      Without the zone link, the client resolves the public name and the connection fails
+      even though the private endpoint exists.
