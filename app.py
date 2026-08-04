@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, g
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, g, send_file
 from functools import wraps
 import ipaddress
 import logging
@@ -814,6 +814,179 @@ def admin_settings_reset():
     value = "" if spec["secret"] else raw
     return jsonify({"success": True, "key": key, "value": value, "source": source,
                     "is_set": bool(raw) if spec["secret"] else None})
+
+
+# ── Advisor Knowledge Base management (DB-override storage for advisor_kb/) ─
+#
+# No route here ever mutates the KB except through validate -> activate: the
+# browser re-submits the SAME zip on /activate (never a server-side stash
+# keyed between the two calls) so activation re-validates from scratch —
+# correct under 3 replicas (no in-process affinity needed between the two
+# calls) and closes any TOCTOU gap between "shown a diff" and "confirmed."
+# There is no route that accepts raw YAML/JSON to mutate the KB directly.
+
+def _kb_active_files() -> dict:
+    """The currently active KB's files — from the DB-stored version if one
+    has ever been activated, else read straight off disk. Used for
+    diffing/downloading the 'current' side."""
+    import advisor.catalog_loader as catalog_loader
+    import advisor.kb_store as kb_store
+    active = kb_store.get_active_version()
+    if active:
+        return kb_store.get_files(active["id"])
+    files = {}
+    for path in catalog_loader.KB_ROOT.rglob("*"):
+        if path.is_file():
+            try:
+                files[str(path.relative_to(catalog_loader.KB_ROOT))] = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+    return files
+
+
+def _kb_files_from_upload():
+    """Reads request.files['file'] as a zip, returns {relative_path:
+    content} for every text member (skips directory entries)."""
+    import io
+    import zipfile
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return None, "No file uploaded (expected a .zip)"
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(f.read()))
+    except zipfile.BadZipFile:
+        return None, "Uploaded file is not a valid zip archive"
+    files = {}
+    for name in zf.namelist():
+        if name.endswith("/"):
+            continue
+        # Zip entries may be rooted under a single top-level folder
+        # (advisor_kb/catalog/x.yaml) or not (catalog/x.yaml) — normalize by
+        # stripping a single leading path segment when every entry shares one.
+        files[name] = zf.read(name).decode("utf-8", errors="replace")
+    # Normalize a common single top-level wrapper directory, if present.
+    tops = {n.split("/", 1)[0] for n in files if "/" in n}
+    if len(tops) == 1:
+        prefix = next(iter(tops)) + "/"
+        if all(n.startswith(prefix) for n in files):
+            files = {n[len(prefix):]: c for n, c in files.items()}
+    return files, None
+
+
+@app.route("/admin/advisor-kb")
+@require_superadmin
+def admin_advisor_kb():
+    import advisor.catalog_loader as catalog_loader
+    import advisor.kb_store as kb_store
+    active_files = _kb_active_files()
+    grouped = {}
+    for path in sorted(active_files):
+        top = path.split("/", 1)[0] if "/" in path else "(root)"
+        grouped.setdefault(top, []).append(path)
+    stale = []
+    for path, content in active_files.items():
+        if not (path.startswith("catalog/") and path.endswith(".yaml")):
+            continue
+        try:
+            import yaml
+            data = yaml.safe_load(content)
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("id"):
+            stale.append({"pattern_id": data["id"], "last_verified": data.get("last_verified"),
+                          "verified_by": data.get("verified_by")})
+    stale.sort(key=lambda p: p["last_verified"] or "0000-00-00")
+    return render_template(
+        "advisor_kb.html",
+        grouped_files=grouped,
+        active_version=kb_store.get_active_version(),
+        versions=kb_store.list_versions(),
+        stale_patterns=stale,
+        stale_days=int(cfg.ADVISOR_KB_STALE_DAYS or 180),
+        kb_management_enabled=bool(cfg.ADVISOR_KB_MANAGEMENT_ENABLED),
+        drift_check_enabled=bool(cfg.ADVISOR_KB_DRIFT_CHECK_ENABLED),
+    )
+
+
+@app.route("/api/admin/advisor-kb/download")
+@require_superadmin
+def api_advisor_kb_download():
+    import io
+    import zipfile
+    files = _kb_active_files()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path, content in files.items():
+            zf.writestr(path, content)
+    buf.seek(0)
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name="advisor_kb.zip")
+
+
+@app.route("/api/admin/advisor-kb/validate", methods=["POST"])
+@require_superadmin
+def api_advisor_kb_validate():
+    import advisor.kb_diff as kb_diff
+    import advisor.kb_validate as kb_validate
+    files, err = _kb_files_from_upload()
+    if err:
+        return jsonify({"ok": False, "errors": [{"file": "", "key": "", "message": err}], "warnings": []}), 400
+    report = kb_validate.validate_kb(files)
+    diff = kb_diff.diff_kb(_kb_active_files(), files) if report["ok"] else None
+    return jsonify({"ok": report["ok"], "errors": report["errors"], "warnings": report["warnings"],
+                    "diff": diff})
+
+
+@app.route("/api/admin/advisor-kb/activate", methods=["POST"])
+@require_superadmin
+def api_advisor_kb_activate():
+    import advisor.kb_diff as kb_diff
+    import advisor.kb_store as kb_store
+    import advisor.kb_validate as kb_validate
+    import yaml
+    files, err = _kb_files_from_upload()
+    if err:
+        return jsonify({"ok": False, "errors": [{"file": "", "key": "", "message": err}]}), 400
+    # Re-validate from scratch — never trust a diff/report shown to the
+    # browser on an earlier /validate call as still true; the KB or the
+    # uploaded content could have changed in between.
+    report = kb_validate.validate_kb(files)
+    if not report["ok"]:
+        return jsonify({"ok": False, "errors": report["errors"], "warnings": report["warnings"]}), 400
+    notes = (request.form.get("notes") or "").strip()
+    glossary = files.get("glossary.yaml")
+    kb_version_label = "unspecified"
+    if glossary:
+        try:
+            parsed = yaml.safe_load(glossary)
+            if isinstance(parsed, dict) and parsed.get("kb_version"):
+                kb_version_label = str(parsed["kb_version"])
+        except Exception:
+            pass
+    diff = kb_diff.diff_kb(_kb_active_files(), files)
+    version_id = kb_store.activate_and_audit(
+        files, current_actor(), notes, report, kb_version_label,
+        diff_summary=jsonify(diff).get_data(as_text=True))
+    return jsonify({"ok": True, "version_id": version_id})
+
+
+@app.route("/api/admin/advisor-kb/versions")
+@require_superadmin
+def api_advisor_kb_versions():
+    import advisor.kb_store as kb_store
+    return jsonify({"ok": True, "versions": kb_store.list_versions()})
+
+
+@app.route("/api/admin/advisor-kb/revert/<int:version_id>", methods=["POST"])
+@require_superadmin
+def api_advisor_kb_revert(version_id):
+    import advisor.kb_store as kb_store
+    notes = (request.get_json(silent=True) or {}).get("notes", "")
+    try:
+        new_id = kb_store.revert_and_audit(version_id, current_actor(), notes)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+    return jsonify({"ok": True, "version_id": new_id})
 
 
 @app.route("/api/admin/settings/approvals-health")

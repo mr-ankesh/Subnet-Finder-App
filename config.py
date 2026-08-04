@@ -420,6 +420,22 @@ SETTINGS_SPEC = {
     "ADVISOR_RETENTION_DAYS": _f("advisor", "Conversation retention (days)", "0", type="int",
                                  help="Conversations older than this are no longer listed. 0 = keep indefinitely."),
 
+    # ── Advisor (knowledge base management) ──
+    "ADVISOR_KB_MANAGEMENT_ENABLED": _f("advisor", "Enable Knowledge Base management", "true", type="bool",
+                                        help="Gates the Settings -> Knowledge Base page and its routes "
+                                             "(super-admin only either way). Off hides the tab entirely; "
+                                             "the Advisor keeps using whatever KB is currently active."),
+    "ADVISOR_KB_STALE_DAYS": _f("advisor", "Pattern staleness threshold (days)", "180", type="int",
+                                help="A recommendation citing a pattern whose last_verified date is older "
+                                     "than this (or missing) gets a quiet staleness note appended."),
+    "ADVISOR_KB_DRIFT_CHECK_ENABLED": _f("advisor", "Enable KB drift check", "true", type="bool",
+                                         help="On: Settings -> Knowledge Base can run the LOCAL (KB vs. "
+                                              "config.py) and AZURE (live SKU/image checks) drift report."),
+    "ADVISOR_KB_DRIFT_SUBSCRIPTION_ID": _f("advisor", "Drift check subscription ID",
+                                           help="Subscription the AZURE-source drift checks (SKU/image "
+                                                "existence) run against, using the main Azure Credentials "
+                                                "already configured above — read-only lookups only."),
+
     # ── Authentication (Keycloak-ready; not enforced yet) ──
     "AUTH_PROVIDER":          _f("auth", "Auth provider", "local", options=["local", "keycloak"],
                                  help="'keycloak' only stores configuration for now — password login remains active until the OIDC flow is implemented."),

@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Advisor Knowledge Base | AlMadar 360{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width:1100px; padding:2rem 1rem;">
+
+  <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.75rem; margin-bottom:1.25rem;">
+    <div>
+      <h2 style="font-family:var(--font-heading); margin:0;"><i class="bi bi-journal-code"></i> Advisor Knowledge Base</h2>
+      <div style="color:var(--text-muted); font-size:.9rem;">
+        {% if active_version %}
+        Active version: <strong>{{ active_version.version_label }}</strong>
+        (kb_version {{ active_version.kb_version }}, uploaded by {{ active_version.uploaded_by }} on {{ active_version.uploaded_at }})
+        {% else %}
+        No version has ever been uploaded — the Advisor is reading directly from the files shipped in this container image.
+        {% endif %}
+      </div>
+    </div>
+    <a href="/api/admin/advisor-kb/download" class="btn btn-outline-light btn-sm"><i class="bi bi-download"></i> Download active KB (.zip)</a>
+  </div>
+
+  <!-- Upload -->
+  <div class="card" style="margin-bottom:1.5rem;">
+    <div class="card-body">
+      <h5><i class="bi bi-upload"></i> Upload a new Knowledge Base</h5>
+      <p style="color:var(--text-muted); font-size:.85rem;">
+        View, download, edit locally, upload. There is no in-browser YAML editor by design —
+        a textarea over executable configuration invites exactly the errors hardest to spot.
+      </p>
+      <div style="display:flex; gap:.75rem; align-items:center; flex-wrap:wrap;">
+        <input type="file" id="kb-upload-file" accept=".zip" class="form-control" style="max-width:320px;">
+        <input type="text" id="kb-upload-notes" placeholder="Notes (optional)" class="form-control" style="max-width:320px;">
+        <button class="btn btn-primary btn-sm" onclick="kbValidateUpload()"><i class="bi bi-check2-square"></i> Validate</button>
+      </div>
+      <div id="kb-validate-result" style="margin-top:1rem;"></div>
+    </div>
+  </div>
+
+  <!-- Version history -->
+  <div class="card" style="margin-bottom:1.5rem;">
+    <div class="card-body">
+      <h5><i class="bi bi-clock-history"></i> Version history</h5>
+      <table class="table table-sm" style="color:inherit;">
+        <thead><tr><th>Version</th><th>Status</th><th>Uploaded by</th><th>Uploaded at</th><th>Notes</th><th></th></tr></thead>
+        <tbody>
+          {% for v in versions %}
+          <tr>
+            <td>{{ v.version_label }}</td>
+            <td><span class="badge {{ 'bg-success' if v.status == 'active' else 'bg-secondary' }}">{{ v.status }}</span></td>
+            <td>{{ v.uploaded_by }}</td>
+            <td>{{ v.uploaded_at }}</td>
+            <td>{{ v.notes }}</td>
+            <td>
+              {% if v.status != 'active' %}
+              <button class="btn btn-outline-warning btn-sm" onclick="kbRevert({{ v.id }}, '{{ v.version_label }}')">Revert to this</button>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" style="color:var(--text-muted);">No versions uploaded yet — the Advisor is using the files shipped in the image.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Staleness -->
+  <div class="card" style="margin-bottom:1.5rem;">
+    <div class="card-body">
+      <h5><i class="bi bi-hourglass-split"></i> Pattern staleness (threshold: {{ stale_days }} days)</h5>
+      <table class="table table-sm" style="color:inherit;">
+        <thead><tr><th>Pattern</th><th>Last verified</th><th>Verified by</th></tr></thead>
+        <tbody>
+          {% for p in stale_patterns %}
+          <tr>
+            <td>{{ p.pattern_id }}</td>
+            <td>{{ p.last_verified or "never" }}</td>
+            <td>{{ p.verified_by or "—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Drift check -->
+  {% if drift_check_enabled %}
+  <div class="card" style="margin-bottom:1.5rem;">
+    <div class="card-body">
+      <h5><i class="bi bi-shuffle"></i> Drift check</h5>
+      <p style="color:var(--text-muted); font-size:.85rem;">
+        Compares the active KB against this app's own config.py defaults (LOCAL — no Azure call) and,
+        if a subscription is configured, live Azure SKU/image existence (AZURE — read-only). Mismatches
+        are advisory only and never auto-applied.
+      </p>
+      <button class="btn btn-outline-light btn-sm" onclick="kbRunDrift()"><i class="bi bi-play-fill"></i> Run drift check</button>
+      <div id="kb-drift-result" style="margin-top:1rem;"></div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- File browser -->
+  <div class="card">
+    <div class="card-body">
+      <h5><i class="bi bi-folder2-open"></i> Active KB (read-only browse)</h5>
+      {% for dir, paths in grouped_files.items() %}
+      <details style="margin-bottom:.5rem;">
+        <summary style="cursor:pointer; font-weight:600;">{{ dir }}/ ({{ paths|length }} files)</summary>
+        <ul style="font-size:.85rem; color:var(--text-muted);">
+          {% for p in paths %}<li>{{ p }}</li>{% endfor %}
+        </ul>
+      </details>
+      {% endfor %}
+    </div>
+  </div>
+
+</div>
+
+<script>
+let kbPendingFile = null;
+
+function kbEscape(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function kbValidateUpload() {
+  const fileInput = document.getElementById("kb-upload-file");
+  const resultDiv = document.getElementById("kb-validate-result");
+  if (!fileInput.files.length) { resultDiv.innerHTML = "<div class='text-warning'>Choose a .zip file first.</div>"; return; }
+  kbPendingFile = fileInput.files[0];
+  resultDiv.innerHTML = "<div>Validating…</div>";
+  const fd = new FormData();
+  fd.append("file", kbPendingFile);
+  const res = await fetch("/api/admin/advisor-kb/validate", {method: "POST", body: fd});
+  const data = await res.json();
+  let html = "";
+  if (!data.ok) {
+    html += "<div class='text-danger'><strong>Rejected — nothing persisted.</strong></div><ul>";
+    for (const e of data.errors) html += `<li><code>${kbEscape(e.file)}</code> (${kbEscape(e.key)}): ${kbEscape(e.message)}</li>`;
+    html += "</ul>";
+  } else {
+    html += "<div class='text-success'><strong>Valid.</strong> Review the diff below, then confirm.</div>";
+    if (data.warnings && data.warnings.length) {
+      html += "<div class='text-warning' style='margin-top:.5rem;'>Warnings:</div><ul>";
+      for (const w of data.warnings) html += `<li><code>${kbEscape(w.file)}</code> (${kbEscape(w.key)}): ${kbEscape(w.message)}</li>`;
+      html += "</ul>";
+    }
+    const d = data.diff || {};
+    html += "<div style='margin-top:.75rem;'><strong>Effects</strong></div>";
+    html += `<div>Patterns added: ${d.patterns_added.length}, removed: ${d.patterns_removed.length}, modified: ${d.patterns_modified.length}</div>`;
+    if (d.security_floor_changed && d.security_floor_changed.length) {
+      html += "<div class='text-danger' style='margin-top:.4rem;'><strong>Security floor changed:</strong></div><ul>";
+      for (const s of d.security_floor_changed) html += `<li>${kbEscape(s.pattern_id)}</li>`;
+      html += "</ul>";
+    }
+    if (d.sources_removed && d.sources_removed.length) {
+      html += "<div class='text-danger' style='margin-top:.4rem;'><strong>Source citations removed:</strong></div><ul>";
+      for (const s of d.sources_removed) html += `<li>${kbEscape(s.pattern_id)} (${s.removed.length} entr${s.removed.length===1?'y':'ies'})</li>`;
+      html += "</ul>";
+    }
+    html += `<button class="btn btn-success btn-sm" style="margin-top:.75rem;" onclick="kbConfirmActivate()">Confirm & Activate</button>`;
+  }
+  resultDiv.innerHTML = html;
+}
+
+async function kbConfirmActivate() {
+  if (!kbPendingFile) return;
+  const notes = document.getElementById("kb-upload-notes").value;
+  const fd = new FormData();
+  fd.append("file", kbPendingFile);
+  fd.append("notes", notes);
+  const res = await fetch("/api/admin/advisor-kb/activate", {method: "POST", body: fd});
+  const data = await res.json();
+  if (data.ok) {
+    window.location.reload();
+  } else {
+    document.getElementById("kb-validate-result").innerHTML =
+      "<div class='text-danger'>Activation failed on re-validation — the KB may have changed since you validated. Please re-upload.</div>";
+  }
+}
+
+async function kbRevert(versionId, label) {
+  if (!confirm(`Revert to ${label}? This creates a new active version copying its content.`)) return;
+  const res = await fetch(`/api/admin/advisor-kb/revert/${versionId}`, {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({notes: `Reverted via UI to ${label}`})
+  });
+  const data = await res.json();
+  if (data.ok) window.location.reload();
+  else alert("Revert failed: " + (data.error || "unknown error"));
+}
+
+async function kbRunDrift() {
+  const resultDiv = document.getElementById("kb-drift-result");
+  resultDiv.innerHTML = "<div>Running…</div>";
+  const res = await fetch("/api/admin/advisor-kb/drift");
+  const data = await res.json();
+  if (!data.ok) { resultDiv.innerHTML = `<div class='text-danger'>${kbEscape(data.error || 'Drift check failed')}</div>`; return; }
+  let html = `<div><strong>Matches:</strong> ${data.matches.length}</div>`;
+  html += `<div class='text-warning'><strong>Mismatches:</strong> ${data.mismatches.length}</div><ul>`;
+  for (const m of data.mismatches) html += `<li>${kbEscape(m.check || m.kb_path)}: KB says "${kbEscape(m.kb_value)}", actual is "${kbEscape(m.config_value ?? m.result)}"</li>`;
+  html += "</ul>";
+  html += `<div style='color:var(--text-muted);'><strong>Unverifiable:</strong> ${data.unverifiable.length}</div><ul>`;
+  for (const u of data.unverifiable) html += `<li>${kbEscape(u)}</li>`;
+  html += "</ul>";
+  resultDiv.innerHTML = html;
+}
+</script>
+{% endblock %}

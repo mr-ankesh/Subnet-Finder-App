@@ -13,11 +13,35 @@ break just because no LLM provider is configured (same "AI enhances, never
 gates" convention as notifications.py's AI-drafted email subject/body).
 """
 import logging
+from datetime import date, datetime
 
 from advisor import prompts
 from advisor.rules_engine import resolve_constant
+from config import cfg
 
 log = logging.getLogger(__name__)
+
+
+def _staleness_note(pattern: dict) -> str:
+    """A quiet, non-alarming note when the recommended pattern's
+    last_verified date is missing or older than ADVISOR_KB_STALE_DAYS —
+    'do not shout; do not suppress' (spec §6). Returns "" (never appended)
+    when the pattern is current. Never fabricates a date for a pattern that
+    doesn't declare one."""
+    last_verified = pattern.get("last_verified")
+    if not last_verified:
+        return "This pattern has not recorded a last-verified date."
+    try:
+        verified_on = datetime.strptime(str(last_verified), "%Y-%m-%d").date()
+    except ValueError:
+        return "This pattern has not recorded a last-verified date."
+    age_days = (date.today() - verified_on).days
+    stale_days = int(cfg.ADVISOR_KB_STALE_DAYS or 180)
+    if age_days > stale_days:
+        verifier = f" (verified by {pattern['verified_by']})" if pattern.get("verified_by") else ""
+        return (f"This pattern was last verified on {last_verified}{verifier}, "
+                f"{age_days} days ago — it has not been reviewed recently.")
+    return ""
 
 
 def _replication_reason(pattern_id: str) -> str:
@@ -122,6 +146,7 @@ def build_recommendation(pattern: dict, answers: dict, rule_result: dict, prefil
         "request_type": prefill_payload.get("request_type"),
         "cost_band": pattern.get("cost_band", "$"),
         "kb_version": pattern.get("kb_version", "1.0.0"),
+        "staleness_note": _staleness_note(pattern),
     }
 
 
@@ -192,6 +217,7 @@ def build_recommendation_generic(pattern: dict, answers: dict, rule_result: dict
         "request_type": prefill_payload.get("request_type"),
         "cost_band": pattern.get("cost_band", "$"),
         "kb_version": pattern.get("kb_version", "2.0.0"),
+        "staleness_note": _staleness_note(pattern),
     }
 
 
