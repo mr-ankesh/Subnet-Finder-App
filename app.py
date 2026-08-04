@@ -989,6 +989,16 @@ def api_advisor_kb_revert(version_id):
     return jsonify({"ok": True, "version_id": new_id})
 
 
+@app.route("/api/admin/advisor-kb/drift")
+@require_superadmin
+def api_advisor_kb_drift():
+    if not cfg.ADVISOR_KB_DRIFT_CHECK_ENABLED:
+        return jsonify({"ok": False, "error": "Drift check is disabled in Settings."}), 400
+    import advisor.kb_drift as kb_drift
+    report = kb_drift.run(_kb_active_files(), subscription_id=cfg.ADVISOR_KB_DRIFT_SUBSCRIPTION_ID)
+    return jsonify(report)
+
+
 @app.route("/api/admin/settings/approvals-health")
 @require_superadmin
 def admin_approvals_health():
