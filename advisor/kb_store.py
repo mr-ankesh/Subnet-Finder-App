@@ -26,6 +26,8 @@ import threading
 import time
 from datetime import datetime
 
+import audit
+import changes
 import db_backend
 
 log = logging.getLogger(__name__)
@@ -195,6 +197,42 @@ def activate(files: dict, uploaded_by: str, notes: str, validation_report: dict,
     return version_id
 
 
+def _audit_activation(action: str, actor: str, before_label, after_label: str,
+                       target_version_id: int, revert_params: dict, diff_summary: str,
+                       validation_report: dict):
+    """Dual-write to the change ledger and audit trail — every KB activation
+    or revert goes through this, never optional, never route-dependent.
+    'Treat this as more sensitive than a firewall rule — it changes what the
+    portal tells people to build.' Both changes.record()/audit.record()
+    never raise on their own, so a logging failure can't block an
+    activation that already succeeded in the DB."""
+    changes.record(
+        action=action, actor=actor, target=f"advisor_kb_version:{target_version_id}",
+        summary=f"{before_label or '(none)'} -> {after_label}",
+        before=before_label, after=after_label,
+        revert_op="advisor_kb_revert", revert_params=revert_params)
+    audit.record(
+        action=action, actor=actor, actor_role="superadmin",
+        summary=f"Advisor KB version {after_label} activated (was {before_label or 'none'})",
+        data={"diff_summary": diff_summary, "validation_report": validation_report})
+
+
+def activate_and_audit(files: dict, uploaded_by: str, notes: str, validation_report: dict,
+                        kb_version_label: str, diff_summary: str = "") -> int:
+    """The audited entry point for a normal upload activation — routes call
+    this, never the bare activate() above, so the audit/change-ledger
+    dual-write can't be forgotten by a future caller."""
+    previous = get_active_version()
+    version_id = activate(files, uploaded_by, notes, validation_report, kb_version_label)
+    new_version = get_version(version_id)
+    _audit_activation(
+        "advisor_kb_activate", uploaded_by,
+        previous["version_label"] if previous else None, new_version["version_label"],
+        version_id, {"version_id": previous["id"]} if previous else None,
+        diff_summary, validation_report)
+    return version_id
+
+
 def revert_to(version_id: int, actor: str, notes: str = "") -> int:
     """Revert is itself a new activation: copies the target version's files
     into a brand-new version row, which becomes active. The version being
@@ -217,4 +255,25 @@ def revert_to(version_id: int, actor: str, notes: str = "") -> int:
                                   json.loads(target["validation_report_json"] or "{}"),
                                   target["kb_version"], "active")
     invalidate_cache()
+    return new_id
+
+
+def revert_and_audit(version_id: int, actor: str, notes: str = "") -> int:
+    """The audited entry point for a revert — routes call this, never the
+    bare revert_to() above, for the same reason activate_and_audit() exists.
+    Itself recorded as a new activation in the change ledger, per spec:
+    'One-click revert to any prior version, itself recorded as a new
+    activation.'"""
+    previous = get_active_version()
+    target = get_version(version_id)
+    if target is None:
+        raise ValueError(f"unknown advisor KB version id {version_id}")
+    new_id = revert_to(version_id, actor, notes)
+    new_version = get_version(new_id)
+    _audit_activation(
+        "advisor_kb_revert", actor,
+        previous["version_label"] if previous else None, new_version["version_label"],
+        new_id, {"version_id": previous["id"]} if previous else None,
+        f"Reverted to content from version {target['version_label']}",
+        json.loads(target["validation_report_json"] or "{}"))
     return new_id
