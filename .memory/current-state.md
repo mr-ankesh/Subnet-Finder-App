@@ -19,8 +19,12 @@ environment design, not pattern selection) committed 2026-08-03
 (`2298611`/`6fde2de`/`9da0fe1`/`5144094`/`7e67cae`). Advisor converted to a
 persistent, conversational chat with history (resume, free-form Q&A
 mid-intake, correcting an earlier answer) — committed 2026-08-04
-(`7250095`/`abbc024`/`e930961`/`b6adea0`/`27adfd7`/`93f97e7`) — see
-"Features In Progress" below for the full breakdown. Remaining uncommitted
+(`7250095`/`abbc024`/`e930961`/`b6adea0`/`27adfd7`/`93f97e7`). Advisor
+Knowledge Base management (view/download/validate/upload/version/revert,
+per-pattern `last_verified` + staleness note, two-source drift check) —
+committed 2026-08-04 (`c0b5fc1`/`1103f97`/`22390f6`/`84c5e1d`/`c9b5452`/
+`cb7340b`/`ca5a738`/`29940b4`) — see "Features In Progress" below for the
+full breakdown. Remaining uncommitted
 changes are
 the unrelated cosmetic/infra items noted below (predate all advisor work).
 `main` is the only branch; commits go straight to it.
@@ -277,6 +281,67 @@ conversational chat" for the full design.
   JS, and a hand-verified Jinja if/else/endif balance check — NOT an
   actual rendered-page/click-through pass. See `next-actions.md` for the
   specific manual checklist.
+
+### Advisor Knowledge Base management — fully committed (`c0b5fc1`/`1103f97`/`22390f6`/`84c5e1d`/`c9b5452`/`cb7340b`/`ca5a738`/`29940b4`)
+
+Fourth build on the advisor this cycle: lets a super-admin view, download,
+validate, upload, version and revert the entire `advisor_kb/` knowledge
+base from Settings, plus per-pattern `last_verified` staleness tracking and
+a two-source drift check (KB vs. `config.py`, KB vs. live Azure). See
+`CLAUDE.md` → "Knowledge Base management" for the full design.
+
+- New `advisor/kb_store.py` (DB-override storage — `advisor_kb_versions`/
+  `advisor_kb_files`, mirrors `settings_store.py`'s pattern applied to
+  whole files, since `advisor_kb/` is baked into the image and prod runs 3
+  replicas), `advisor/kb_validate.py` (9-stage atomic validation gate),
+  `advisor/kb_diff.py` (semantic effects diff), `advisor/kb_drift.py`
+  (LOCAL + AZURE drift check), `templates/advisor_kb.html`.
+  `catalog_loader.py` gained real generation-gated cache invalidation and
+  `contextvars`-based per-conversation pinning (`pinned_to()`) — a genuine
+  mechanical guarantee now, not just an honest label, that an in-flight
+  conversation finishes against the KB version it started on even across
+  a later activation.
+- 7 new `@require_superadmin` routes in `app.py`
+  (`/admin/advisor-kb` + 6 `/api/admin/advisor-kb/*`), 4 new `config.py`
+  settings, a "Manage Knowledge Base" link on the Settings → Advisor tab,
+  a quiet `staleness_note` rendered in both the live and resumed
+  recommendation views.
+- `scripts/test_advisor_kb.py` (new, 36 checks covering all 21 spec
+  verification items); `test_advisor_validation.py`/
+  `test_advisor_conversations.py` unaffected (232 + 38 checks still pass).
+- **Verified for real, extensively**: schema creation + cache invalidation
+  + true cross-activation pinning ran against both SQLite and a real local
+  Postgres instance; a 9-stage-validation self-check against the real
+  shipped KB (clean pass) plus 8 deliberately-broken fixtures (one per
+  rejection stage); a full activate → activate → revert cycle verified
+  against both the change ledger and audit trail; the entire upload →
+  validate → diff → activate → version-history → revert flow driven
+  through a real running dev server via HTTP AND through a real headless
+  Chromium browser (screenshots inspected directly); the drift check run
+  against the real sandbox subscription (`845e564b-31a3-44b0-b030-226798b31574`)
+  already configured in this repo's local dev DB from an earlier session.
+- **Four real bugs found and fixed during this build** (see
+  `architecture-decisions.md` 2026-08-04 entries): (1) `kb_store`'s
+  version-label generator opened a second Postgres connection while
+  `activate()`'s outer transaction was still open, self-deadlocking on
+  `CREATE INDEX` — only surfaced against real Postgres, masked on SQLite's
+  WAL-mode MVCC; (2) the drift check's VM SKU-family match compared against
+  the underscored display convention (`"Standard_D"`) instead of Azure's
+  actual PascalCase `resourceSkus` family field (`"StandardDadsv7Family"`)
+  — every family check false-mismatched until caught against the real
+  sandbox subscription; (3) `glossary.yaml` had 7 genuinely dangling
+  `related:` references (`storage_account`, `DNS`, `subscription`,
+  `audit_trail`, `firewall_policy`) that had shipped undetected until the
+  new validator's stage (f) ran against it for the first time — fixed by
+  removing each dangling reference; (4) a SQLite WAL-mode gotcha — a plain
+  `cp` restore of `data/requests.db` while the dev server held an open
+  connection did not reliably take, leaving two rounds of test data visible
+  until caught via a real browser screenshot and fixed by stopping the
+  server and removing the `-wal`/`-shm` sidecar files before restoring.
+- **Browser verification succeeded this time** — `playwright install
+  chromium` completed cleanly (the two prior attempts across the
+  environment-composer and persistent-chat builds both failed after 35+
+  minutes; documented as resolved in `next-actions.md`).
 
 ### Resource Relationship Graph — fully committed (`66824be`, `5b12f9f`, `9fff6b1`)
 

@@ -11,21 +11,26 @@ None currently.
 ## P1 — Follow-up
 
 1. Visually confirm the Advisor's chat UI in an actual browser — all five
-   single-service options, the environment-composer mode, AND (new this
-   round) the persistent-conversation chat (sidebar + transcript +
-   resume). A headless browser was genuinely ATTEMPTED this round, not
-   just checked for: `pip install playwright` succeeded, but `playwright
-   install chromium` never completed after 35+ minutes in this sandboxed
-   environment's network (it retried its own download at least once) and
-   was killed rather than left running — same standing gap as the
-   Resource Relationship Graph, now confirmed as a real install failure,
-   not just "not found". Next session: try again with more time budgeted,
-   or from an environment with faster/unrestricted network egress.
+   single-service options, the environment-composer mode, AND the
+   persistent-conversation chat (sidebar + transcript + resume). **UPDATE
+   2026-08-04 (KB management session): `playwright install chromium`
+   finally succeeded** — the two prior attempts (environment-composer,
+   persistent-chat) both failed after 35+ minutes in this sandboxed
+   environment's network; this time it completed cleanly in well under a
+   minute, no retry needed. Used successfully for a full real-browser pass
+   of the NEW Knowledge Base management page this same session (see
+   `current-state.md`'s "Advisor Knowledge Base management" entry) — so
+   the environment/network issue was transient, not structural, and a
+   future session should just try `playwright install chromium` directly
+   rather than assuming it will fail again. The single-service/environment-
+   composer/persistent-chat click-through below is STILL outstanding —
+   only the KB management page got a real-browser pass this round.
    Verification so far: `scripts/test_advisor_validation.py` (232 checks)
-   + `scripts/test_advisor_conversations.py` (38 checks, new) + real
+   + `scripts/test_advisor_conversations.py` (38 checks) + real
    HTTP-level end-to-end runs against the live Flask dev server for every
    flow — not an actual rendered page in a browser. Manual click-through
-   checklist for whenever a browser is available:
+   checklist for whenever a browser is available (or just run Playwright
+   again, now that it's known to work):
    - Sidebar: conversations actually group under Today/This week/Older
      correctly (not just by creation order), mode badge shows Svc/Env
      correctly, delete removes the row without a page reload glitch.
@@ -167,3 +172,17 @@ None currently.
 - GPU utilization dashboard — prerequisites documented in
   `docs/GPU_UTILIZATION.md`, nothing implemented yet. Needs a decision on
   metrics pipeline (Azure Managed Prometheus recommended) before work starts.
+- Optional scheduled email for the Advisor KB drift check report (spec
+  said "optionally emailed on a schedule via the existing notifications
+  path") — deliberately not built in the 2026-08-04 KB-management session
+  to keep that already-large feature reviewable. `budgetalerts.py`'s
+  `start_scheduler()` daemon-thread pattern is directly reusable when this
+  gets picked up.
+- `advisor/kb_drift.py`'s AZURE-source checks currently cover VM SKU
+  families and curated VM images only (both confirmed real against a live
+  subscription). Storage SKU and AKS Kubernetes-version checks were
+  scoped out because the shipped KB doesn't currently assert anything
+  concrete enough to check against (no literal storage SKU or AKS version
+  token anywhere in the catalog) — revisit if/when a future KB update adds
+  one, reusing `azure_tools.list_aks_versions`/storage SKU lookups the
+  same way `list_vm_skus`/`list_vm_images` are reused today.

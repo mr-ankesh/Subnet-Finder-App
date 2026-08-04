@@ -976,6 +976,162 @@ follow-up, not part of this build.
   the admin-style fallback collapsed every unauthenticated local session
   onto one identity, letting them open each other's conversations.
 
+#### Knowledge Base management — DB-override storage, an atomic validation gate, and a drift check
+
+`advisor/kb_store.py` + `advisor/kb_validate.py` + `advisor/kb_diff.py` +
+`advisor/kb_drift.py` + `templates/advisor_kb.html` let a super-admin view,
+download, validate, upload, version and revert the entire `advisor_kb/`
+knowledge base from Settings — the KB is executable configuration (a
+malformed condition string or a renamed pattern id produces confidently
+wrong architecture advice, not an error), so this build makes two failure
+modes that already shipped once (an operator-less condition silently
+evaluating `True`; the KB describing classic AKS CNI while
+`AKS_NETWORK_PLUGIN_MODE` defaulted to overlay for weeks) structurally
+impossible for any future KB change.
+
+- **DB overrides live in the DB, not on disk, because the KB is baked into
+  the container image and prod runs 3 replicas** — this is the decision
+  most likely to be questioned later. `advisor_kb_versions`/
+  `advisor_kb_files` (raw SQL via `db_backend`, same
+  `settings_store.py`-style DB-override/TTL-cache pattern applied to whole
+  files instead of scalar values) store every activated KB's full file
+  content; `catalog_loader.py` resolves every read through pin → active DB
+  version → disk, in that order, falling back to disk exactly as before KB
+  management existed whenever no version has ever been uploaded.
+- **Real cache invalidation, bounded across replicas.** `catalog_loader`'s
+  six accessors (`get_catalog`/`get_questions`/`get_rules`/`get_mapping`/
+  `get_platform_constants`/`get_composer_file`) used to be bare
+  process-wide `lru_cache`s, safe only because the KB was static disk
+  content. Each is now a thin wrapper that checks a cheap "which version is
+  the current source" generation (itself gated by `kb_store`'s own 5s
+  TTL cache) before returning cached data, clearing every `lru_cache` the
+  moment that generation changes — every replica converges on an
+  activation within one TTL window, not at next restart.
+- **True per-conversation KB pinning via `contextvars`, not just an honest
+  label.** `advisor_conversations.kb_version_id` (new column, alongside the
+  existing human-readable `kb_version` string) records the
+  `advisor_kb_versions` row active at conversation creation.
+  `catalog_loader.pinned_to(version_id)` is a context manager that makes
+  every nested KB read within it resolve against that exact version's
+  stored file content — `advisor/orchestrator.py`'s `start_conversation`/
+  `process_turn` wrap their entire body in it, so a conversation mid-intake
+  finishes against the KB it started on even if an admin activates a
+  different version in between, with **zero signature changes** needed in
+  any of `question_engine`/`rules_engine`/`intake`/`composition_engine`/
+  `network_planner` — they just call the same `catalog_loader` accessors as
+  always. Verified directly (not by construction): activate a version,
+  start a conversation, activate a second version, confirm the
+  already-started conversation's next read still returns the first
+  version's byte-for-byte content — on both SQLite and a real local
+  Postgres instance.
+- **`kb_validate.validate_kb(files)`** runs all nine lettered stages from
+  the spec and never short-circuits on the first failure, so a rejected
+  upload reports every problem at once: (a) every file parses as YAML, (b)
+  every catalog pattern matches `catalog/_schema.md`'s required keys
+  (including a new required `selectable: true|false` key — backfilled into
+  all 12 shipped patterns, mechanically derived from
+  `catalog_loader.SERVICE_FILES`/`advisor/services.py`'s existing menu,
+  never invented), (c) every condition string actually evaluated at
+  runtime (`rules/*.yaml`'s `when`/`if`, `questions/*.yaml`'s
+  `skip_if`/`follow_up_if`) is re-checked through a new
+  `condition_eval.validate_condition()` — the same rewrite pipeline
+  `evaluate()` uses with every bare identifier quoted (no real answer
+  state exists at validation time) then `compile()`d, never `eval()`d, so
+  it needs no namespace and can't false-positive on a legitimate field
+  reference. `questions.yaml`'s `stop_if`/`escalate_if` are deliberately
+  **excluded** from strict validation — `question_engine.py`'s own
+  docstring says they're never executed, plain-English duplicates of
+  `rules_engine`'s real blockers — and `mapping/*.yaml`'s `include_if` is a
+  **warning**, not a rejection, since it's evaluated via the deliberately
+  tolerant `evaluate_safe()` at runtime and the shipped KB already contains
+  genuine prose there by design. (d) pattern-id references resolve
+  (`design.inherits`, an escalation's `redirect`, `composer/
+  composition_rules.yaml`'s `add:` — the last one allows two known
+  non-pattern tokens, `container_registry`/`snet_pe`, that are real
+  `add:` targets but never catalog pattern ids). (e) diagram files exist
+  in the *upload's own* `diagrams/`. (f) `glossary.yaml`'s `related:`
+  entries resolve through the same normalized, alias-aware index
+  `advisor/glossary.py`'s `find_term()` actually uses at runtime — not a
+  stricter raw exact-string check, which would reject legitimately
+  resolvable references. (g)+(h) `selectable` and `SERVICE_FILES`
+  completeness are checked bidirectionally. (i) `network_sizing.yaml`'s
+  `canonical_examples` arithmetic is re-verified by feeding each example's
+  `subnets` list straight into the existing
+  `network_planner.compute_vnet_plan()` — never reimplemented.
+  Running `validate_kb()` against the real shipped KB for the first time
+  ever surfaced a genuine pre-existing defect: 7 dangling `glossary.yaml`
+  `related:` references (`storage_account`, `DNS`, `subscription`,
+  `audit_trail`, `firewall_policy`) that resolved to nothing — fixed by
+  removing each dangling reference, not inventing new glossary entries for
+  concepts that deserve real authorship.
+- **`kb_diff.diff_kb(old_files, new_files)`** is a semantic effects diff,
+  never a text diff — patterns added/removed/modified by id,
+  condition-string changes (old → new, matched by removing exact-match
+  pairs per file first), services becoming (non-)selectable, glossary
+  terms added/removed, `security_floor`/mapping `locked_fields` changes
+  (both flagged `highlight: true`), `source:` entries removed (flagged
+  `highlight: true` — "an unsourced assertion is an opinion"), and
+  `canonical_examples` changes. `source:` entries are structured
+  `{doc, section, states}` dicts, not hashable strings, so this diffs by
+  list membership, not set difference.
+- **Versioning/activate/revert always dual-write, structurally.**
+  `kb_store.activate_and_audit()`/`revert_and_audit()` — not the bare
+  `activate()`/`revert_to()` — are the only entry points the routes call,
+  so the change-ledger (`changes.record`, with a real `revert_op` back to
+  the previous version) and audit-trail (`audit.record`, carrying the diff
+  summary + validation report) writes can't be forgotten by a future
+  route. A revert is itself recorded as a new activation, per spec. No
+  route accepts raw YAML/JSON to mutate the KB — `POST
+  /api/admin/advisor-kb/activate` re-validates the **re-submitted** zip
+  from scratch rather than trusting a stashed result from an earlier
+  `/validate` call (correct under 3 replicas with no in-process affinity
+  needed between the two calls, and closes the gap where the KB or the
+  file could have changed in between).
+- **`last_verified`/`verified_by`** are optional pattern fields — missing
+  or older-than-`ADVISOR_KB_STALE_DAYS` (default 180) triggers a
+  validation *warning*, never a rejection, and a quiet (non-banner)
+  `staleness_note` appended to any recommendation citing that pattern
+  (`recommendation.py`'s `_staleness_note()`). No date is fabricated for
+  any of the 12 shipped patterns that don't declare one.
+- **`kb_drift.run()`** — two sources, both advisory-only (nothing is
+  auto-applied). **LOCAL** (`check_local()`, zero Azure calls, the
+  highest-value check) is a small set of real, evidenced rows — AKS
+  network plugin/mode vs. `AKS_NETWORK_PLUGIN`/`_MODE`, Pod CIDR vs.
+  `AKS_POD_CIDR`, default region vs. `VM_DEFAULT_REGION`/
+  `STORAGE_DEFAULT_REGION` — each traced to a real field the shipped KB
+  actually asserts, not a generic/guessed check; this is exactly the shape
+  of check that would have caught the Overlay bug on day one. **AZURE**
+  (`check_azure()`, read-only, best-effort, each check isolated) reuses
+  `azure_tools.py`'s existing `list_vm_skus`/`list_vm_images` exactly as
+  they are — no new Azure SDK calls — to confirm the VM SKU families
+  `vm_workload_standard.yaml`'s design names (D/E/F-series) are available
+  and the configured curated images still resolve, scoped to
+  `ADVISOR_KB_DRIFT_SUBSCRIPTION_ID` using the **main** Azure Credentials
+  SP (not a fifth isolated credential — these are read-only lookups
+  already covered by its role, unlike `resourcegraph.py`/`optimize.py`'s
+  genuinely isolated Reader-only SPs for broader subscription-wide reads).
+  `unverifiable()` lists what genuinely can't be checked this way (private
+  DNS zone names, policy assignments, design-document-sourced assertions,
+  disk SKU availability, AKS version constraints) as an honest static list,
+  never a fabricated pass. Verified against the real sandbox subscription
+  already configured in this repo's local dev DB from an earlier session —
+  caught and fixed a real bug in the process: the SKU-family match
+  compared against `"Standard_D"` (the underscored *display* convention)
+  but Azure's actual `resourceSkus` family field is PascalCase with no
+  underscore (`"StandardDadsv7Family"`) — every family check
+  false-mismatched until confirmed and fixed against the real API
+  response. A deliberately-bogus `VM_DEFAULT_IMAGES` entry was also
+  confirmed to surface a genuine Azure 404 as a mismatch, then reverted.
+- **A real SQLite WAL-mode gotcha, caught while cleaning up test state.**
+  Restoring this repo's local dev DB via a plain `cp data/requests.db`
+  while the dev server holds an open WAL-mode connection does **not**
+  reliably take — the `-wal` sidecar file has to be removed (or the server
+  stopped first) for a file-level restore to actually apply; two rounds of
+  HTTP-level testing this session left visible rows behind despite an
+  apparently-successful restore, only caught via a real browser screenshot
+  showing stale data. Worth remembering for any future session that needs
+  to touch-and-restore `data/requests.db` for testing.
+
 ### Separate credentials per concern
 
 Four independent service-principal configs, intentionally isolated so a

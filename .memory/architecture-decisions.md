@@ -818,3 +818,157 @@ conversations by ID — caught live while smoke-testing item 3's
 cross-owner-denial check (a second `requests.Session()` was getting a 200
 with the first session's transcript, not a 404). Fixed to mirror the
 requester fallback; reverified with two separate sessions.
+
+## 2026-08-04 — Advisor KB management: DB overrides live in the DB, not on disk
+
+**Decision:** KB overrides live in the DB, not on disk, because the KB is
+baked into the container image and prod runs 3 replicas. `advisor_kb_versions`/
+`advisor_kb_files` store every activated KB version's full file content in
+the database (`advisor/kb_store.py`), mirroring `settings_store.py`'s
+existing DB-override/env/default resolution chain but applied to whole
+files instead of scalar values.
+
+**Why:** `advisor_kb/` ships baked into the container image, and prod
+deploys that image to 3 replicas via a rolling Helm upgrade — there is no
+shared writable filesystem between pods, and even a single pod's local
+disk write would vanish on the next restart/rollout. A DB-backed override
+is the only storage that is simultaneously durable across restarts and
+consistent across all 3 replicas without needing a shared volume. This is
+the decision most likely to be questioned later, since "just write the
+uploaded KB to `advisor_kb/`" looks simpler in a single-replica mental
+model — it silently breaks the moment there's more than one pod.
+
+## 2026-08-04 — Advisor KB management: true per-conversation pinning via contextvars, not just an honest label
+
+**Decision:** `catalog_loader.pinned_to(version_id)` (a `contextvars`-based
+context manager) makes every KB read within its scope resolve against one
+specific `advisor_kb_versions` row's stored content, regardless of what
+becomes active afterward. `advisor/orchestrator.py`'s `start_conversation`/
+`process_turn` wrap their entire body in it, using the pinned
+`advisor_conversations.kb_version_id` (new column) recorded at conversation
+creation.
+
+**Why:** the persistent-chat build (2026-08-04, earlier the same day)
+introduced `kb_version` as "a single hand-bumped constant... an honest
+scope limit, not a hidden gap" specifically because `catalog_loader`'s
+`lru_cache` never invalidated and there was no versioned KB storage to
+pin against — so "finishing against the KB you started on" was true only
+by accident (nothing ever changed at runtime). Once the KB became
+DB-mutable and its caches started invalidating for real, that accident
+stopped holding: without an explicit pin, a conversation's next read after
+a mid-conversation activation would silently pick up the new content.
+`contextvars` was chosen over threading through an explicit `kb_version_id`
+parameter to every engine function (`question_engine`/`rules_engine`/
+`intake`/`composition_engine`/`network_planner`) because those modules are
+pure functions of a state dict already, called from many places across
+three advisor phases built over the preceding days — re-plumbing all of
+them for one cross-cutting concern would have touched far more surface
+than the pin itself needed, and risked reintroducing exactly the kind of
+regression the "zero signature changes needed" property was designed to
+avoid. Verified directly, not by construction: activate version A, start a
+conversation (pins to A), activate version B, confirm the conversation's
+next read under `pinned_to(A)` still returns A's byte-for-byte content
+even though the live active version is now B — on both SQLite and a real
+local Postgres instance.
+
+## 2026-08-04 — Advisor KB management: `selectable` added as a required schema key, backfilled mechanically
+
+**Decision:** every catalog pattern now requires a `selectable: true|false`
+key (added to `catalog_loader.REQUIRED_PATTERN_KEYS`), backfilled into all
+12 shipped patterns as part of the same build that started requiring it.
+
+**Why:** the validation spec's item (g)/(h) ("selectable: true requires a
+matching question bank; selectable: false must NOT have one") needed
+something to check bidirectionally, but no such field existed anywhere in
+the KB before this — selectability was only ever implied by
+`catalog_loader.SERVICE_FILES`'s 5 keys and `advisor/services.py`'s menu.
+Rather than inferring selectability at validation time from that
+code-side mapping (which would leave the KB itself silent about a fact
+that materially changes how a pattern is used), the KB was made
+self-describing: `true` for every pattern whose `service` is one of
+`SERVICE_FILES`'s 5 keys, `false` for `keyvault_premium_private` (the one
+reference-only pattern) — mechanically derived from already-real behavior,
+not a new editorial decision. Every existing catalog pattern needed the
+backfill in the same commit as the schema change, or the validator would
+have rejected the KB shipped in the image the moment it ran.
+
+## 2026-08-04 — Advisor KB management: four real bugs, three caught only because testing went past mocks/offline checks
+
+**Bug found: a genuine self-deadlock on Postgres, invisible on SQLite.**
+`kb_store`'s version-label generator (`_next_version_label`) originally
+opened its own new connection and called `ensure_tables()` (which runs
+`CREATE INDEX IF NOT EXISTS`) while `activate()`'s OUTER transaction — on
+a different, still-open connection — held an uncommitted row-exclusive
+lock on `advisor_kb_versions` from its own `UPDATE ... SET status =
+'superseded'`. On Postgres, `CREATE INDEX` needs a `SHARE` lock that
+conflicts with `ROW EXCLUSIVE`, so the second connection blocked forever
+waiting on the first connection's lock — which itself was never going to
+release, because the first connection's own Python code was blocked
+waiting for the second connection's query to return. Postgres's own
+deadlock detector never caught it, since from the server's point of view
+neither connection was waiting on the other in a way it tracks — it's a
+client-side self-inflicted stall, not a lock-graph cycle. SQLite's
+WAL-mode MVCC let the second connection's read through anyway, masking the
+bug completely in every offline test. Caught only because this session
+spun up a real local Postgres instance and drove `activate()` through it
+directly, per this session's established discipline of not trusting
+SQLite-only testing for anything DB-shaped. Fixed by threading the
+caller's already-open connection through instead of opening a new one.
+
+**Bug found: the AZURE-source drift check's SKU-family match used the
+wrong string format.** `vm_workload_standard.yaml`'s design prose names
+"D-series general purpose, E-series memory-heavy, F-series compute-heavy"
+— the check compared this against `list_vm_skus()`'s returned `family`
+field using the underscored `"Standard_D"` display convention (the same
+spelling Azure shows in `Standard_D2s_v3`-style SKU names). Azure's actual
+`resourceSkus` API returns family as PascalCase with no underscore and a
+`Family` suffix (`"StandardDadsv7Family"`), confirmed by printing the real
+values returned against the sandbox subscription
+(`845e564b-31a3-44b0-b030-226798b31574`) — every family check
+false-mismatched (reported "NOT available" for D/E/F-series that were
+genuinely available) until this was caught and fixed. This is exactly the
+class of bug the Resource Relationship Graph build hit twice already this
+project (casing/format mismatches between what an API actually returns
+and what a developer assumes) — another data point that this repo's
+Azure-adjacent code needs live-API verification, not just mocked shapes,
+before it can be trusted.
+
+**Bug found: `glossary.yaml` had 7 dangling `related:` references that had
+shipped undetected.** Running the new stage (f) validator against the
+real, already-in-production KB for the first time surfaced
+`storage_account`, `DNS`, `subscription`, `audit_trail`, and
+`firewall_policy` as `related:` targets with no matching glossary term or
+alias anywhere in the file. These are pre-existing content, not something
+introduced by this build — nobody had ever mechanically checked this
+before. Stage (f)'s matcher was also itself corrected mid-build: it
+initially used raw exact-string `term:` matching, which is STRICTER than
+the actual runtime resolution mechanism (`advisor/glossary.py`'s
+`find_term()`, which normalizes case/punctuation and matches against
+aliases too) — using the stricter check would have produced false
+positives on legitimately-resolvable phrasing variants. Fixed the matcher
+to mirror `find_term()`'s real normalization, then fixed the 7 genuine
+dangling references by removing each one (not inventing new glossary
+entries for Storage Account/DNS/Subscription/Audit Trail/Firewall Policy —
+those are real concepts that deserve real authorship, not a guess written
+to make a validator pass).
+
+**Bug found (methodology, not product code): SQLite WAL-mode defeats a
+plain `cp` restore.** While cleaning up test state between stages, this
+session repeatedly did `cp data/requests.db.backup ... data/requests.db`
+to restore the local dev DB to its pre-test state while the Flask dev
+server was still running with an open connection. This did NOT reliably
+take — SQLite's WAL mode keeps recent writes in a separate `-wal` sidecar
+file, and a file-level copy of just the main `.db` file while a `-wal`
+file with uncommitted-to-main data still exists (and/or a live connection
+still has it open) can leave the "restored" file showing stale test data
+on next read. Two rounds of HTTP-level testing (Stages 5 and 6) left
+visible rows behind despite an apparently-successful restore each time —
+only caught because Stage 7's real-browser screenshot showed test
+timestamps/notes that should not have been there. Fixed by stopping the
+server first and deleting the `-wal`/`-shm` sidecar files before copying
+the backup over, then verifying via a fresh server start that the version
+table was genuinely empty and `request_count` matched the pre-session
+baseline. Worth remembering for any future session that touches this
+repo's local dev DB for testing: **stop the server, and delete `-wal`/
+`-shm`, before restoring — a running server's open connection can silently
+undo a file-level restore.**

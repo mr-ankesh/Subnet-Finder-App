@@ -138,6 +138,13 @@ by reading the hub VNET (read-only, works even in dry-run).
    mid-intake, and correcting an earlier answer, for both the single-service
    and environment paths above. Off, it's the original single-shot flow,
    unchanged. See `CLAUDE.md` → "Persistent, conversational chat" for the
+   full design. The knowledge base driving all of the above
+   (`advisor_kb/`) can be viewed, downloaded, validated, uploaded,
+   versioned and reverted from Settings → Advisor → Manage Knowledge Base
+   (super-admin only) — an upload is rejected atomically on any validation
+   failure, and an in-flight conversation always finishes against the KB
+   version it started on even if a different version is activated
+   mid-conversation. See `CLAUDE.md` → "Knowledge Base management" for the
    full design.
 1. **Submit** — requester uses the form or the AI chat agent. Both paths hit
    the same validated creation code (subnet fit, FQDN-only application
