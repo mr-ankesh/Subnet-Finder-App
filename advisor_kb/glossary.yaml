@@ -121,7 +121,7 @@ terms:
     at_presight: >
       Lives in the hub. All outbound internet traffic from every spoke routes through it, so
       egress is inspected in one place rather than per-workload.
-    related: [hub_and_spoke, UDR, firewall_policy]
+    related: [hub_and_spoke, UDR]
 
   - term: ZPA
     aliases: [zscaler private access, zpa routing]
@@ -160,7 +160,7 @@ terms:
       This is the single most common reason a correctly-built private setup appears broken.
       The endpoint looks healthy, the name resolves to a public IP, and the connection times
       out with no obvious cause.
-    related: [private_endpoint, DNS]
+    related: [private_endpoint]
 
   - term: PaaS
     aliases: [platform as a service, managed service]
@@ -223,7 +223,7 @@ terms:
     at_presight: >
       The standard for all storage. The one documented exception is the archive tier, which
       Azure only offers as LRS or GRS.
-    related: [access_tier, storage_account]
+    related: [access_tier]
 
   - term: access_tier
     aliases: [hot, cool, archive, tier]
@@ -236,7 +236,7 @@ terms:
     why_it_matters: >
       Archived data is offline. Reading it needs rehydration — hours, plus a retrieval charge.
       It is not suitable for anything time-sensitive.
-    related: [ZRS, storage_account]
+    related: [ZRS]
 
   - term: soft_delete
     plain_english: >
@@ -274,7 +274,6 @@ terms:
       storage features behave differently.
     why_it_matters: >
       It cannot be turned off after the account is created.
-    related: [storage_account]
 
   # ── AKS ───────────────────────────────────────────────────
   - term: AKS
@@ -526,7 +525,6 @@ terms:
     at_presight: >
       Nothing can be provisioned without a subscription, so this is the first step if you don't
       already have one. The Advisor stops and points you there.
-    related: [subscription]
 
   - term: TechOps
     plain_english: >
@@ -554,4 +552,4 @@ terms:
     at_presight: >
       Each deployed resource gets its own entry, so a single item can be reverted without
       touching the others.
-    related: [dry_run, audit_trail]
+    related: [dry_run]

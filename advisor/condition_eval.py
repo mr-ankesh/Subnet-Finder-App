@@ -128,6 +128,43 @@ def evaluate(cond: str, namespace: dict) -> bool:
         raise ValueError(f"advisor condition failed to evaluate: {cond!r} -> {rewritten!r}: {exc}") from exc
 
 
+def validate_condition(cond) -> None:
+    """Static validity check for a KB condition string, used by
+    advisor/kb_validate.py to reject a malformed condition at UPLOAD time —
+    including the exact operator-less-prose bug class evaluate()'s
+    _OPERATOR_RE guard already catches at runtime, but only the first time
+    some real answer state happens to reach it. Never evaluates the
+    condition (no real namespace exists yet at validation time): runs the
+    same rewrite pipeline evaluate() uses, quoting every bare identifier
+    (there is no known-names set to check field references against, so this
+    only proves the string is syntactically valid Python containing a real
+    operator — never that a referenced field name exists), then compiles
+    (never execs) the result. Raises ValueError with the offending string on
+    failure. A None/empty condition is treated as evaluate()'s own trivial
+    False case, not an error — this isn't the bug class being guarded
+    against."""
+    if cond is None or not str(cond).strip():
+        return
+    cond = str(cond).strip()
+    rewritten = _rewrite_phrases(cond)
+    rewritten = _rewrite_bool_words(rewritten)
+    rewritten = _quote_bare_enums(rewritten, set())
+    if rewritten != "True" and not _OPERATOR_RE.search(rewritten):
+        raise ValueError(f"advisor condition has no recognizable operator: {cond!r} -> {rewritten!r}")
+    try:
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            # Quoting every bare identifier (no known_names at validation
+            # time) turns "field is defined" into "'field' is not None" —
+            # a string-literal `is` comparison, which is semantically
+            # meaningless here (nothing is ever executed) but triggers
+            # Python's own SyntaxWarning. Expected noise, not a real issue.
+            _warnings.simplefilter("ignore", SyntaxWarning)
+            compile(rewritten, "<advisor-condition>", "eval")
+    except SyntaxError as exc:
+        raise ValueError(f"advisor condition is not valid syntax: {cond!r} -> {rewritten!r}: {exc}") from exc
+
+
 def evaluate_safe(cond: str, namespace: dict) -> bool:
     """Same as evaluate(), except any condition that fails to parse/evaluate
     is treated as False instead of raising. Some six-service mapping files'
