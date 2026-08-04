@@ -126,6 +126,9 @@
           <button class="btn-glass" onclick="testConnector('nmo', this)"><i class="bi bi-plug"></i> Test NMO SSH</button>
           <span id="connTestResult" style="font-size:.85rem;"></span>
           {% endif %}
+          {% if cat.key == 'advisor' %}
+          <a href="/admin/advisor-kb" class="btn-glass"><i class="bi bi-journal-code"></i> Manage Knowledge Base</a>
+          {% endif %}
         </div>
         {% if cat.key == 'auth' %}
         <div id="kcTestResult" style="font-size:.82rem; margin-top:.75rem; line-height:1.5;"></div>

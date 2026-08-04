@@ -414,6 +414,7 @@ function advRenderRecommendation(rec) {
         <span class="adv-cost-band">${esc(rec.cost_band)}</span>
       </div>
       <p style="font-size:13px;color:var(--text-dim);">${esc(rec.pattern_summary)}</p>
+      ${rec.staleness_note ? `<p style="font-size:12px;color:var(--text-dim);opacity:.75;font-style:italic;">${esc(rec.staleness_note)}</p>` : ''}
 
       <div class="adv-section-label">Why this pattern</div>
       <p style="font-size:13px;color:var(--text-dim);line-height:1.7;">${esc(rec.why_this_pattern)}</p>
@@ -768,6 +769,7 @@ function renderRecommendationHtml(rec, mode) {
     <div class="p-eyebrow">Recommended Presight Architecture</div>
     <h4 style="color:#fff;margin:6px 0;">${esc(rec.pattern_name || '')}</h4>
     <p style="font-size:13px;color:var(--text-dim);">${esc(rec.pattern_summary || '')}</p>
+    ${rec.staleness_note ? `<p style="font-size:12px;color:var(--text-dim);opacity:.75;font-style:italic;">${esc(rec.staleness_note)}</p>` : ''}
     <table class="adv-rec-table"><tbody>${rows}</tbody></table>
     <div class="adv-section-label">Requests you'll need to raise</div>
     <ol class="adv-checklist">${reqs}</ol>`;
