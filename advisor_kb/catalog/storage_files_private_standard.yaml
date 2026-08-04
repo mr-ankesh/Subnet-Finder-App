@@ -2,6 +2,7 @@ kb_version: "1.0.0"
 id: storage_files_private_standard
 name: Private File Share (Azure Files, Standard GPv2)
 service: storage_account
+selectable: true
 status: approved
 summary: >
   Shared file-system storage with SMB/NFS 4.1 semantics for workloads that need a mounted

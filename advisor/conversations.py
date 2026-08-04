@@ -23,14 +23,13 @@ Three tables:
     by an optimistic-concurrency `version` column.
 
 kb_version is pinned at creation as a single hand-bumped constant (see
-KB_VERSION below) — NOT a live aggregate of every KB file's own
-`kb_version:` field. catalog_loader's lru_cache means a running process
-serves whatever it loaded at start regardless of what's recorded here;
-there is no versioned storage of past KB content to actually replay a
-conversation against. This field is honestly scoped: it survives a resume
-and never gets silently recomputed on read, which is what's actually
-achievable and testable — it does not pin runtime behaviour across a KB
-edit + process restart.
+KB_VERSION below) — a human-readable label, not itself mechanically
+enforced. `kb_version_id` (added alongside it) IS mechanically enforced: it
+records the advisor_kb_versions row id that was active at creation (None if
+the KB has only ever been the disk copy), and advisor/orchestrator.py wraps
+every turn in catalog_loader.pinned_to(kb_version_id) — see kb_store.py and
+catalog_loader.py's module docstrings for the full DB-override design this
+pins against.
 """
 import json
 import logging
@@ -56,6 +55,27 @@ def _now():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _ensure_kb_version_id_column(conn):
+    """kb_version_id didn't exist in the table this module originally shipped
+    with — CREATE TABLE IF NOT EXISTS is a no-op against an already-existing
+    table, so an already-deployed DB needs this guarded ALTER, same pattern
+    as app.py's approval_state migration for spoke_requests."""
+    if db_backend.IS_POSTGRES:
+        try:
+            conn.execute("ALTER TABLE advisor_conversations "
+                         "ADD COLUMN IF NOT EXISTS kb_version_id INTEGER")
+        except Exception:
+            log.exception("[migration] failed to add advisor_conversations.kb_version_id (postgres)")
+    else:
+        cols = [r["name"] for r in conn.execute(
+            "PRAGMA table_info(advisor_conversations)").fetchall()]
+        if "kb_version_id" not in cols:
+            try:
+                conn.execute("ALTER TABLE advisor_conversations ADD COLUMN kb_version_id INTEGER")
+            except Exception:
+                log.exception("[migration] failed to add advisor_conversations.kb_version_id (sqlite)")
+
+
 def ensure_tables():
     with _conn() as conn:
         conn.execute(f"""
@@ -67,11 +87,13 @@ def ensure_tables():
                 service       TEXT,
                 status        TEXT NOT NULL DEFAULT 'active',
                 kb_version    TEXT,
+                kb_version_id INTEGER,
                 message_count INTEGER NOT NULL DEFAULT 0,
                 created_ts    TEXT,
                 updated_ts    TEXT
             )
         """)
+        _ensure_kb_version_id_column(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_advconv_owner "
                      "ON advisor_conversations(owner_key)")
         conn.execute("""
@@ -104,19 +126,35 @@ def ensure_tables():
 
 # ── Conversations ────────────────────────────────────────────────────────
 
+def _active_kb_version_id():
+    """The advisor_kb_versions row id active at this moment, or None if the
+    KB has only ever been the disk copy — imported lazily (kb_store has no
+    import back to this module, but this keeps conversations.py usable even
+    if kb_store's DB tables aren't reachable for some reason)."""
+    try:
+        import advisor.kb_store as kb_store
+        active = kb_store.get_active_version()
+        return active["id"] if active else None
+    except Exception:
+        log.warning("advisor kb_store unreachable while starting a conversation; "
+                     "recording kb_version_id=None (disk)", exc_info=True)
+        return None
+
+
 def create_conversation(owner_key: str, mode: str, service: str = None) -> int:
     if mode not in VALID_MODES:
         raise ValueError(f"invalid advisor conversation mode: {mode!r}")
     ensure_tables()
     ts = _now()
+    kb_version_id = _active_kb_version_id()
     with _conn() as conn:
         cid = db_backend.insert_returning_id(
             conn,
             "INSERT INTO advisor_conversations "
-            "(owner_key, title, mode, service, status, kb_version, message_count, "
-            "created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(owner_key, title, mode, service, status, kb_version, kb_version_id, "
+            "message_count, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ((owner_key or "unknown")[:200], "New conversation", mode, service,
-             "active", KB_VERSION, 0, ts, ts))
+             "active", KB_VERSION, kb_version_id, 0, ts, ts))
     _ensure_state_row(cid, ts)
     return cid
 

@@ -2,6 +2,7 @@ kb_version: "2.0.0"
 id: appgw_internal
 name: Internal Application Gateway (WAF v2, private frontend)
 service: app_gateway
+selectable: true
 status: approved
 summary: >
   Layer-7 routing and WAF for applications reachable only from inside the estate — via ZPA,

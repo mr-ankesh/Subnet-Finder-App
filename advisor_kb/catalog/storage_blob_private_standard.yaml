@@ -2,6 +2,7 @@ kb_version: "1.0.0"
 id: storage_blob_private_standard
 name: Private Blob Storage (Standard GPv2)
 service: storage_account
+selectable: true
 status: approved
 summary: >
   The default Presight pattern for unstructured object data. Standard general-purpose v2

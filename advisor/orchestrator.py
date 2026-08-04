@@ -24,6 +24,7 @@ import re
 from advisor import conversations, freeform, prompts
 from advisor import question_engine, rules_engine, recommendation as single_recommendation
 from advisor import prefill as single_prefill
+from advisor import catalog_loader
 from advisor.catalog_loader import get_catalog
 from advisor.composer import intake, composition_engine, sequencer
 from advisor.composer import infosec as composer_infosec
@@ -214,7 +215,23 @@ def _finalize_environment_turn(state: dict) -> dict:
 
 # ── Main entry point ─────────────────────────────────────────────────────
 
+def _kb_pin_for(conversation_id: int):
+    """The KB version this conversation is pinned to — its kb_version_id
+    (an advisor_kb_versions row id) if the conversation was created after a
+    DB KB version existed, else None (disk). Wrapping every entry point in
+    catalog_loader.pinned_to(this) is what makes 'a conversation finishes
+    against the KB it started on' a mechanically enforced guarantee rather
+    than an accident of caching — see catalog_loader.py's module docstring."""
+    conv = conversations.get_conversation(conversation_id)
+    return conv.get("kb_version_id") if conv else None
+
+
 def start_conversation(conversation_id: int, mode: str) -> dict:
+    with catalog_loader.pinned_to(_kb_pin_for(conversation_id)):
+        return _start_conversation_impl(conversation_id, mode)
+
+
+def _start_conversation_impl(conversation_id: int, mode: str) -> dict:
     """Computes and persists the first question/message for a brand-new
     conversation. Returns the same shape as process_turn's "question" event."""
     state = conversations.get_state(conversation_id)
@@ -233,6 +250,12 @@ def start_conversation(conversation_id: int, mode: str) -> dict:
 
 def process_turn(conversation_id: int, mode: str, text: str, question_id: str,
                   is_chip: bool = False, chip_value=None) -> dict:
+    with catalog_loader.pinned_to(_kb_pin_for(conversation_id)):
+        return _process_turn_impl(conversation_id, mode, text, question_id, is_chip, chip_value)
+
+
+def _process_turn_impl(conversation_id: int, mode: str, text: str, question_id: str,
+                        is_chip: bool = False, chip_value=None) -> dict:
     """The main entry point. Returns one of:
       {"type": "question", "question": {...}}
       {"type": "correction_confirm", "message": "..."}

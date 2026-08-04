@@ -2,6 +2,7 @@ kb_version: "2.0.0"
 id: aks_gpu_nodepool
 name: Private AKS with GPU Node Pool
 service: aks_cluster
+selectable: true
 status: conditional
 condition: >
   Only when LLM/ML inference or training must run on Presight-managed GPUs. If Azure OpenAI

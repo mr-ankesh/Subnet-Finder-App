@@ -2,6 +2,7 @@ kb_version: "1.0.0"
 id: storage_archive_retention
 name: Archive / Long-Term Retention Storage
 service: storage_account
+selectable: true
 status: conditional
 condition: >
   Only when data is rarely accessed and the workload tolerates hours-long rehydration.

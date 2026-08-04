@@ -46,7 +46,7 @@ TABLES = ["spoke_requests", "vnet_info", "subnet_records",
           "app_settings", "audit_log", "change_log", "fw_collections",
           "agent_chats", "subscription_inventory", "budget_alert_state",
           "advisor_sessions", "advisor_conversations", "advisor_messages",
-          "advisor_state"]
+          "advisor_state", "advisor_kb_versions", "advisor_kb_files"]
 
 # Columns that are BOOLEAN in Postgres but stored 0/1 in SQLite.
 BOOL_COLS = {

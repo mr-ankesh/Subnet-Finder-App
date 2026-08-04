@@ -2,6 +2,7 @@ kb_version: "2.0.0"
 id: postgres_flexible_private
 name: Azure Database for PostgreSQL — Flexible Server (Private)
 service: postgres_create
+selectable: true
 status: approved
 summary: >
   Managed PostgreSQL with no public endpoint, reachable only over a private endpoint from

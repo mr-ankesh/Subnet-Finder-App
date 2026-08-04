@@ -2,6 +2,7 @@ kb_version: "1.0.0"
 id: storage_premium_temporary
 name: Premium Storage (Temporary, High-IOPS Burst)
 service: storage_account
+selectable: true
 status: conditional
 condition: >
   Presight's decision is Standard GPv2 for all workloads. Premium is provisioned only when

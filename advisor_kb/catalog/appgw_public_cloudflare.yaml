@@ -2,6 +2,7 @@ kb_version: "2.0.0"
 id: appgw_public_cloudflare
 name: Public Application Gateway (WAF v2) behind Cloudflare
 service: app_gateway
+selectable: true
 status: conditional
 condition: >
   This is the ONLY approved way to expose an application to the internet at Presight, and it

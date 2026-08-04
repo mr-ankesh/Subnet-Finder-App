@@ -2,6 +2,7 @@ kb_version: "2.0.0"
 id: vm_workload_standard
 name: Application VM(s) — Private
 service: vm_create
+selectable: true
 status: approved
 summary: >
   One or more IaaS virtual machines in an onboarded spoke subnet. No public IP, egress via

@@ -259,6 +259,10 @@ with app.app_context():
     import advisor.conversations as advisor_conversations
     advisor_conversations.ensure_tables()
 
+    # Advisor knowledge base management (DB-override storage for advisor_kb/)
+    import advisor.kb_store as advisor_kb_store
+    advisor_kb_store.ensure_tables()
+
 # Keycloak OIDC — registers the app; the client is built lazily from live
 # settings, so enabling/configuring SSO in the portal needs no restart.
 oidc.init_oidc(app)

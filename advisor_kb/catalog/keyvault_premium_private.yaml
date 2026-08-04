@@ -2,6 +2,7 @@ kb_version: "2.0.0"
 id: keyvault_premium_private
 name: Key Vault Premium (Private, HSM-backed)
 service: key_vault
+selectable: false
 status: approved
 summary: >
   HSM-backed Key Vault holding CMK encryption keys, TLS certificates and application secrets
